@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <style>
+    .pet { transform-origin: 64px 96px; animation: perk .9s ease-in-out infinite; }
+    .ear-left { transform-origin: 42px 30px; animation: earLeft .9s ease-in-out infinite; }
+    .ear-right { transform-origin: 86px 30px; animation: earRight .9s ease-in-out infinite; }
+    @keyframes perk {
+      0%, 100% { transform: translateY(0) scale(1); }
+      50% { transform: translateY(-4px) scale(1.035); }
+    }
+    @keyframes earLeft {
+      0%, 100% { transform: rotate(0deg); }
+      50% { transform: rotate(-8deg); }
+    }
+    @keyframes earRight {
+      0%, 100% { transform: rotate(0deg); }
+      50% { transform: rotate(8deg); }
+    }
+  </style>
+  <g class="pet">
+    <path class="ear-left" d="M34 28 C28 11 44 7 50 28 Z" fill="#ffbf66" stroke="#243049" stroke-width="4" stroke-linejoin="round"/>
+    <path class="ear-right" d="M94 28 C100 11 84 7 78 28 Z" fill="#ffbf66" stroke="#243049" stroke-width="4" stroke-linejoin="round"/>
+    <rect x="29" y="22" width="70" height="64" rx="30" fill="#ffc66d" stroke="#243049" stroke-width="4"/>
+    <circle cx="42" cy="38" r="7" fill="#fff7e7"/>
+    <circle cx="50" cy="54" r="8" fill="#243049"/>
+    <circle cx="78" cy="54" r="8" fill="#243049"/>
+    <circle cx="47" cy="51" r="2.5" fill="#fff"/>
+    <circle cx="75" cy="51" r="2.5" fill="#fff"/>
+    <ellipse cx="42" cy="70" rx="8" ry="4" fill="#ff7c89" opacity=".48"/>
+    <ellipse cx="86" cy="70" rx="8" ry="4" fill="#ff7c89" opacity=".48"/>
+    <ellipse cx="64" cy="70" rx="5" ry="7" fill="#243049"/>
+    <rect x="42" y="80" width="44" height="30" rx="17" fill="#43c6d8" stroke="#243049" stroke-width="4"/>
+    <circle cx="64" cy="94" r="6" fill="#fff" stroke="#243049" stroke-width="3"/>
+  </g>
+</svg>

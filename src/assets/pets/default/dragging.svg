@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <style>
+    .pet { transform-origin: 64px 96px; animation: dangle .7s ease-in-out infinite; }
+    .handle { transform-origin: 64px 30px; animation: handleSwing .7s ease-in-out infinite; }
+    .foot-left { transform-origin: 52px 110px; animation: footA .7s ease-in-out infinite; }
+    .foot-right { transform-origin: 76px 110px; animation: footB .7s ease-in-out infinite; }
+    @keyframes dangle {
+      0%, 100% { transform: rotate(-4deg) translateY(0); }
+      50% { transform: rotate(5deg) translateY(3px); }
+    }
+    @keyframes handleSwing {
+      0%, 100% { transform: rotate(4deg); }
+      50% { transform: rotate(-5deg); }
+    }
+    @keyframes footA {
+      0%, 100% { transform: rotate(10deg); }
+      50% { transform: rotate(-12deg); }
+    }
+    @keyframes footB {
+      0%, 100% { transform: rotate(-12deg); }
+      50% { transform: rotate(10deg); }
+    }
+  </style>
+  <g class="handle">
+    <path d="M50 26 Q64 12 78 26" fill="none" stroke="#243049" stroke-width="5" stroke-linecap="round"/>
+    <rect x="48" y="24" width="32" height="10" rx="5" fill="#7fdad1" stroke="#243049" stroke-width="3"/>
+  </g>
+  <g class="pet">
+    <path d="M34 34 C29 18 45 14 50 34 Z" fill="#ffbf66" stroke="#243049" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M94 34 C99 18 83 14 78 34 Z" fill="#ffbf66" stroke="#243049" stroke-width="4" stroke-linejoin="round"/>
+    <rect x="30" y="30" width="68" height="58" rx="28" fill="#ffc66d" stroke="#243049" stroke-width="4"/>
+    <circle cx="42" cy="43" r="7" fill="#fff7e7"/>
+    <ellipse cx="50" cy="60" rx="5" ry="7" fill="#243049"/>
+    <ellipse cx="78" cy="60" rx="5" ry="7" fill="#243049"/>
+    <path d="M59 73 Q64 69 69 73" fill="none" stroke="#243049" stroke-width="3" stroke-linecap="round"/>
+    <path d="M43 82 Q54 74 60 82" fill="none" stroke="#243049" stroke-width="4" stroke-linecap="round"/>
+    <path d="M85 82 Q74 74 68 82" fill="none" stroke="#243049" stroke-width="4" stroke-linecap="round"/>
+    <rect x="42" y="84" width="44" height="27" rx="15" fill="#43c6d8" stroke="#243049" stroke-width="4"/>
+    <path class="foot-left" d="M52 108 Q47 115 55 117" fill="none" stroke="#243049" stroke-width="4" stroke-linecap="round"/>
+    <path class="foot-right" d="M76 108 Q81 115 73 117" fill="none" stroke="#243049" stroke-width="4" stroke-linecap="round"/>
+  </g>
+</svg>

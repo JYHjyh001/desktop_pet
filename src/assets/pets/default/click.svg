@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <style>
+    .pet { transform-origin: 64px 96px; animation: happy 1.2s ease-in-out 1 both; }
+    .heart { transform-origin: center; opacity: 0; animation: pop 1.2s ease-in-out 1 both; }
+    .heart.two { animation-delay: .24s; }
+    @keyframes happy {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.045) translateY(-2px); }
+    }
+    @keyframes pop {
+      0% { opacity: 0; transform: scale(.4) translateY(3px); }
+      30%, 75% { opacity: 1; transform: scale(1) translateY(0); }
+      100% { opacity: 0; transform: scale(.7) translateY(-6px); }
+    }
+  </style>
+  <g class="pet">
+    <path d="M34 28 C28 12 44 8 50 28 Z" fill="#ffbf66" stroke="#243049" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M94 28 C100 12 84 8 78 28 Z" fill="#ffbf66" stroke="#243049" stroke-width="4" stroke-linejoin="round"/>
+    <rect x="30" y="24" width="68" height="62" rx="29" fill="#ffc66d" stroke="#243049" stroke-width="4"/>
+    <circle cx="42" cy="39" r="7" fill="#fff7e7"/>
+    <path d="M45 54 Q50 48 55 54" fill="none" stroke="#243049" stroke-width="4" stroke-linecap="round"/>
+    <path d="M73 54 Q78 48 83 54" fill="none" stroke="#243049" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="42" cy="68" rx="8" ry="4" fill="#ff7c89" opacity=".5"/>
+    <ellipse cx="86" cy="68" rx="8" ry="4" fill="#ff7c89" opacity=".5"/>
+    <path d="M55 68 Q64 80 73 68" fill="none" stroke="#243049" stroke-width="4" stroke-linecap="round"/>
+    <rect x="42" y="80" width="44" height="30" rx="17" fill="#43c6d8" stroke="#243049" stroke-width="4"/>
+    <circle cx="64" cy="94" r="6" fill="#fff" stroke="#243049" stroke-width="3"/>
+  </g>
+  <path class="heart" d="M91 28 C88 22 78 23 78 31 C78 38 91 45 91 45 C91 45 104 38 104 31 C104 23 94 22 91 28 Z" fill="#ff5d78" stroke="#243049" stroke-width="3"/>
+  <path class="heart two" d="M38 22 C36 18 29 19 29 25 C29 30 38 35 38 35 C38 35 47 30 47 25 C47 19 40 18 38 22 Z" fill="#ff8ba0" stroke="#243049" stroke-width="2.5"/>
+</svg>
