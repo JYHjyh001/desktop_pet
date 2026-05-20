@@ -1,12 +1,10 @@
 use std::process::Command;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::AppHandle;
 
 const GITHUB_OWNER: &str = "JYHjyh001";
 const GITHUB_REPO: &str = "desktop_pet";
-const GITHUB_LATEST_RELEASE_API: &str =
-    "https://api.github.com/repos/JYHjyh001/desktop_pet/releases/latest";
 const GITHUB_RELEASES_URL: &str = "https://github.com/JYHjyh001/desktop_pet/releases/latest";
 
 #[derive(Debug, Clone, Serialize)]
@@ -21,15 +19,14 @@ pub struct UpdateCheckResult {
     pub message: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct GitHubRelease {
     tag_name: String,
     html_url: String,
-    #[serde(default)]
     assets: Vec<GitHubReleaseAsset>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct GitHubReleaseAsset {
     name: String,
     browser_download_url: String,
@@ -64,7 +61,9 @@ pub fn check_for_update(app: &AppHandle) -> UpdateCheckResult {
         let message = if let Some(asset_name) = asset_name.as_deref() {
             format!("发现新版本 v{latest_version}，已找到 EXE 下载文件：{asset_name}。")
         } else {
-            format!("发现新版本 v{latest_version}，但该 Release 中没有 .exe 附件，请打开发布页查看。")
+            format!(
+                "发现新版本 v{latest_version}，但该 Release 中没有 .exe 附件，请打开发布页查看。"
+            )
         };
 
         return UpdateCheckResult {
@@ -75,6 +74,20 @@ pub fn check_for_update(app: &AppHandle) -> UpdateCheckResult {
             asset_name,
             status: "available".to_string(),
             message,
+        };
+    }
+
+    if is_newer_version(&current_version, &latest_version) {
+        return UpdateCheckResult {
+            current_version: current_version.clone(),
+            latest_version: Some(latest_version.clone()),
+            update_url: Some(release.html_url.clone()),
+            release_url: Some(release.html_url),
+            asset_name,
+            status: "latest".to_string(),
+            message: format!(
+                "当前版本 v{current_version} 高于已发布版本 v{latest_version}，无需更新。"
+            ),
         };
     }
 
@@ -100,32 +113,87 @@ pub fn open_update_page(url: Option<String>) -> Result<(), String> {
 }
 
 fn fetch_latest_github_release() -> Result<GitHubRelease, String> {
-    let response = fetch_url_json(GITHUB_LATEST_RELEASE_API)?;
-    serde_json::from_str(&response).map_err(|err| format!("解析 GitHub Release 信息失败：{err}"))
+    let release_url = fetch_latest_release_url(GITHUB_RELEASES_URL)?;
+    let tag_name = release_tag_from_url(&release_url)?;
+    let latest_version = normalize_version(&tag_name);
+    let asset_name = setup_asset_name(&latest_version);
+    let browser_download_url = format!(
+        "https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/{tag_name}/{asset_name}"
+    );
+
+    Ok(GitHubRelease {
+        html_url: format!(
+            "https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tag/{tag_name}"
+        ),
+        tag_name,
+        assets: vec![GitHubReleaseAsset {
+            name: asset_name,
+            browser_download_url,
+        }],
+    })
 }
 
 #[cfg(target_os = "windows")]
-fn fetch_url_json(url: &str) -> Result<String, String> {
+fn fetch_latest_release_url(url: &str) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     const UPDATE_REQUEST_URL_ENV: &str = "PETDRAWER_UPDATE_REQUEST_URL";
     const SCRIPT: &str = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ProgressPreference = 'SilentlyContinue'
-$UpdateUrl = $env:PETDRAWER_UPDATE_REQUEST_URL
-if ([string]::IsNullOrWhiteSpace($UpdateUrl)) {
+$LatestUrl = $env:PETDRAWER_UPDATE_REQUEST_URL
+if ([string]::IsNullOrWhiteSpace($LatestUrl)) {
   throw '更新检查地址为空'
 }
-$headers = @{
-  Accept = 'application/vnd.github+json'
-  'User-Agent' = 'PetDrawer-Updater'
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$request = [System.Net.HttpWebRequest]::Create($LatestUrl)
+$request.Method = 'GET'
+$request.AllowAutoRedirect = $false
+$request.UserAgent = 'PetDrawer-Updater'
+$request.Accept = 'text/html,application/xhtml+xml'
+
+$response = $null
+try {
+  $response = $request.GetResponse()
+} catch [System.Net.WebException] {
+  if ($_.Exception.Response -eq $null) {
+    throw
+  }
+  $response = $_.Exception.Response
 }
-$response = Invoke-RestMethod -Uri $UpdateUrl -Headers $headers -TimeoutSec 15 -ErrorAction Stop
-$response | ConvertTo-Json -Depth 8 -Compress
+
+try {
+  $location = $response.Headers['Location']
+  if ([string]::IsNullOrWhiteSpace($location)) {
+    $location = $response.ResponseUri.AbsoluteUri
+  }
+  if ([string]::IsNullOrWhiteSpace($location)) {
+    throw 'GitHub 最新发布地址为空'
+  }
+
+  if ($location.StartsWith('/')) {
+    $uri = [Uri]$LatestUrl
+    $location = $uri.Scheme + '://' + $uri.Host + $location
+  }
+
+  [Console]::Out.Write($location)
+} finally {
+  if ($response -ne $null) {
+    $response.Close()
+  }
+}
 "#;
 
     let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", SCRIPT])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            SCRIPT,
+        ])
         .env(UPDATE_REQUEST_URL_ENV, url)
         .creation_flags(CREATE_NO_WINDOW)
         .output()
@@ -134,7 +202,7 @@ $response | ConvertTo-Json -Depth 8 -Compress
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if stderr.is_empty() {
-            return Err("GitHub API 请求失败".to_string());
+            return Err("获取 GitHub 最新发布地址失败".to_string());
         }
 
         return Err(stderr);
@@ -142,15 +210,37 @@ $response | ConvertTo-Json -Depth 8 -Compress
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.is_empty() {
-        return Err("GitHub API 返回内容为空".to_string());
+        return Err("GitHub 最新发布地址为空".to_string());
     }
 
     Ok(stdout)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn fetch_url_json(_url: &str) -> Result<String, String> {
+fn fetch_latest_release_url(_url: &str) -> Result<String, String> {
     Err("当前检查更新功能仅支持 Windows 版本".to_string())
+}
+
+fn release_tag_from_url(url: &str) -> Result<String, String> {
+    let tag = url
+        .split("/releases/tag/")
+        .nth(1)
+        .map(|value| {
+            value
+                .split(|character| character == '?' || character == '#')
+                .next()
+                .unwrap_or(value)
+                .trim_matches('/')
+                .to_string()
+        })
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("无法从 GitHub 发布地址中解析版本号：{url}"))?;
+
+    Ok(tag)
+}
+
+fn setup_asset_name(version: &str) -> String {
+    format!("PetDrawer_{version}_x64-setup.exe")
 }
 
 fn select_exe_asset(assets: &[GitHubReleaseAsset]) -> Option<&GitHubReleaseAsset> {

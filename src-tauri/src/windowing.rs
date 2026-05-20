@@ -9,13 +9,14 @@ pub fn restore_pet_position(app: &AppHandle) {
         return;
     };
 
-    let (Some(x), Some(y)) = (config.pet.x, config.pet.y) else {
-        return;
-    };
-
     if let Some(window) = app.get_webview_window("pet") {
-        let position = visible_pet_position(&window, x, y);
-        if position.x != x || position.y != y {
+        let requested = match (config.pet.x, config.pet.y) {
+            (Some(x), Some(y)) => PhysicalPosition { x, y },
+            _ => default_pet_position(&window),
+        };
+        let position = visible_pet_position(&window, requested.x, requested.y);
+
+        if config.pet.x != Some(position.x) || config.pet.y != Some(position.y) {
             config.pet.x = Some(position.x);
             config.pet.y = Some(position.y);
             let _ = app_data::write_config(app, &config);
@@ -94,8 +95,12 @@ pub fn show_pet_menu(app: &AppHandle, cursor_x: i32, cursor_y: i32) -> Result<()
         let max_x = monitor_pos.x + monitor_size.width as i32 - menu_size.width as i32 - margin;
         let max_y = monitor_pos.y + monitor_size.height as i32 - menu_size.height as i32 - margin;
 
-        x = x.max(monitor_pos.x + margin).min(max_x.max(monitor_pos.x + margin));
-        y = y.max(monitor_pos.y + margin).min(max_y.max(monitor_pos.y + margin));
+        x = x
+            .max(monitor_pos.x + margin)
+            .min(max_x.max(monitor_pos.x + margin));
+        y = y
+            .max(monitor_pos.y + margin)
+            .min(max_y.max(monitor_pos.y + margin));
     }
 
     menu.set_position(Position::Physical(PhysicalPosition { x, y }))
@@ -169,15 +174,18 @@ fn position_drawer(app: &AppHandle) -> Result<(), String> {
         let monitor_pos = monitor.position();
         let monitor_size = monitor.size();
         let max_x = monitor_pos.x + monitor_size.width as i32 - drawer_size.width as i32 - margin;
-        let max_y =
-            monitor_pos.y + monitor_size.height as i32 - drawer_size.height as i32 - margin;
+        let max_y = monitor_pos.y + monitor_size.height as i32 - drawer_size.height as i32 - margin;
 
         if x > max_x {
             x = pet_pos.x - drawer_size.width as i32 - margin;
         }
 
-        x = x.max(monitor_pos.x + margin).min(max_x.max(monitor_pos.x + margin));
-        y = y.max(monitor_pos.y + margin).min(max_y.max(monitor_pos.y + margin));
+        x = x
+            .max(monitor_pos.x + margin)
+            .min(max_x.max(monitor_pos.x + margin));
+        y = y
+            .max(monitor_pos.y + margin)
+            .min(max_y.max(monitor_pos.y + margin));
     }
 
     drawer
@@ -240,6 +248,47 @@ fn visible_pet_position(window: &WebviewWindow, x: i32, y: i32) -> PhysicalPosit
     }
 
     PhysicalPosition { x, y }
+}
+
+fn default_pet_position(window: &WebviewWindow) -> PhysicalPosition<i32> {
+    let Ok(window_size) = window.outer_size() else {
+        return PhysicalPosition {
+            x: SCREEN_MARGIN,
+            y: SCREEN_MARGIN,
+        };
+    };
+
+    let width = window_size.width as i32;
+    let height = window_size.height as i32;
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .or_else(|| {
+            window
+                .available_monitors()
+                .ok()
+                .and_then(|monitors| monitors.into_iter().next())
+        });
+
+    if let Some(monitor) = monitor {
+        let monitor_pos = monitor.position();
+        let monitor_size = monitor.size();
+        let left = monitor_pos.x;
+        let top = monitor_pos.y;
+        let right = left + monitor_size.width as i32;
+        let bottom = top + monitor_size.height as i32;
+        let x = right - width - 32;
+        let y = bottom - height - 96;
+
+        return clamp_to_screen(x, y, width, height, left, top, right, bottom);
+    }
+
+    PhysicalPosition {
+        x: SCREEN_MARGIN,
+        y: SCREEN_MARGIN,
+    }
 }
 
 fn clamp_to_screen(

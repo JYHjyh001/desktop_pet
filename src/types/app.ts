@@ -54,6 +54,12 @@ export interface UpdateCheckResult {
   message: string
 }
 
+export interface RuntimeInfo {
+  version: string
+  executablePath: string
+  dataDir: string
+}
+
 export interface PetDrawerConfig {
   pet: {
     x: number | null

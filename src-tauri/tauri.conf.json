@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PetDrawer",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.petdrawer.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -18,8 +18,8 @@
       {
         "label": "pet",
         "title": "PetDrawer",
-        "width": 132,
-        "height": 132,
+        "width": 160,
+        "height": 160,
         "decorations": false,
         "transparent": true,
         "shadow": false,
@@ -30,8 +30,8 @@
       {
         "label": "drawer",
         "title": "PetDrawer Drawer",
-        "width": 760,
-        "height": 540,
+        "width": 900,
+        "height": 640,
         "decorations": false,
         "transparent": true,
         "shadow": false,
@@ -43,8 +43,8 @@
       {
         "label": "pet-menu",
         "title": "PetDrawer Menu",
-        "width": 132,
-        "height": 132,
+        "width": 140,
+        "height": 140,
         "decorations": false,
         "transparent": true,
         "shadow": false,

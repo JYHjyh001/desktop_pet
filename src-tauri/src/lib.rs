@@ -15,6 +15,7 @@ pub fn run() {
             commands::launch_app,
             commands::open_app_dir,
             commands::get_config,
+            commands::get_runtime_info,
             commands::set_quick_search_tags,
             commands::save_drawer_preferences,
             commands::list_pet_skins,

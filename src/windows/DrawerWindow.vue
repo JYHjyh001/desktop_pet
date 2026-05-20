@@ -14,6 +14,7 @@ import type {
   PetApp,
   PetDrawerConfig,
   PetSkinSummary,
+  RuntimeInfo,
   UpdateCheckResult,
 } from '../types/app'
 import { defaultPetAnimations, defaultPetPreview } from '../utils/defaultPet'
@@ -40,6 +41,9 @@ const settingsError = ref('')
 const updateChecking = ref(false)
 const updateInfo = ref<UpdateCheckResult | null>(null)
 const updateError = ref('')
+const runtimeInfo = ref<RuntimeInfo | null>(null)
+const runtimeInfoLoading = ref(false)
+const runtimeInfoError = ref('')
 
 const skinDraft = reactive({
   name: '',
@@ -112,7 +116,8 @@ async function openSettings() {
   settingsModalVisible.value = true
   settingsError.value = ''
   updateError.value = ''
-  await Promise.all([loadDrawerSettings(), checkForUpdate()])
+  runtimeInfoError.value = ''
+  await Promise.all([loadDrawerSettings(), checkForUpdate(), loadRuntimeInfo()])
 }
 
 function syncSettingsDraft(config: PetDrawerConfig) {
@@ -228,6 +233,19 @@ async function openUpdatePage() {
     await invoke('open_update_page', { url: updateInfo.value?.updateUrl ?? null })
   } catch (err) {
     updateError.value = String(err)
+  }
+}
+
+async function loadRuntimeInfo() {
+  runtimeInfoLoading.value = true
+  runtimeInfoError.value = ''
+
+  try {
+    runtimeInfo.value = await invoke<RuntimeInfo>('get_runtime_info')
+  } catch (err) {
+    runtimeInfoError.value = String(err)
+  } finally {
+    runtimeInfoLoading.value = false
   }
 }
 
@@ -905,6 +923,36 @@ async function hideDrawer() {
           </p>
           <p v-if="updateInfo" class="settings-empty">{{ updateInfo.message }}</p>
           <p v-if="updateError" class="form-error">{{ updateError }}</p>
+        </section>
+
+        <section class="settings-section">
+          <h3>运行诊断</h3>
+          <div class="settings-update-panel">
+            <div>
+              <strong>当前启动信息</strong>
+              <small>用于确认现在打开的是哪个程序和哪份本机数据。</small>
+            </div>
+            <div class="settings-update-actions">
+              <button type="button" :disabled="runtimeInfoLoading" @click="loadRuntimeInfo">
+                {{ runtimeInfoLoading ? '读取中...' : '刷新诊断' }}
+              </button>
+            </div>
+          </div>
+          <div v-if="runtimeInfo" class="settings-runtime-list">
+            <div class="settings-runtime-row">
+              <strong>程序版本</strong>
+              <code>v{{ runtimeInfo.version }}</code>
+            </div>
+            <div class="settings-runtime-row">
+              <strong>当前 exe</strong>
+              <code :title="runtimeInfo.executablePath">{{ runtimeInfo.executablePath }}</code>
+            </div>
+            <div class="settings-runtime-row">
+              <strong>数据目录</strong>
+              <code :title="runtimeInfo.dataDir">{{ runtimeInfo.dataDir }}</code>
+            </div>
+          </div>
+          <p v-if="runtimeInfoError" class="form-error">{{ runtimeInfoError }}</p>
         </section>
 
         <p v-if="settingsError" class="form-error">{{ settingsError }}</p>

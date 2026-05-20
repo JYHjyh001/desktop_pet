@@ -1,5 +1,5 @@
-use serde::Deserialize;
-use tauri::AppHandle;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
 
 use crate::{
     app_data::{
@@ -16,6 +16,14 @@ pub struct DrawerPreferencesDraft {
     pub tag_display_mode: String,
     pub pet_always_on_top: bool,
     pub drawer_always_on_top: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeInfo {
+    version: String,
+    executable_path: String,
+    data_dir: String,
 }
 
 #[tauri::command]
@@ -96,6 +104,26 @@ pub fn open_app_dir(app: AppHandle, app_id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn get_config(app: AppHandle) -> Result<PetDrawerConfig, String> {
     app_data::read_config(&app)
+}
+
+#[tauri::command]
+pub fn get_runtime_info(app: AppHandle) -> Result<RuntimeInfo, String> {
+    let executable_path = std::env::current_exe()
+        .map_err(|err| format!("无法获取当前程序路径：{err}"))?
+        .to_string_lossy()
+        .to_string();
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("无法获取应用数据目录：{err}"))?
+        .to_string_lossy()
+        .to_string();
+
+    Ok(RuntimeInfo {
+        version: app.package_info().version.to_string(),
+        executable_path,
+        data_dir,
+    })
 }
 
 #[tauri::command]
