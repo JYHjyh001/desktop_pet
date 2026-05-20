@@ -494,7 +494,8 @@ async function launchApp(app: PetApp) {
   try {
     await store.launchApp(app.id)
   } catch (err) {
-    alert(`启动失败：${String(err)}`)
+    const message = String(err)
+    alert(message.startsWith('启动失败：') ? message : `启动失败：${message}`)
   }
 }
 
