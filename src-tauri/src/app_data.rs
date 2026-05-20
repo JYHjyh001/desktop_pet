@@ -267,7 +267,7 @@ pub fn new_app_id() -> String {
 pub fn list_pet_skins(app: &AppHandle) -> Result<Vec<PetSkinSummary>, String> {
     ensure_data_files(app)?;
 
-    let mut skins = vec![default_pet_skin()];
+    let mut skins = builtin_pet_skins();
 
     for entry in fs::read_dir(skins_dir(app)?).map_err(|err| err.to_string())? {
         let entry = entry.map_err(|err| err.to_string())?;
@@ -291,14 +291,13 @@ pub fn list_pet_skins(app: &AppHandle) -> Result<Vec<PetSkinSummary>, String> {
         }
     }
 
-    skins.sort_by(|a, b| {
-        if a.builtin {
-            std::cmp::Ordering::Less
-        } else if b.builtin {
-            std::cmp::Ordering::Greater
-        } else {
-            a.name.cmp(&b.name)
-        }
+    skins.sort_by(|a, b| match (a.builtin, b.builtin) {
+        (true, true) => builtin_pet_skin_order(&a.id)
+            .cmp(&builtin_pet_skin_order(&b.id))
+            .then_with(|| a.name.cmp(&b.name)),
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => a.name.cmp(&b.name),
     });
 
     Ok(skins)
@@ -326,12 +325,16 @@ pub fn get_current_pet_skin(app: &AppHandle) -> Result<PetSkinSummary, String> {
         return Ok(default_pet_skin());
     }
 
+    if let Some(summary) = builtin_pet_skin(&config.pet.current_skin) {
+        return Ok(summary);
+    }
+
     read_pet_skin(app, &config.pet.current_skin).or_else(|_| Ok(default_pet_skin()))
 }
 
 pub fn set_current_pet_skin(app: &AppHandle, skin_id: &str) -> Result<PetSkinSummary, String> {
-    let summary = if skin_id == "default" {
-        default_pet_skin()
+    let summary = if let Some(summary) = builtin_pet_skin(skin_id) {
+        summary
     } else {
         read_pet_skin(app, skin_id)?
     };
@@ -390,14 +393,74 @@ pub fn import_pet_skin(
     set_current_pet_skin(app, &skin_id)
 }
 
+pub fn delete_pet_skin(app: &AppHandle, skin_id: &str) -> Result<PetSkinSummary, String> {
+    ensure_data_files(app)?;
+
+    let skin_id = safe_skin_id(skin_id)?;
+    if builtin_pet_skin(skin_id).is_some() {
+        return Err("内置宠物形象不能删除".to_string());
+    }
+
+    let skin_dir = skins_dir(app)?.join(skin_id);
+    if !skin_dir.is_dir() {
+        return Err("未找到要删除的宠物形象".to_string());
+    }
+
+    fs::remove_dir_all(&skin_dir).map_err(|err| format!("删除宠物形象失败：{err}"))?;
+
+    let mut config = read_config(app)?;
+    if config.pet.current_skin == skin_id {
+        config.pet.current_skin = "default".to_string();
+        config.pet.custom_image = None;
+        write_config(app, &config)?;
+        return Ok(default_pet_skin());
+    }
+
+    get_current_pet_skin(app)
+}
+
 fn default_pet_skin() -> PetSkinSummary {
     PetSkinSummary {
         id: "default".to_string(),
-        name: "凯特".to_string(),
+        name: "凯蒂".to_string(),
         builtin: true,
         preview: None,
         animations: PetAnimationSet::default(),
     }
+}
+
+fn builtin_pet_skins() -> Vec<PetSkinSummary> {
+    vec![default_pet_skin()]
+}
+
+fn builtin_pet_skin(skin_id: &str) -> Option<PetSkinSummary> {
+    match skin_id {
+        "default" => Some(default_pet_skin()),
+        _ => None,
+    }
+}
+
+fn builtin_pet_skin_order(skin_id: &str) -> u8 {
+    match skin_id {
+        "default" => 0,
+        _ => 1,
+    }
+}
+
+fn safe_skin_id(skin_id: &str) -> Result<&str, String> {
+    let skin_id = skin_id.trim();
+    if skin_id.is_empty() {
+        return Err("宠物形象 ID 不能为空".to_string());
+    }
+
+    let is_safe = skin_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
+    if !is_safe || skin_id == "." || skin_id == ".." {
+        return Err("宠物形象 ID 不合法".to_string());
+    }
+
+    Ok(skin_id)
 }
 
 fn read_pet_skin(app: &AppHandle, skin_id: &str) -> Result<PetSkinSummary, String> {

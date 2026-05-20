@@ -229,6 +229,11 @@ pub fn import_pet_skin(
 }
 
 #[tauri::command]
+pub fn delete_pet_skin(app: AppHandle, skin_id: String) -> Result<PetSkinSummary, String> {
+    app_data::delete_pet_skin(&app, &skin_id)
+}
+
+#[tauri::command]
 pub fn import_pet_image(app: AppHandle, path: String) -> Result<String, String> {
     let relative_path = app_data::import_image(&app, &path, "pets", "pet")?;
     let mut config = app_data::read_config(&app)?;

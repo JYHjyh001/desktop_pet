@@ -1,6 +1,6 @@
 [package]
 name = "pet_drawer"
-version = "0.1.2"
+version = "0.1.3"
 description = "Desktop pet software launcher"
 authors = ["PetDrawer"]
 edition = "2021"

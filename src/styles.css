@@ -1224,6 +1224,29 @@ button:disabled {
   font-size: 11px;
 }
 
+.skin-detail-actions {
+  display: grid;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.skin-detail-actions small {
+  color: #657188;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.skin-delete-button {
+  width: 100%;
+  border: 1px solid #ffc7cf;
+  background: #fff1f3;
+  color: #bf2f45;
+}
+
+.skin-delete-button:hover:not(:disabled) {
+  background: #ffe4e8;
+}
+
 .skin-import-panel {
   display: grid;
   gap: 12px;

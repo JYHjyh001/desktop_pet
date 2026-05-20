@@ -17,7 +17,7 @@ import type {
   RuntimeInfo,
   UpdateCheckResult,
 } from '../types/app'
-import { defaultPetAnimations, defaultPetPreview } from '../utils/defaultPet'
+import { getPetSkinAnimation, getPetSkinPreview } from '../utils/defaultPet'
 import { appNameFromPath, parseTags } from '../utils/format'
 
 const store = useAppStore()
@@ -34,6 +34,7 @@ const selectedPetSkin = ref<PetSkinSummary | null>(null)
 const petSkinLoading = ref(false)
 const petSkinError = ref('')
 const skinImporting = ref(false)
+const skinDeleting = ref(false)
 const quickSearchTags = ref<string[]>([])
 const tagDisplayMode = ref<'compact' | 'detailed'>('compact')
 const settingsSaving = ref(false)
@@ -63,6 +64,33 @@ const animationFields: Array<{
   { key: 'click', label: '点击动画' },
   { key: 'dragging', label: '拖动动画' },
 ]
+
+function petSkinPreviewUrl(skin: PetSkinSummary | null | undefined) {
+  return getPetSkinPreview(skin)
+}
+
+function petSkinAnimationThumbUrl(
+  skin: PetSkinSummary | null | undefined,
+  key: keyof PetAnimationSet,
+) {
+  if (!skin) {
+    return ''
+  }
+
+  if (skin.builtin) {
+    return getPetSkinAnimation(skin, key)
+  }
+
+  return skin.animations[key] || ''
+}
+
+function petSkinAnimationStatus(skin: PetSkinSummary, key: keyof PetAnimationSet) {
+  if (skin.animations[key]) {
+    return '已配置'
+  }
+
+  return skin.builtin ? '内置' : '使用待机动画'
+}
 
 const form = reactive({
   id: '',
@@ -425,6 +453,38 @@ async function importPetSkin() {
   }
 }
 
+async function deleteSelectedPetSkin() {
+  const skin = selectedPetSkin.value
+  if (!skin) {
+    return
+  }
+
+  if (skin.builtin) {
+    petSkinError.value = '内置宠物形象不能删除'
+    return
+  }
+
+  const confirmed = confirm(`确认删除宠物形象「${skin.name}」？此操作会删除本机保存的动画文件。`)
+  if (!confirmed) {
+    return
+  }
+
+  skinDeleting.value = true
+  petSkinError.value = ''
+
+  try {
+    const nextSkin = await invoke<PetSkinSummary>('delete_pet_skin', { skinId: skin.id })
+    currentPetSkin.value = nextSkin
+    selectedPetSkin.value = nextSkin
+    await emitEvent('pet-skin-updated', nextSkin.id)
+    await loadPetSkins()
+  } catch (err) {
+    petSkinError.value = String(err)
+  } finally {
+    skinDeleting.value = false
+  }
+}
+
 async function resetPetImage() {
   try {
     currentPetSkin.value = await invoke<PetSkinSummary>('set_pet_skin', { skinId: 'default' })
@@ -547,7 +607,7 @@ async function hideDrawer() {
       <aside class="drawer-sidebar">
         <section class="pet-preview-panel">
           <div class="pet-preview-frame">
-            <img :src="currentPetSkin?.preview || defaultPetPreview" alt="" />
+            <img :src="petSkinPreviewUrl(currentPetSkin)" alt="" />
           </div>
           <div class="pet-preview-copy">
             <h2>当前宠物形象</h2>
@@ -699,7 +759,7 @@ async function hideDrawer() {
               <span class="skin-thumb">
                 <img
                   v-if="skin.preview || skin.builtin"
-                  :src="skin.preview || defaultPetPreview"
+                  :src="petSkinPreviewUrl(skin)"
                   alt=""
                 />
                 <span v-else>默认</span>
@@ -707,9 +767,9 @@ async function hideDrawer() {
               <span class="skin-card-name">{{ skin.name }}</span>
               <span class="skin-state-tags">
                 <span>待机</span>
-                <span v-if="skin.animations.hover">选中</span>
-                <span v-if="skin.animations.click">点击</span>
-                <span v-if="skin.animations.dragging">拖动</span>
+                <span v-if="skin.builtin || skin.animations.hover">选中</span>
+                <span v-if="skin.builtin || skin.animations.click">点击</span>
+                <span v-if="skin.builtin || skin.animations.dragging">拖动</span>
               </span>
             </button>
           </div>
@@ -718,25 +778,20 @@ async function hideDrawer() {
             <div class="skin-detail-preview">
               <img
                 v-if="selectedPetSkin?.preview || selectedPetSkin?.builtin"
-                :src="selectedPetSkin?.preview || defaultPetPreview"
+                :src="petSkinPreviewUrl(selectedPetSkin)"
                 alt=""
               />
               <span v-else>无预览</span>
             </div>
             <h3>{{ selectedPetSkin?.name || '未选择宠物' }}</h3>
-            <p>{{ selectedPetSkin?.builtin ? '内置默认宠物' : '已存储宠物形象' }}</p>
+            <p>{{ selectedPetSkin?.builtin ? '内置宠物形象' : '已存储宠物形象' }}</p>
 
             <div class="skin-animation-list" v-if="selectedPetSkin">
               <div v-for="field in animationFields" :key="field.key" class="skin-animation-item">
                 <span class="animation-status-thumb">
                   <img
-                    v-if="selectedPetSkin.animations[field.key]"
-                    :src="selectedPetSkin.animations[field.key] || ''"
-                    alt=""
-                  />
-                  <img
-                    v-else-if="selectedPetSkin.builtin"
-                    :src="defaultPetAnimations[field.key] || defaultPetPreview"
+                    v-if="petSkinAnimationThumbUrl(selectedPetSkin, field.key)"
+                    :src="petSkinAnimationThumbUrl(selectedPetSkin, field.key)"
                     alt=""
                   />
                   <span v-else>回退</span>
@@ -745,15 +800,24 @@ async function hideDrawer() {
                   <strong>{{ field.label }}</strong>
                   <small>
                     {{
-                      selectedPetSkin.animations[field.key]
-                        ? '已配置'
-                        : selectedPetSkin.builtin
-                          ? '内置'
-                          : '使用待机动画'
+                      petSkinAnimationStatus(selectedPetSkin, field.key)
                     }}
                   </small>
                 </span>
               </div>
+            </div>
+
+            <div class="skin-detail-actions" v-if="selectedPetSkin">
+              <button
+                v-if="!selectedPetSkin.builtin"
+                type="button"
+                class="skin-delete-button"
+                :disabled="skinDeleting"
+                @click="deleteSelectedPetSkin"
+              >
+                {{ skinDeleting ? '删除中...' : '删除形象' }}
+              </button>
+              <small v-else>内置默认凯蒂会随程序保留，不能从这里删除。</small>
             </div>
           </aside>
         </div>

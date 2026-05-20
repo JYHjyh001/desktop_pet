@@ -4,11 +4,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import Pet from '../components/Pet.vue'
-import type { PetAnimationSet, PetSkinSummary } from '../types/app'
-import { defaultPetAnimations } from '../utils/defaultPet'
+import type { PetSkinSummary } from '../types/app'
+import { resolvePetSkinAnimations } from '../utils/defaultPet'
 
 const petState = ref<'idle' | 'hover' | 'dragging' | 'click'>('idle')
-const petAnimations = ref<PetAnimationSet>({})
+const currentPetSkin = ref<PetSkinSummary | null>(null)
 const pointerDown = ref(false)
 const dragStarted = ref(false)
 const pointerStart = ref({ x: 0, y: 0 })
@@ -39,13 +39,7 @@ onBeforeUnmount(() => {
 })
 
 const currentPetImage = computed<string | undefined>(() => {
-  const custom = petAnimations.value
-  const animations: Record<'idle' | 'hover' | 'dragging' | 'click', string | undefined> = {
-    idle: custom.idle || defaultPetAnimations.idle || undefined,
-    hover: custom.hover || custom.idle || defaultPetAnimations.hover || undefined,
-    click: custom.click || custom.idle || defaultPetAnimations.click || undefined,
-    dragging: custom.dragging || custom.idle || defaultPetAnimations.dragging || undefined,
-  }
+  const animations = resolvePetSkinAnimations(currentPetSkin.value)
 
   if (petState.value === 'dragging') {
     return animations.dragging || animations.idle
@@ -65,10 +59,10 @@ const currentPetImage = computed<string | undefined>(() => {
 async function loadPetSkin() {
   try {
     const skin = await invoke<PetSkinSummary>('get_current_pet_skin')
-    petAnimations.value = skin.animations ?? {}
+    currentPetSkin.value = skin
   } catch (err) {
     console.error(err)
-    petAnimations.value = {}
+    currentPetSkin.value = null
   }
 }
 

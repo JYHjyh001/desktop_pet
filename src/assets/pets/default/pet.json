@@ -1,6 +1,6 @@
 {
   "id": "default",
-  "name": "凯特",
+  "name": "凯蒂",
   "description": "内置默认宠物，包含待机眨眼、选中惊讶、点击微笑爱心、拖动悬挂摆动四种动画。",
   "preview": "preview.svg",
   "animations": {
