@@ -921,6 +921,59 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+.settings-update-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.settings-update-panel strong,
+.settings-update-panel small {
+  display: block;
+}
+
+.settings-update-panel strong {
+  color: #243049;
+  font-size: 13px;
+}
+
+.settings-update-panel small {
+  margin-top: 3px;
+  color: #657188;
+  font-size: 12px;
+}
+
+.settings-update-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.settings-update-actions button {
+  height: 34px;
+  padding: 0 11px;
+  border-radius: 8px;
+  color: #27344c;
+  background: #edf2f8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-update-actions button:hover {
+  background: #dfe9f5;
+}
+
+.settings-update-actions .primary-button {
+  color: #ffffff;
+  background: #2168e8;
+}
+
+.settings-update-actions .primary-button:hover {
+  background: #1757c7;
+}
+
 .skin-modal h2,
 .skin-import-panel h3 {
   margin: 0;

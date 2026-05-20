@@ -1,5 +1,5 @@
 export function appNameFromPath(path: string): string {
-  const normalized = path.replaceAll('\\', '/')
+  const normalized = path.replace(/\\/g, '/')
   const fileName = normalized.split('/').pop() ?? ''
   return fileName.replace(/\.[^.]+$/, '') || '新软件'
 }

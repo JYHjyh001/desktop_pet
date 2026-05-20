@@ -44,6 +44,16 @@ export interface PetSkinSummary {
   animations: PetAnimationSet
 }
 
+export interface UpdateCheckResult {
+  currentVersion: string
+  latestVersion?: string | null
+  updateUrl?: string | null
+  releaseUrl?: string | null
+  assetName?: string | null
+  status: 'available' | 'latest' | 'error'
+  message: string
+}
+
 export interface PetDrawerConfig {
   pet: {
     x: number | null

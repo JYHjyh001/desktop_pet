@@ -38,13 +38,13 @@ onBeforeUnmount(() => {
   }
 })
 
-const currentPetImage = computed(() => {
+const currentPetImage = computed<string | undefined>(() => {
   const custom = petAnimations.value
-  const animations = {
-    idle: custom.idle || defaultPetAnimations.idle,
-    hover: custom.hover || custom.idle || defaultPetAnimations.hover,
-    click: custom.click || custom.idle || defaultPetAnimations.click,
-    dragging: custom.dragging || custom.idle || defaultPetAnimations.dragging,
+  const animations: Record<'idle' | 'hover' | 'dragging' | 'click', string | undefined> = {
+    idle: custom.idle || defaultPetAnimations.idle || undefined,
+    hover: custom.hover || custom.idle || defaultPetAnimations.hover || undefined,
+    click: custom.click || custom.idle || defaultPetAnimations.click || undefined,
+    dragging: custom.dragging || custom.idle || defaultPetAnimations.dragging || undefined,
   }
 
   if (petState.value === 'dragging') {
@@ -59,7 +59,7 @@ const currentPetImage = computed(() => {
     return animations.hover || animations.idle
   }
 
-  return animations.idle
+  return animations.idle || undefined
 })
 
 async function loadPetSkin() {

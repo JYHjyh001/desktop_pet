@@ -14,6 +14,7 @@ import type {
   PetApp,
   PetDrawerConfig,
   PetSkinSummary,
+  UpdateCheckResult,
 } from '../types/app'
 import { defaultPetAnimations, defaultPetPreview } from '../utils/defaultPet'
 import { appNameFromPath, parseTags } from '../utils/format'
@@ -36,6 +37,9 @@ const quickSearchTags = ref<string[]>([])
 const tagDisplayMode = ref<'compact' | 'detailed'>('compact')
 const settingsSaving = ref(false)
 const settingsError = ref('')
+const updateChecking = ref(false)
+const updateInfo = ref<UpdateCheckResult | null>(null)
+const updateError = ref('')
 
 const skinDraft = reactive({
   name: '',
@@ -107,7 +111,8 @@ function applyQuickSearchTag(tag: string) {
 async function openSettings() {
   settingsModalVisible.value = true
   settingsError.value = ''
-  await loadDrawerSettings()
+  updateError.value = ''
+  await Promise.all([loadDrawerSettings(), checkForUpdate()])
 }
 
 function syncSettingsDraft(config: PetDrawerConfig) {
@@ -200,6 +205,29 @@ async function saveSettings() {
     settingsError.value = String(err)
   } finally {
     settingsSaving.value = false
+  }
+}
+
+async function checkForUpdate() {
+  updateChecking.value = true
+  updateError.value = ''
+
+  try {
+    updateInfo.value = await invoke<UpdateCheckResult>('check_for_update')
+  } catch (err) {
+    updateError.value = String(err)
+  } finally {
+    updateChecking.value = false
+  }
+}
+
+async function openUpdatePage() {
+  updateError.value = ''
+
+  try {
+    await invoke('open_update_page', { url: updateInfo.value?.updateUrl ?? null })
+  } catch (err) {
+    updateError.value = String(err)
   }
 }
 
@@ -759,7 +787,7 @@ async function hideDrawer() {
         <header>
           <div>
             <h2>设置</h2>
-            <p>管理抽屉显示、分类、快捷搜索和窗口置顶。</p>
+            <p>管理抽屉显示、分类、快捷搜索、窗口置顶和软件更新。</p>
           </div>
           <button type="button" class="window-close" @click="settingsModalVisible = false">
             ×
@@ -843,6 +871,39 @@ async function hideDrawer() {
             </span>
             <input v-model="settingsDraft.drawerAlwaysOnTop" type="checkbox" />
           </label>
+        </section>
+
+        <section class="settings-section">
+          <h3>软件更新</h3>
+          <div class="settings-update-panel">
+            <div>
+              <strong>当前版本</strong>
+              <small>
+                v{{ updateInfo?.currentVersion || '读取中' }}
+                <template v-if="updateInfo?.latestVersion">
+                  / 最新 v{{ updateInfo.latestVersion }}
+                </template>
+              </small>
+            </div>
+            <div class="settings-update-actions">
+              <button type="button" :disabled="updateChecking" @click="checkForUpdate">
+                {{ updateChecking ? '检查中...' : '检查更新' }}
+              </button>
+              <button
+                v-if="updateInfo?.updateUrl"
+                type="button"
+                class="primary-button"
+                @click="openUpdatePage"
+              >
+                {{ updateInfo.status === 'available' ? '下载新版' : '打开发布页' }}
+              </button>
+            </div>
+          </div>
+          <p v-if="updateInfo?.assetName" class="settings-empty">
+            下载文件：{{ updateInfo.assetName }}
+          </p>
+          <p v-if="updateInfo" class="settings-empty">{{ updateInfo.message }}</p>
+          <p v-if="updateError" class="form-error">{{ updateError }}</p>
         </section>
 
         <p v-if="settingsError" class="form-error">{{ settingsError }}</p>

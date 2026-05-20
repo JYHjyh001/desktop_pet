@@ -2,6 +2,7 @@ mod app_data;
 mod commands;
 mod launcher;
 mod tray;
+mod updater;
 mod windowing;
 
 pub fn run() {
@@ -33,6 +34,8 @@ pub fn run() {
             commands::hide_pet_menu,
             commands::show_pet,
             commands::hide_pet,
+            commands::check_for_update,
+            commands::open_update_page,
             commands::quit_app
         ])
         .setup(|app| {

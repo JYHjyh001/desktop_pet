@@ -5,7 +5,7 @@ use crate::{
     app_data::{
         self, AppDraft, PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinSummary,
     },
-    launcher, windowing,
+    launcher, updater, windowing,
 };
 
 #[derive(Debug, Deserialize)]
@@ -268,6 +268,16 @@ pub fn show_pet(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn hide_pet(app: AppHandle) -> Result<(), String> {
     windowing::hide_pet(&app)
+}
+
+#[tauri::command]
+pub fn check_for_update(app: AppHandle) -> updater::UpdateCheckResult {
+    updater::check_for_update(&app)
+}
+
+#[tauri::command]
+pub fn open_update_page(url: Option<String>) -> Result<(), String> {
+    updater::open_update_page(url)
 }
 
 #[tauri::command]

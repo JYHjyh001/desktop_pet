@@ -1,9 +1,11 @@
-use tauri::{AppHandle, Manager, PhysicalPosition, Position};
+use tauri::{AppHandle, Manager, PhysicalPosition, Position, WebviewWindow};
 
 use crate::app_data;
 
+const SCREEN_MARGIN: i32 = 8;
+
 pub fn restore_pet_position(app: &AppHandle) {
-    let Ok(config) = app_data::read_config(app) else {
+    let Ok(mut config) = app_data::read_config(app) else {
         return;
     };
 
@@ -12,7 +14,14 @@ pub fn restore_pet_position(app: &AppHandle) {
     };
 
     if let Some(window) = app.get_webview_window("pet") {
-        let _ = window.set_position(Position::Physical(PhysicalPosition { x, y }));
+        let position = visible_pet_position(&window, x, y);
+        if position.x != x || position.y != y {
+            config.pet.x = Some(position.x);
+            config.pet.y = Some(position.y);
+            let _ = app_data::write_config(app, &config);
+        }
+
+        let _ = window.set_position(Position::Physical(position));
     }
 }
 
@@ -108,6 +117,7 @@ pub fn show_pet(app: &AppHandle) -> Result<(), String> {
         .get_webview_window("pet")
         .ok_or_else(|| "未找到宠物窗口".to_string())?;
 
+    restore_pet_position(app);
     pet.show().map_err(|err| err.to_string())?;
     pet.set_focus().map_err(|err| err.to_string())
 }
@@ -173,4 +183,82 @@ fn position_drawer(app: &AppHandle) -> Result<(), String> {
     drawer
         .set_position(Position::Physical(PhysicalPosition { x, y }))
         .map_err(|err| err.to_string())
+}
+
+fn visible_pet_position(window: &WebviewWindow, x: i32, y: i32) -> PhysicalPosition<i32> {
+    let Ok(window_size) = window.outer_size() else {
+        return PhysicalPosition { x, y };
+    };
+
+    let width = window_size.width as i32;
+    let height = window_size.height as i32;
+
+    if let Ok(monitors) = window.available_monitors() {
+        for monitor in &monitors {
+            let monitor_pos = monitor.position();
+            let monitor_size = monitor.size();
+            let left = monitor_pos.x;
+            let top = monitor_pos.y;
+            let right = left + monitor_size.width as i32;
+            let bottom = top + monitor_size.height as i32;
+
+            let overlaps = x < right && x + width > left && y < bottom && y + height > top;
+            if overlaps {
+                return clamp_to_screen(x, y, width, height, left, top, right, bottom);
+            }
+        }
+
+        if let Some(monitor) = monitors.first() {
+            let monitor_pos = monitor.position();
+            let monitor_size = monitor.size();
+            return clamp_to_screen(
+                x,
+                y,
+                width,
+                height,
+                monitor_pos.x,
+                monitor_pos.y,
+                monitor_pos.x + monitor_size.width as i32,
+                monitor_pos.y + monitor_size.height as i32,
+            );
+        }
+    }
+
+    if let Ok(Some(monitor)) = window.primary_monitor() {
+        let monitor_pos = monitor.position();
+        let monitor_size = monitor.size();
+        return clamp_to_screen(
+            x,
+            y,
+            width,
+            height,
+            monitor_pos.x,
+            monitor_pos.y,
+            monitor_pos.x + monitor_size.width as i32,
+            monitor_pos.y + monitor_size.height as i32,
+        );
+    }
+
+    PhysicalPosition { x, y }
+}
+
+fn clamp_to_screen(
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) -> PhysicalPosition<i32> {
+    let min_x = left + SCREEN_MARGIN;
+    let min_y = top + SCREEN_MARGIN;
+    let max_x = (right - width - SCREEN_MARGIN).max(min_x);
+    let max_y = (bottom - height - SCREEN_MARGIN).max(min_y);
+
+    PhysicalPosition {
+        x: x.max(min_x).min(max_x),
+        y: y.max(min_y).min(max_y),
+    }
 }
