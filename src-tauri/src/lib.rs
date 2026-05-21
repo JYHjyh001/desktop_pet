@@ -12,6 +12,7 @@ pub fn run() {
             commands::get_apps,
             commands::upsert_app,
             commands::delete_app,
+            commands::set_app_run_as_admin,
             commands::launch_app,
             commands::open_app_dir,
             commands::get_config,

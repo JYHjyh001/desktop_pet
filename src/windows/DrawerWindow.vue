@@ -10,6 +10,7 @@ import SearchBar from '../components/SearchBar.vue'
 import { useAppStore } from '../stores/appStore'
 import type {
   AppDraft,
+  AppItemKind,
   PetAnimationSet,
   PetApp,
   PetDrawerConfig,
@@ -18,7 +19,13 @@ import type {
   UpdateCheckResult,
 } from '../types/app'
 import { getPetSkinAnimation, getPetSkinPreview } from '../utils/defaultPet'
-import { appNameFromPath, parseTags } from '../utils/format'
+import {
+  appNameFromPath,
+  folderNameFromPath,
+  normalizeWebsiteUrl,
+  parseTags,
+  websiteNameFromUrl,
+} from '../utils/format'
 
 const store = useAppStore()
 const modalVisible = ref(false)
@@ -95,12 +102,51 @@ function petSkinAnimationStatus(skin: PetSkinSummary, key: keyof PetAnimationSet
 const form = reactive({
   id: '',
   name: '',
+  itemKind: 'app' as AppItemKind,
   path: '',
   icon: '',
   iconPreview: '',
   category: '其他',
   tags: '',
   favorite: false,
+  runAsAdmin: false,
+})
+
+const itemKindLabels: Record<AppItemKind, string> = {
+  app: '软件',
+  folder: '文件夹',
+  website: '网站',
+}
+const shortcutTypeCategoryLabels = new Set([itemKindLabels.folder, itemKindLabels.website])
+const editableKindOptions = computed(() =>
+  store.itemKindOptions.filter(
+    (item): item is { value: AppItemKind; label: string } => item.value !== 'all',
+  ),
+)
+
+const isEditing = computed(() => Boolean(form.id))
+const modalTitle = computed(() => `${isEditing.value ? '编辑' : '添加'}${itemKindLabels[form.itemKind]}`)
+const targetLabel = computed(() => {
+  if (form.itemKind === 'website') {
+    return '网址'
+  }
+
+  if (form.itemKind === 'folder') {
+    return '文件夹路径'
+  }
+
+  return '软件路径'
+})
+const targetPlaceholder = computed(() => {
+  if (form.itemKind === 'website') {
+    return 'https://example.com'
+  }
+
+  if (form.itemKind === 'folder') {
+    return '选择或填写本机文件夹路径'
+  }
+
+  return '选择或填写本机 exe 路径'
 })
 
 const settingsDraft = reactive({
@@ -112,8 +158,6 @@ const settingsDraft = reactive({
   petAlwaysOnTop: true,
   drawerAlwaysOnTop: true,
 })
-
-const isEditing = computed(() => Boolean(form.id))
 
 onMounted(() => {
   void store.loadApps()
@@ -149,7 +193,9 @@ async function openSettings() {
 }
 
 function syncSettingsDraft(config: PetDrawerConfig) {
-  settingsDraft.categories = [...(config.drawer.categories ?? [])]
+  settingsDraft.categories = (config.drawer.categories ?? []).filter(
+    (item) => !shortcutTypeCategoryLabels.has(item.trim()),
+  )
   settingsDraft.quickSearchTags = [...(config.drawer.quickSearchTags ?? [])]
   settingsDraft.newCategory = ''
   settingsDraft.newQuickTag = ''
@@ -168,6 +214,11 @@ function addSettingsCategory() {
 
   if (!category) {
     settingsError.value = '请输入分类名称'
+    return
+  }
+
+  if (shortcutTypeCategoryLabels.has(category)) {
+    settingsError.value = '文件夹和网站已作为快捷入口类型，不再作为分类使用'
     return
   }
 
@@ -325,31 +376,52 @@ async function startDrawerDrag(event: PointerEvent) {
 function resetForm() {
   form.id = ''
   form.name = ''
+  form.itemKind = 'app'
   form.path = ''
   form.icon = ''
   form.iconPreview = ''
   form.category = '其他'
   form.tags = ''
   form.favorite = false
+  form.runAsAdmin = false
   formError.value = ''
 }
 
-function openAddModal() {
+function openAddModal(itemKind: AppItemKind = 'app') {
   resetForm()
+  form.itemKind = itemKind
+  form.category = '其他'
   modalVisible.value = true
 }
 
 function openEditModal(app: PetApp) {
   form.id = app.id
   form.name = app.name
+  form.itemKind = app.itemKind
   form.path = app.path
   form.icon = app.icon ?? ''
   form.iconPreview = app.iconDataUrl ?? ''
   form.category = app.category
   form.tags = app.tags.join('，')
   form.favorite = app.favorite
+  form.runAsAdmin = app.runAsAdmin
   formError.value = ''
   modalVisible.value = true
+}
+
+function setFormItemKind(itemKind: AppItemKind) {
+  if (form.itemKind === itemKind) {
+    return
+  }
+
+  form.itemKind = itemKind
+  form.path = ''
+  form.icon = ''
+  form.iconPreview = ''
+  form.runAsAdmin = false
+  if (!form.category.trim() || Object.values(itemKindLabels).includes(form.category)) {
+    form.category = '其他'
+  }
 }
 
 async function pickExecutable() {
@@ -370,6 +442,36 @@ async function pickExecutable() {
       form.name = appNameFromPath(selected)
     }
     await autoFillAppIcon(selected)
+  }
+}
+
+async function pickFolder() {
+  const selected = await open({
+    multiple: false,
+    directory: true,
+  })
+
+  if (typeof selected === 'string') {
+    form.path = selected
+    if (!form.name.trim()) {
+      form.name = folderNameFromPath(selected)
+    }
+  }
+}
+
+function normalizeEntryCategory(category: string) {
+  const trimmed = category.trim()
+  return !trimmed || shortcutTypeCategoryLabels.has(trimmed) ? '其他' : trimmed
+}
+
+async function pickTarget() {
+  if (form.itemKind === 'folder') {
+    await pickFolder()
+    return
+  }
+
+  if (form.itemKind === 'app') {
+    await pickExecutable()
   }
 }
 
@@ -527,27 +629,55 @@ async function openImageFile() {
 
 async function saveApp() {
   formError.value = ''
+  const targetPath = form.itemKind === 'website' ? normalizeWebsiteUrl(form.path) : form.path.trim()
 
-  if (!form.name.trim()) {
-    formError.value = '请填写软件名称'
+  if (!targetPath) {
+    formError.value =
+      form.itemKind === 'website' ? '请填写网址' : `请选择或填写${targetLabel.value}`
     return
   }
 
-  if (!form.path.trim()) {
-    formError.value = '请选择或填写软件路径'
+  if (form.itemKind === 'website') {
+    try {
+      const parsed = new URL(targetPath)
+      const isIpAddress = /^\d{1,3}(\.\d{1,3}){3}$/.test(parsed.hostname)
+      const hasValidHost =
+        parsed.hostname === 'localhost' || parsed.hostname.includes('.') || isIpAddress
+      if (!['http:', 'https:'].includes(parsed.protocol) || !hasValidHost) {
+        throw new Error('invalid url')
+      }
+    } catch {
+      formError.value = '请输入有效的网址'
+      return
+    }
+  }
+
+  const defaultName =
+    form.itemKind === 'website'
+      ? websiteNameFromUrl(targetPath)
+      : form.itemKind === 'folder'
+        ? folderNameFromPath(targetPath)
+        : appNameFromPath(targetPath)
+  const itemName = form.name.trim() || defaultName
+
+  if (!itemName.trim()) {
+    formError.value = `请填写${itemKindLabels[form.itemKind]}名称`
     return
   }
 
+  const entryCategory = normalizeEntryCategory(form.category)
   saving.value = true
 
   const draft: AppDraft = {
     id: form.id || undefined,
-    name: form.name.trim(),
-    path: form.path.trim(),
-    icon: form.icon || undefined,
-    category: form.category.trim() || '其他',
+    name: itemName,
+    itemKind: form.itemKind,
+    path: targetPath,
+    icon: form.itemKind === 'app' ? form.icon || undefined : undefined,
+    category: entryCategory,
     tags: parseTags(form.tags),
     favorite: form.favorite,
+    runAsAdmin: form.itemKind === 'app' && form.runAsAdmin,
   }
 
   try {
@@ -573,7 +703,15 @@ async function launchApp(app: PetApp) {
     await store.launchApp(app.id)
   } catch (err) {
     const message = String(err)
-    alert(message.startsWith('启动失败：') ? message : `启动失败：${message}`)
+    alert(message.startsWith('启动失败：') || message.startsWith('打开') ? message : `打开失败：${message}`)
+  }
+}
+
+async function toggleAppAdminLaunch(app: PetApp, runAsAdmin: boolean) {
+  try {
+    await store.setAppRunAsAdmin(app.id, runAsAdmin)
+  } catch (err) {
+    alert(`保存管理员启动设置失败：${String(err)}`)
   }
 }
 
@@ -595,7 +733,7 @@ async function hideDrawer() {
     <header class="drawer-header" @pointerdown="startDrawerDrag">
       <div class="drawer-titlebar">
         <h1>PetDrawer</h1>
-        <p>桌面宠物软件抽屉</p>
+        <p>桌面宠物快捷入口抽屉</p>
       </div>
       <div class="header-actions">
         <button class="secondary-button" type="button" @click="openSettings">设置</button>
@@ -633,18 +771,22 @@ async function hideDrawer() {
       <section class="drawer-main">
         <SearchBar
           v-model="store.keyword"
+          v-model:active-kind="store.itemKindFilter"
+          :kind-options="store.itemKindOptions"
           :quick-tags="quickSearchTags"
           @quick-tag="applyQuickSearchTag"
           @add="openAddModal"
         />
 
         <div class="app-panel">
-          <div class="panel-status" v-if="store.loading">正在读取软件列表...</div>
+          <div class="panel-status" v-if="store.loading">正在读取快捷入口列表...</div>
           <div class="panel-status error" v-else-if="store.error">{{ store.error }}</div>
           <div class="empty-state" v-else-if="store.filteredApps.length === 0">
-            <h2>还没有匹配的软件</h2>
-            <p>添加一个本地 exe 文件后，它会保存在本机 JSON 数据中。</p>
-            <button class="primary-button" type="button" @click="openAddModal">添加软件</button>
+            <h2>还没有匹配的快捷入口</h2>
+            <p>可以添加本地软件、常用文件夹或网站，数据会保存在本机 JSON 中。</p>
+            <div class="empty-actions">
+              <button class="primary-button" type="button" @click="openAddModal()">添加</button>
+            </div>
           </div>
           <div class="app-grid" :class="{ compact: tagDisplayMode === 'compact' }" v-else>
             <AppCard
@@ -656,6 +798,7 @@ async function hideDrawer() {
               @edit="openEditModal"
               @remove="removeApp"
               @open-dir="openAppDirectory"
+              @toggle-admin="toggleAppAdminLaunch"
             />
           </div>
         </div>
@@ -665,24 +808,38 @@ async function hideDrawer() {
     <div v-if="modalVisible" class="modal-backdrop" @click.self="modalVisible = false">
       <form class="app-modal" @submit.prevent="saveApp">
         <header>
-          <h2>{{ isEditing ? '编辑软件' : '添加软件' }}</h2>
+          <h2>{{ modalTitle }}</h2>
           <button type="button" class="window-close" @click="modalVisible = false">×</button>
         </header>
 
+        <div class="kind-editor" aria-label="入口类型">
+          <button
+            v-for="option in editableKindOptions"
+            :key="option.value"
+            type="button"
+            :class="{ active: form.itemKind === option.value }"
+            @click="setFormItemKind(option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+
         <label>
-          软件名称
+          {{ itemKindLabels[form.itemKind] }}名称
           <input v-model="form.name" autocomplete="off" />
         </label>
 
         <label>
-          软件路径
+          {{ targetLabel }}
           <div class="path-row">
-            <input v-model="form.path" autocomplete="off" />
-            <button type="button" @click="pickExecutable">选择</button>
+            <input v-model="form.path" :placeholder="targetPlaceholder" autocomplete="off" />
+            <button v-if="form.itemKind !== 'website'" type="button" @click="pickTarget">
+              选择
+            </button>
           </div>
         </label>
 
-        <label>
+        <label v-if="form.itemKind === 'app'">
           软件图标
           <div class="icon-picker">
             <span class="icon-preview">
@@ -919,7 +1076,7 @@ async function hideDrawer() {
         </section>
 
         <section class="settings-section">
-          <h3>软件显示方式</h3>
+          <h3>入口显示方式</h3>
           <div class="segmented-control">
             <button
               type="button"

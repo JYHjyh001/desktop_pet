@@ -1,18 +1,28 @@
 import { computed, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppDraft, PetApp } from '../types/app'
+import type { AppDraft, AppItemKind, AppItemKindFilter, PetApp } from '../types/app'
 
 const apps = ref<PetApp[]>([])
 const keyword = ref('')
 const category = ref('全部')
+const itemKindFilter = ref<AppItemKindFilter>('all')
 const loading = ref(false)
 const error = ref('')
 
 const defaultCategories = ['全部', '常用', '开发工具', '游戏', '办公', '系统工具', '其他']
+const shortcutTypeCategories = new Set(['文件夹', '网站'])
 const configuredCategories = ref<string[]>(defaultCategories)
+const itemKindOptions: { value: AppItemKindFilter; label: string }[] = [
+  { value: 'all', label: '全部' },
+  { value: 'app', label: '软件' },
+  { value: 'folder', label: '文件夹' },
+  { value: 'website', label: '网站' },
+]
 
 function normalizeCategories(categories: string[]) {
-  const normalized = categories.map((item) => item.trim()).filter(Boolean)
+  const normalized = categories
+    .map((item) => item.trim())
+    .filter((item) => item && !shortcutTypeCategories.has(item))
   const output = ['全部', '常用']
 
   for (const category of normalized) {
@@ -28,9 +38,18 @@ function normalizeCategories(categories: string[]) {
   return output
 }
 
+function normalizeCategory(category?: string) {
+  const trimmed = category?.trim() ?? ''
+  return !trimmed || shortcutTypeCategories.has(trimmed) ? '其他' : trimmed
+}
+
 function normalizeApp(app: PetApp): PetApp {
+  const itemKind = normalizeItemKind(app.itemKind)
+
   return {
     ...app,
+    itemKind,
+    category: normalizeCategory(app.category),
     icon: app.icon ?? null,
     iconDataUrl: app.iconDataUrl ?? null,
     launchCount: app.launchCount ?? 0,
@@ -38,7 +57,12 @@ function normalizeApp(app: PetApp): PetApp {
     tags: app.tags ?? [],
     favorite: Boolean(app.favorite),
     autoFavorite: Boolean(app.autoFavorite),
+    runAsAdmin: itemKind === 'app' && Boolean(app.runAsAdmin),
   }
+}
+
+function normalizeItemKind(value?: string): AppItemKind {
+  return value === 'folder' || value === 'website' ? value : 'app'
 }
 
 async function attachIconData(app: PetApp): Promise<PetApp> {
@@ -64,7 +88,9 @@ async function attachIconData(app: PetApp): Promise<PetApp> {
 
 export function useAppStore() {
   const categories = computed(() => {
-    const custom = apps.value.map((app) => app.category).filter(Boolean)
+    const custom = apps.value
+      .map((app) => normalizeCategory(app.category))
+      .filter((item) => item && !shortcutTypeCategories.has(item))
     return Array.from(new Set([...configuredCategories.value, ...custom]))
   })
 
@@ -72,15 +98,16 @@ export function useAppStore() {
     const query = keyword.value.trim().toLowerCase()
 
     return apps.value.filter((app) => {
+      const matchKind = itemKindFilter.value === 'all' || app.itemKind === itemKindFilter.value
       const matchCategory =
         category.value === '全部' ||
         (category.value === '常用' && app.favorite) ||
         app.category === category.value
 
-      const searchText = [app.name, app.category, ...app.tags].join(' ').toLowerCase()
+      const searchText = [app.name, app.path, app.category, ...app.tags].join(' ').toLowerCase()
       const matchKeyword = !query || searchText.includes(query)
 
-      return matchCategory && matchKeyword
+      return matchKind && matchCategory && matchKeyword
     })
   })
 
@@ -110,6 +137,16 @@ export function useAppStore() {
     }
   }
 
+  async function setAppRunAsAdmin(appId: string, runAsAdmin: boolean) {
+    const result = await invoke<PetApp>('set_app_run_as_admin', { appId, runAsAdmin })
+    const app = await attachIconData(result)
+    const index = apps.value.findIndex((item) => item.id === app.id)
+
+    if (index >= 0) {
+      apps.value.splice(index, 1, app)
+    }
+  }
+
   async function removeApp(appId: string) {
     await invoke('delete_app', { appId })
     apps.value = apps.value.filter((app) => app.id !== appId)
@@ -129,7 +166,9 @@ export function useAppStore() {
     configuredCategories.value = nextCategories
     const availableCategories = new Set([
       ...nextCategories,
-      ...apps.value.map((app) => app.category).filter(Boolean),
+      ...apps.value
+        .map((app) => normalizeCategory(app.category))
+        .filter((item) => item && !shortcutTypeCategories.has(item)),
     ])
 
     if (!availableCategories.has(category.value)) {
@@ -141,12 +180,15 @@ export function useAppStore() {
     apps,
     keyword,
     category,
+    itemKindFilter,
+    itemKindOptions,
     categories,
     filteredApps,
     loading,
     error,
     loadApps,
     upsertApp,
+    setAppRunAsAdmin,
     removeApp,
     launchApp,
     openAppDirectory,

@@ -10,7 +10,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <nav class="category-list" aria-label="软件分类">
+  <nav class="category-list" aria-label="快捷入口分类">
     <button
       v-for="item in categories"
       :key="item"

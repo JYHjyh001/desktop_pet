@@ -2,8 +2,15 @@ $ErrorActionPreference = "Stop"
 
 $iconDir = Join-Path $PSScriptRoot "..\src-tauri\icons"
 $iconPath = Join-Path $iconDir "icon.ico"
+$customIconPath = Join-Path $PSScriptRoot "..\..\assets\icons\pet-drawer-icon.ico"
 
 New-Item -ItemType Directory -Force -Path $iconDir | Out-Null
+
+if (Test-Path -LiteralPath $customIconPath) {
+  Copy-Item -LiteralPath $customIconPath -Destination $iconPath -Force
+  Write-Host "Copied $customIconPath to $iconPath"
+  return
+}
 
 $width = 32
 $height = 32

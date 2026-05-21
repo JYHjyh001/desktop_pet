@@ -35,19 +35,23 @@ pub fn get_apps(app: AppHandle) -> Result<Vec<PetApp>, String> {
 pub fn upsert_app(app: AppHandle, draft: AppDraft) -> Result<PetApp, String> {
     let mut apps = app_data::read_apps(&app)?;
     let now = app_data::now_seconds();
+    let item_kind = normalize_item_kind(&draft.item_kind);
+    let run_as_admin = item_kind == "app" && draft.run_as_admin;
 
     if let Some(id) = draft.id.as_deref() {
         let index = apps
             .iter()
             .position(|item| item.id == id)
-            .ok_or_else(|| "未找到要编辑的软件".to_string())?;
+            .ok_or_else(|| "未找到要编辑的快捷入口".to_string())?;
 
         apps[index].name = draft.name;
+        apps[index].item_kind = item_kind;
         apps[index].path = draft.path;
         if let Some(icon) = draft.icon {
             apps[index].icon = Some(icon);
         }
         apps[index].category = draft.category;
+        apps[index].run_as_admin = run_as_admin;
         apps[index].tags = draft.tags;
         apps[index].favorite = draft.favorite;
         apps[index].auto_favorite = false;
@@ -60,9 +64,11 @@ pub fn upsert_app(app: AppHandle, draft: AppDraft) -> Result<PetApp, String> {
     let created = PetApp {
         id: app_data::new_app_id(),
         name: draft.name,
+        item_kind,
         path: draft.path,
         icon: draft.icon,
         category: draft.category,
+        run_as_admin,
         tags: draft.tags,
         favorite: draft.favorite,
         auto_favorite: false,
@@ -78,6 +84,13 @@ pub fn upsert_app(app: AppHandle, draft: AppDraft) -> Result<PetApp, String> {
     Ok(created)
 }
 
+fn normalize_item_kind(value: &str) -> String {
+    match value {
+        "folder" | "website" => value.to_string(),
+        _ => "app".to_string(),
+    }
+}
+
 #[tauri::command]
 pub fn delete_app(app: AppHandle, app_id: String) -> Result<(), String> {
     let mut apps = app_data::read_apps(&app)?;
@@ -85,10 +98,29 @@ pub fn delete_app(app: AppHandle, app_id: String) -> Result<(), String> {
     apps.retain(|item| item.id != app_id);
 
     if apps.len() == before_len {
-        return Err("未找到要删除的软件".to_string());
+        return Err("未找到要删除的快捷入口".to_string());
     }
 
     app_data::write_apps(&app, &apps)
+}
+
+#[tauri::command]
+pub fn set_app_run_as_admin(
+    app: AppHandle,
+    app_id: String,
+    run_as_admin: bool,
+) -> Result<PetApp, String> {
+    let mut apps = app_data::read_apps(&app)?;
+    let index = apps
+        .iter()
+        .position(|item| item.id == app_id)
+        .ok_or_else(|| "未找到要更新的快捷入口".to_string())?;
+
+    apps[index].run_as_admin = apps[index].item_kind == "app" && run_as_admin;
+    let updated = apps[index].clone();
+    app_data::write_apps(&app, &apps)?;
+
+    Ok(updated)
 }
 
 #[tauri::command]

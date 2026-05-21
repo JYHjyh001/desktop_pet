@@ -13,9 +13,13 @@ use tauri::{AppHandle, Manager};
 pub struct PetApp {
     pub id: String,
     pub name: String,
+    #[serde(default = "default_item_kind")]
+    pub item_kind: String,
     pub path: String,
     pub icon: Option<String>,
     pub category: String,
+    #[serde(default)]
+    pub run_as_admin: bool,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -35,9 +39,13 @@ pub struct PetApp {
 pub struct AppDraft {
     pub id: Option<String>,
     pub name: String,
+    #[serde(default = "default_item_kind")]
+    pub item_kind: String,
     pub path: String,
     pub icon: Option<String>,
     pub category: String,
+    #[serde(default)]
+    pub run_as_admin: bool,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -154,6 +162,10 @@ fn default_current_skin() -> String {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_item_kind() -> String {
+    "app".to_string()
 }
 
 fn default_categories() -> Vec<String> {

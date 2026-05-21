@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240">
+  <defs>
+    <linearGradient id="bg" x1="68" y1="20" x2="190" y2="230" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3c6ee6"/>
+      <stop offset="1" stop-color="#2cc6c2"/>
+    </linearGradient>
+    <linearGradient id="globe" x1="73" y1="66" x2="172" y2="178" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f4fbff"/>
+      <stop offset="1" stop-color="#c7edff"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="73" y1="66" x2="166" y2="182" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#94d8ff" stop-opacity="0.82"/>
+      <stop offset="1" stop-color="#4ba9dd" stop-opacity="0.78"/>
+    </linearGradient>
+    <filter id="shadow" x="50" y="45" width="150" height="150" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#0d4a88" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <rect x="20" y="20" width="216" height="216" rx="45" fill="url(#bg)"/>
+  <rect x="62" y="52" width="126" height="152" rx="22" fill="#9de0ff" opacity="0.18"/>
+  <g filter="url(#shadow)">
+    <circle cx="128" cy="128" r="72" fill="url(#glass)"/>
+    <path d="M128 58C153.7 78.5 166.3 101.8 166.3 128C166.3 154.2 153.7 177.5 128 198C102.3 177.5 89.7 154.2 89.7 128C89.7 101.8 102.3 78.5 128 58Z" fill="none" stroke="url(#globe)" stroke-width="8" stroke-linecap="round"/>
+    <path d="M128 61V195" stroke="#e6f7ff" stroke-width="7" stroke-linecap="round"/>
+    <path d="M63 128H193" stroke="#e6f7ff" stroke-width="8" stroke-linecap="round"/>
+    <path d="M75 91H181" stroke="#e6f7ff" stroke-width="7" stroke-linecap="round"/>
+    <path d="M75 165H181" stroke="#e6f7ff" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="128" cy="128" r="70" fill="none" stroke="#f1fbff" stroke-width="7"/>
+  </g>
+  <path d="M161 171L191 204L201 185L222 177L176 157L185 203L194 184L161 171Z" fill="#ffffff"/>
+  <path d="M161 171L191 204L201 185L222 177L176 157L185 203L194 184L161 171Z" fill="none" stroke="#236180" stroke-width="5" stroke-linejoin="round"/>
+</svg>

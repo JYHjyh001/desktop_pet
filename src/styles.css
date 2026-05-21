@@ -305,15 +305,93 @@ button:disabled {
 
 .search-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(0, auto) auto;
-  align-items: center;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  align-items: start;
   gap: 10px;
+}
+
+.search-main {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.kind-filter,
+.add-actions,
+.empty-actions,
+.kind-editor {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kind-filter,
+.kind-editor {
+  padding: 3px;
+  border-radius: 8px;
+  background: #edf3f9;
+}
+
+.kind-filter button,
+.kind-editor button {
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  color: #46536b;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.kind-filter button:hover,
+.kind-filter button.active,
+.kind-editor button:hover,
+.kind-editor button.active {
+  color: #10203d;
+  background: #ffffff;
+}
+
+.add-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.empty-actions {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.add-actions button,
+.empty-actions button {
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #27344c;
+  background: #e5edf6;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.add-actions .primary-button,
+.empty-actions .primary-button {
+  color: #ffffff;
+  background: #2168e8;
+}
+
+.add-actions button:hover,
+.empty-actions button:hover {
+  background: #d7e4f2;
+}
+
+.add-actions .primary-button:hover,
+.empty-actions .primary-button:hover {
+  background: #1757c7;
 }
 
 .search-quick-tags {
   display: flex;
   gap: 6px;
-  max-width: 280px;
+  max-width: 100%;
   min-width: 0;
   overflow-x: auto;
   padding-bottom: 1px;
@@ -493,7 +571,7 @@ button:disabled {
 }
 
 .app-grid.compact {
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
 }
 
 .app-card {
@@ -508,7 +586,7 @@ button:disabled {
 }
 
 .app-card.compact {
-  min-height: 78px;
+  min-height: 104px;
   padding: 10px;
 }
 
@@ -571,6 +649,16 @@ button:disabled {
   height: 54px;
 }
 
+.app-card.kind-folder .app-icon {
+  color: #6a4d07;
+  background: linear-gradient(145deg, #fff0ba, #d9edf8);
+}
+
+.app-card.kind-website .app-icon {
+  color: #143e72;
+  background: linear-gradient(145deg, #dff2ff, #dde8ff);
+}
+
 .app-icon img {
   width: 100%;
   height: 100%;
@@ -624,18 +712,53 @@ button:disabled {
 
 .app-tags.compact {
   min-height: 0;
-  max-height: 34px;
-  flex-wrap: wrap;
-  align-content: center;
-  overflow: auto;
+  max-height: 22px;
+  flex-wrap: nowrap;
+  align-items: center;
+  overflow: hidden;
 }
 
 .app-tags span {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
   padding: 3px 7px;
+  overflow: hidden;
   border-radius: 999px;
   color: #4f5870;
   background: #edf2f7;
   font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-tags.compact span {
+  max-width: 64px;
+  flex: 0 1 auto;
+}
+
+.app-tags .admin-tag {
+  color: #8a5200;
+  background: #fff0c7;
+}
+
+.app-tags .kind-tag {
+  color: #214f70;
+  background: #dff0ff;
+}
+
+.app-tags.compact .kind-tag,
+.app-tags.compact .admin-tag,
+.app-tags.compact .tag-more {
+  max-width: none;
+  flex: 0 0 auto;
+}
+
+.app-tags .tag-more {
+  color: #46536b;
+  background: #e6edf5;
 }
 
 .app-path {
@@ -651,8 +774,37 @@ button:disabled {
 
 .app-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin-top: auto;
+}
+
+.app-admin-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  color: #536176;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+
+.app-admin-toggle input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #2168e8;
+}
+
+.app-card.compact .app-admin-toggle {
+  margin-top: auto;
+}
+
+.app-actions .app-admin-toggle {
+  flex: 1 0 100%;
 }
 
 .app-actions button,

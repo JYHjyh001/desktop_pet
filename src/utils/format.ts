@@ -4,6 +4,33 @@ export function appNameFromPath(path: string): string {
   return fileName.replace(/\.[^.]+$/, '') || '新软件'
 }
 
+export function folderNameFromPath(path: string): string {
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
+  return normalized.split('/').pop() || normalized || '新文件夹'
+}
+
+export function websiteNameFromUrl(url: string): string {
+  try {
+    const parsed = new URL(normalizeWebsiteUrl(url))
+    return parsed.hostname.replace(/^www\./, '') || '新网站'
+  } catch {
+    return '新网站'
+  }
+}
+
+export function normalizeWebsiteUrl(url: string): string {
+  const trimmed = url.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed
+  }
+
+  return `https://${trimmed}`
+}
+
 export function parseTags(value: string): string[] {
   return value
     .split(/[,\s，、]+/)

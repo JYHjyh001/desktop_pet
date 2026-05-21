@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240">
+  <defs>
+    <linearGradient id="bg" x1="47" y1="22" x2="205" y2="224" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#eff7ff"/>
+      <stop offset="1" stop-color="#d8ecff"/>
+    </linearGradient>
+    <linearGradient id="folder" x1="77" y1="69" x2="168" y2="198" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffd966"/>
+      <stop offset="0.53" stop-color="#ffc467"/>
+      <stop offset="1" stop-color="#f3ad4e"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="73" y1="133" x2="171" y2="169" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff8e6"/>
+      <stop offset="1" stop-color="#fff0cd"/>
+    </linearGradient>
+    <filter id="softShadow" x="24" y="60" width="192" height="146" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#c97b20" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+  <rect x="20" y="24" width="216" height="216" rx="42" fill="url(#bg)"/>
+  <g filter="url(#softShadow)">
+    <path d="M55 70C55 62.8 60.8 57 68 57H105C112.2 57 118 62.8 118 70V88H55V70Z" fill="#ffd56b"/>
+    <path d="M35 104C35 93.5 43.5 85 54 85H197C207.5 85 216 93.5 216 104V174C216 187.3 205.3 198 192 198H59C45.7 198 35 187.3 35 174V104Z" fill="url(#folder)"/>
+    <path d="M40 103C42.4 95.6 49.3 91 58.4 91H198.2C203.5 91 208.2 93.8 211 98.1L214.5 104H40Z" fill="#efb743"/>
+    <rect x="49" y="106" width="160" height="18" rx="9" fill="#ffeda8"/>
+    <rect x="64" y="129" width="120" height="42" rx="16" fill="#e3a95d" opacity="0.45"/>
+    <rect x="72" y="133" width="112" height="30" rx="15" fill="url(#paper)"/>
+    <rect x="84" y="142" width="88" height="4" rx="2" fill="#87bdff"/>
+    <rect x="84" y="153" width="72" height="4" rx="2" fill="#9ed0ff"/>
+  </g>
+</svg>

@@ -1,10 +1,15 @@
+export type AppItemKind = 'app' | 'folder' | 'website'
+export type AppItemKindFilter = 'all' | AppItemKind
+
 export interface PetApp {
   id: string
   name: string
+  itemKind: AppItemKind
   path: string
   icon?: string | null
   iconDataUrl?: string | null
   category: string
+  runAsAdmin: boolean
   tags: string[]
   favorite: boolean
   autoFavorite?: boolean
@@ -17,9 +22,11 @@ export interface PetApp {
 export interface AppDraft {
   id?: string
   name: string
+  itemKind: AppItemKind
   path: string
   icon?: string | null
   category: string
+  runAsAdmin: boolean
   tags: string[]
   favorite: boolean
 }
