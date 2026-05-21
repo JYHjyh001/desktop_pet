@@ -1,4 +1,5 @@
 mod app_data;
+mod ai_chat;
 mod commands;
 mod launcher;
 mod tray;
@@ -35,6 +36,9 @@ pub fn run() {
             commands::hide_drawer,
             commands::show_pet_menu,
             commands::hide_pet_menu,
+            commands::show_pet_chat,
+            commands::hide_pet_chat,
+            commands::send_pet_chat_message,
             commands::show_pet,
             commands::hide_pet,
             commands::check_for_update,

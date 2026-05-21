@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import DrawerWindow from './windows/DrawerWindow.vue'
+import PetChatWindow from './windows/PetChatWindow.vue'
 import PetMenuWindow from './windows/PetMenuWindow.vue'
 import PetWindow from './windows/PetWindow.vue'
 
@@ -19,5 +20,6 @@ onMounted(() => {
 <template>
   <PetWindow v-if="windowLabel === 'pet'" />
   <PetMenuWindow v-else-if="windowLabel === 'pet-menu'" />
+  <PetChatWindow v-else-if="windowLabel === 'pet-chat'" />
   <DrawerWindow v-else />
 </template>

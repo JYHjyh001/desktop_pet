@@ -67,6 +67,30 @@ export interface RuntimeInfo {
   dataDir: string
 }
 
+export type AiProvider = 'openai' | 'deepseek' | 'anthropic' | 'gemini' | 'ollama' | 'custom'
+
+export interface AiSettings {
+  enabled: boolean
+  provider: AiProvider | string
+  apiKey: string
+  baseUrl: string
+  model: string
+  systemPrompt: string
+  temperature: number
+  maxTokens: number
+}
+
+export interface PetChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface PetChatReply {
+  message: string
+  provider: string
+  model: string
+}
+
 export interface PetDrawerConfig {
   pet: {
     x: number | null
@@ -87,4 +111,5 @@ export interface PetDrawerConfig {
   shortcut: {
     toggleDrawer: string
   }
+  ai?: AiSettings
 }

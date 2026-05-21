@@ -124,10 +124,48 @@ pub struct ShortcutSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AiSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_ai_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_ai_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+    #[serde(default = "default_ai_system_prompt")]
+    pub system_prompt: String,
+    #[serde(default = "default_ai_temperature")]
+    pub temperature: f32,
+    #[serde(default = "default_ai_max_tokens")]
+    pub max_tokens: u32,
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: default_ai_provider(),
+            api_key: String::new(),
+            base_url: default_ai_base_url(),
+            model: default_ai_model(),
+            system_prompt: default_ai_system_prompt(),
+            temperature: default_ai_temperature(),
+            max_tokens: default_ai_max_tokens(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PetDrawerConfig {
     pub pet: PetSettings,
     pub drawer: DrawerSettings,
     pub shortcut: ShortcutSettings,
+    #[serde(default)]
+    pub ai: AiSettings,
 }
 
 impl Default for PetDrawerConfig {
@@ -152,6 +190,7 @@ impl Default for PetDrawerConfig {
             shortcut: ShortcutSettings {
                 toggle_drawer: "Ctrl+Space".to_string(),
             },
+            ai: AiSettings::default(),
         }
     }
 }
@@ -191,6 +230,30 @@ fn default_quick_search_tags() -> Vec<String> {
 
 fn default_tag_display_mode() -> String {
     "compact".to_string()
+}
+
+fn default_ai_provider() -> String {
+    "openai".to_string()
+}
+
+fn default_ai_base_url() -> String {
+    "https://api.openai.com/v1".to_string()
+}
+
+fn default_ai_model() -> String {
+    "gpt-4o-mini".to_string()
+}
+
+fn default_ai_system_prompt() -> String {
+    "你是一个友好、简洁的桌面宠物助手。".to_string()
+}
+
+fn default_ai_temperature() -> f32 {
+    0.7
+}
+
+fn default_ai_max_tokens() -> u32 {
+    800
 }
 
 pub fn ensure_data_files(app: &AppHandle) -> Result<(), String> {

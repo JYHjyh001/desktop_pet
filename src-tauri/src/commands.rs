@@ -3,8 +3,10 @@ use tauri::{AppHandle, Manager};
 
 use crate::{
     app_data::{
-        self, AppDraft, PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinSummary,
+        self, AiSettings, AppDraft, PetAnimationSet, PetApp, PetDrawerConfig, PetPosition,
+        PetSkinSummary,
     },
+    ai_chat::{self, PetChatMessageDraft, PetChatReply},
     launcher, updater, windowing,
 };
 
@@ -16,6 +18,37 @@ pub struct DrawerPreferencesDraft {
     pub tag_display_mode: String,
     pub pet_always_on_top: bool,
     pub drawer_always_on_top: bool,
+    #[serde(default)]
+    pub ai: AiSettingsDraft,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiSettingsDraft {
+    pub enabled: bool,
+    pub provider: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+    pub system_prompt: String,
+    pub temperature: f32,
+    pub max_tokens: u32,
+}
+
+impl Default for AiSettingsDraft {
+    fn default() -> Self {
+        let settings = AiSettings::default();
+        Self {
+            enabled: settings.enabled,
+            provider: settings.provider,
+            api_key: settings.api_key,
+            base_url: settings.base_url,
+            model: settings.model,
+            system_prompt: settings.system_prompt,
+            temperature: settings.temperature,
+            max_tokens: settings.max_tokens,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -195,6 +228,7 @@ pub fn save_drawer_preferences(
     config.drawer.tag_display_mode = tag_display_mode;
     config.drawer.always_on_top = preferences.drawer_always_on_top;
     config.pet.always_on_top = preferences.pet_always_on_top;
+    config.ai = normalize_ai_settings(preferences.ai);
     app_data::write_config(&app, &config)?;
 
     windowing::set_pet_always_on_top(&app, preferences.pet_always_on_top)?;
@@ -234,6 +268,36 @@ fn ensure_core_categories(categories: Vec<String>) -> Vec<String> {
     }
 
     output
+}
+
+fn normalize_ai_settings(settings: AiSettingsDraft) -> AiSettings {
+    AiSettings {
+        enabled: settings.enabled,
+        provider: normalize_ai_provider(settings.provider),
+        api_key: settings.api_key.trim().to_string(),
+        base_url: normalize_ai_base_url(settings.base_url),
+        model: settings.model.trim().to_string(),
+        system_prompt: settings.system_prompt.trim().to_string(),
+        temperature: settings.temperature.clamp(0.0, 2.0),
+        max_tokens: settings.max_tokens.clamp(64, 32768),
+    }
+}
+
+fn normalize_ai_provider(provider: String) -> String {
+    let provider = provider.trim().to_lowercase();
+    match provider.as_str() {
+        "openai" | "deepseek" | "anthropic" | "gemini" | "ollama" | "custom" => provider,
+        _ => "custom".to_string(),
+    }
+}
+
+fn normalize_ai_base_url(base_url: String) -> String {
+    let trimmed = base_url.trim();
+    if trimmed.ends_with('/') {
+        trimmed.trim_end_matches('/').to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 #[tauri::command]
@@ -323,6 +387,26 @@ pub fn show_pet_menu(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
 #[tauri::command]
 pub fn hide_pet_menu(app: AppHandle) -> Result<(), String> {
     windowing::hide_pet_menu(&app)
+}
+
+#[tauri::command]
+pub fn show_pet_chat(app: AppHandle) -> Result<(), String> {
+    windowing::show_pet_chat(&app)
+}
+
+#[tauri::command]
+pub fn hide_pet_chat(app: AppHandle) -> Result<(), String> {
+    windowing::hide_pet_chat(&app)
+}
+
+#[tauri::command]
+pub async fn send_pet_chat_message(
+    app: AppHandle,
+    messages: Vec<PetChatMessageDraft>,
+) -> Result<PetChatReply, String> {
+    tauri::async_runtime::spawn_blocking(move || ai_chat::send_pet_chat_message(&app, messages))
+        .await
+        .map_err(|err| format!("宠物对话任务失败：{err}"))?
 }
 
 #[tauri::command]

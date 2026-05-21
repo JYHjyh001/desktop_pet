@@ -25,10 +25,16 @@ src-tauri/target/**/debug/
 *.secret
 *.secrets
 *.key
+*.token
+*.credential
+*.credentials
 *.pem
 *.p12
 *.pfx
 *.crt
+secrets/
+private/
+local-config/
 
 # Local planning / prompt files
 prompt.md

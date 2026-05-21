@@ -9,6 +9,7 @@ import CategoryList from '../components/CategoryList.vue'
 import SearchBar from '../components/SearchBar.vue'
 import { useAppStore } from '../stores/appStore'
 import type {
+  AiProvider,
   AppDraft,
   AppItemKind,
   PetAnimationSet,
@@ -44,6 +45,7 @@ const skinImporting = ref(false)
 const skinDeleting = ref(false)
 const quickSearchTags = ref<string[]>([])
 const tagDisplayMode = ref<'compact' | 'detailed'>('compact')
+const displayModeSaving = ref(false)
 const settingsSaving = ref(false)
 const settingsError = ref('')
 const updateChecking = ref(false)
@@ -70,6 +72,69 @@ const animationFields: Array<{
   { key: 'hover', label: '选中动画' },
   { key: 'click', label: '点击动画' },
   { key: 'dragging', label: '拖动动画' },
+]
+
+type SettingsSectionId = 'entries' | 'ai' | 'window' | 'update' | 'diagnostics'
+
+const settingsSections: Array<{ id: SettingsSectionId; label: string; description: string }> = [
+  { id: 'entries', label: '入口管理', description: '分类和快捷搜索' },
+  { id: 'ai', label: 'AI 接口', description: '宠物聊天 API' },
+  { id: 'window', label: '窗口', description: '置顶行为' },
+  { id: 'update', label: '更新', description: '版本检查' },
+  { id: 'diagnostics', label: '诊断', description: '运行路径和数据' },
+]
+
+const activeSettingsSection = ref<SettingsSectionId>('entries')
+
+const aiProviderOptions: Array<{
+  value: AiProvider
+  label: string
+  baseUrl: string
+  model: string
+  help: string
+}> = [
+  {
+    value: 'openai',
+    label: 'OpenAI 兼容',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    help: '适用于 OpenAI 官方接口和大多数兼容 Chat Completions 的服务。',
+  },
+  {
+    value: 'deepseek',
+    label: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com',
+    model: 'deepseek-chat',
+    help: '适用于 DeepSeek 官方 API。',
+  },
+  {
+    value: 'anthropic',
+    label: 'Anthropic',
+    baseUrl: 'https://api.anthropic.com',
+    model: 'claude-3-5-haiku-latest',
+    help: '适用于 Claude API，宠物聊天会按该类型适配请求格式。',
+  },
+  {
+    value: 'gemini',
+    label: 'Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com',
+    model: 'gemini-1.5-flash',
+    help: '适用于 Google Gemini API。',
+  },
+  {
+    value: 'ollama',
+    label: 'Ollama 本地',
+    baseUrl: 'http://127.0.0.1:11434',
+    model: 'llama3.1',
+    help: '适用于本机 Ollama 服务，通常不需要 API Key。',
+  },
+  {
+    value: 'custom',
+    label: '自定义',
+    baseUrl: '',
+    model: '',
+    help: '用于填写其他服务商或自建 OpenAI 兼容服务。',
+  },
 ]
 
 function petSkinPreviewUrl(skin: PetSkinSummary | null | undefined) {
@@ -157,6 +222,14 @@ const settingsDraft = reactive({
   tagDisplayMode: 'compact' as 'compact' | 'detailed',
   petAlwaysOnTop: true,
   drawerAlwaysOnTop: true,
+  aiEnabled: false,
+  aiProvider: 'openai' as AiProvider,
+  aiApiKey: '',
+  aiBaseUrl: 'https://api.openai.com/v1',
+  aiModel: 'gpt-4o-mini',
+  aiSystemPrompt: '你是一个友好、简洁的桌面宠物助手。',
+  aiTemperature: 0.7,
+  aiMaxTokens: 800,
 })
 
 onMounted(() => {
@@ -168,10 +241,7 @@ onMounted(() => {
 async function loadDrawerSettings() {
   try {
     const config = await invoke<PetDrawerConfig>('get_config')
-    quickSearchTags.value = config.drawer.quickSearchTags ?? []
-    tagDisplayMode.value = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
-    store.setConfiguredCategories(config.drawer.categories ?? [])
-    syncSettingsDraft(config)
+    applyDrawerConfig(config)
   } catch (err) {
     console.error(err)
     quickSearchTags.value = []
@@ -189,7 +259,15 @@ async function openSettings() {
   settingsError.value = ''
   updateError.value = ''
   runtimeInfoError.value = ''
+  activeSettingsSection.value = 'entries'
   await Promise.all([loadDrawerSettings(), checkForUpdate(), loadRuntimeInfo()])
+}
+
+function applyDrawerConfig(config: PetDrawerConfig) {
+  quickSearchTags.value = config.drawer.quickSearchTags ?? []
+  tagDisplayMode.value = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
+  store.setConfiguredCategories(config.drawer.categories ?? [])
+  syncSettingsDraft(config)
 }
 
 function syncSettingsDraft(config: PetDrawerConfig) {
@@ -202,10 +280,37 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.tagDisplayMode = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
   settingsDraft.petAlwaysOnTop = config.pet.alwaysOnTop
   settingsDraft.drawerAlwaysOnTop = config.drawer.alwaysOnTop
+  settingsDraft.aiEnabled = Boolean(config.ai?.enabled)
+  settingsDraft.aiProvider = normalizeAiProvider(config.ai?.provider)
+  settingsDraft.aiApiKey = config.ai?.apiKey ?? ''
+  settingsDraft.aiBaseUrl = config.ai?.baseUrl ?? selectedAiProviderPreset().baseUrl
+  settingsDraft.aiModel = config.ai?.model ?? selectedAiProviderPreset().model
+  settingsDraft.aiSystemPrompt =
+    config.ai?.systemPrompt || '你是一个友好、简洁的桌面宠物助手。'
+  settingsDraft.aiTemperature = config.ai?.temperature ?? 0.7
+  settingsDraft.aiMaxTokens = config.ai?.maxTokens ?? 800
 }
 
 function normalizeTagDisplayMode(value?: string | null): 'compact' | 'detailed' {
   return value === 'detailed' ? 'detailed' : 'compact'
+}
+
+function normalizeAiProvider(value?: string | null): AiProvider {
+  const matched = aiProviderOptions.find((option) => option.value === value)
+  return matched?.value ?? 'custom'
+}
+
+function selectedAiProviderPreset() {
+  return (
+    aiProviderOptions.find((option) => option.value === settingsDraft.aiProvider) ??
+    aiProviderOptions[0]
+  )
+}
+
+function applyAiProviderPreset() {
+  const preset = selectedAiProviderPreset()
+  settingsDraft.aiBaseUrl = preset.baseUrl
+  settingsDraft.aiModel = preset.model
 }
 
 function addSettingsCategory() {
@@ -270,25 +375,69 @@ async function saveSettings() {
   settingsError.value = ''
 
   try {
-    const config = await invoke<PetDrawerConfig>('save_drawer_preferences', {
-      preferences: {
-        categories: [...settingsDraft.categories],
-        quickSearchTags: [...settingsDraft.quickSearchTags],
-        tagDisplayMode: settingsDraft.tagDisplayMode,
-        petAlwaysOnTop: settingsDraft.petAlwaysOnTop,
-        drawerAlwaysOnTop: settingsDraft.drawerAlwaysOnTop,
-      },
-    })
-
-    quickSearchTags.value = config.drawer.quickSearchTags ?? []
-    tagDisplayMode.value = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
-    store.setConfiguredCategories(config.drawer.categories ?? [])
-    syncSettingsDraft(config)
+    const config = await saveDrawerPreferences(settingsDraft.tagDisplayMode)
+    applyDrawerConfig(config)
     settingsModalVisible.value = false
   } catch (err) {
     settingsError.value = String(err)
   } finally {
     settingsSaving.value = false
+  }
+}
+
+function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
+  return {
+    categories: [...settingsDraft.categories],
+    quickSearchTags: [...settingsDraft.quickSearchTags],
+    tagDisplayMode: tagMode,
+    petAlwaysOnTop: settingsDraft.petAlwaysOnTop,
+    drawerAlwaysOnTop: settingsDraft.drawerAlwaysOnTop,
+    ai: {
+      enabled: settingsDraft.aiEnabled,
+      provider: settingsDraft.aiProvider,
+      apiKey: settingsDraft.aiApiKey,
+      baseUrl: settingsDraft.aiBaseUrl,
+      model: settingsDraft.aiModel,
+      systemPrompt: settingsDraft.aiSystemPrompt,
+      temperature: safeNumber(settingsDraft.aiTemperature, 0.7),
+      maxTokens: safeInteger(settingsDraft.aiMaxTokens, 800),
+    },
+  }
+}
+
+function safeNumber(value: number, fallback: number) {
+  return Number.isFinite(value) ? value : fallback
+}
+
+function safeInteger(value: number, fallback: number) {
+  return Number.isFinite(value) ? Math.round(value) : fallback
+}
+
+async function saveDrawerPreferences(tagMode: 'compact' | 'detailed') {
+  return invoke<PetDrawerConfig>('save_drawer_preferences', {
+    preferences: buildDrawerPreferences(tagMode),
+  })
+}
+
+async function setTagDisplayMode(mode: 'compact' | 'detailed') {
+  if (tagDisplayMode.value === mode || displayModeSaving.value) {
+    return
+  }
+
+  const previousMode = tagDisplayMode.value
+  tagDisplayMode.value = mode
+  settingsDraft.tagDisplayMode = mode
+  displayModeSaving.value = true
+
+  try {
+    const config = await saveDrawerPreferences(mode)
+    applyDrawerConfig(config)
+  } catch (err) {
+    tagDisplayMode.value = previousMode
+    settingsDraft.tagDisplayMode = previousMode
+    alert(`保存显示方式失败：${String(err)}`)
+  } finally {
+    displayModeSaving.value = false
   }
 }
 
@@ -736,6 +885,26 @@ async function hideDrawer() {
         <p>桌面宠物快捷入口抽屉</p>
       </div>
       <div class="header-actions">
+        <div class="display-mode-switch" aria-label="入口显示方式">
+          <button
+            type="button"
+            :disabled="displayModeSaving"
+            :class="{ active: tagDisplayMode === 'compact' }"
+            title="缩略显示"
+            @click="setTagDisplayMode('compact')"
+          >
+            缩略
+          </button>
+          <button
+            type="button"
+            :disabled="displayModeSaving"
+            :class="{ active: tagDisplayMode === 'detailed' }"
+            title="详细显示"
+            @click="setTagDisplayMode('detailed')"
+          >
+            详细
+          </button>
+        </div>
         <button class="secondary-button" type="button" @click="openSettings">设置</button>
         <button class="window-close" type="button" title="隐藏抽屉" @click="hideDrawer">×</button>
       </div>
@@ -1027,154 +1196,235 @@ async function hideDrawer() {
         <header>
           <div>
             <h2>设置</h2>
-            <p>管理抽屉显示、分类、快捷搜索、窗口置顶和软件更新。</p>
+            <p>管理入口、AI 接口、窗口置顶、软件更新和运行诊断。</p>
           </div>
           <button type="button" class="window-close" @click="settingsModalVisible = false">
             ×
           </button>
         </header>
 
-        <section class="settings-section">
-          <h3>分类选项</h3>
-          <form class="settings-add-row" @submit.prevent="addSettingsCategory">
-            <input v-model="settingsDraft.newCategory" placeholder="输入分类名称" />
-            <button class="primary-button" type="submit">添加</button>
-          </form>
-          <div class="settings-chip-list">
-            <span
-              v-for="category in settingsDraft.categories"
-              :key="category"
-              class="settings-chip"
-              :class="{ locked: isCoreCategory(category) }"
-            >
-              {{ category }}
-              <button
-                v-if="!isCoreCategory(category)"
-                type="button"
-                title="删除分类"
-                @click="removeSettingsCategory(category)"
-              >
-                ×
-              </button>
-            </span>
-          </div>
-        </section>
-
-        <section class="settings-section">
-          <h3>快捷搜索</h3>
-          <form class="settings-add-row" @submit.prevent="addSettingsQuickTag">
-            <input v-model="settingsDraft.newQuickTag" placeholder="输入搜索标签，如 VS Code、AI、办公" />
-            <button class="primary-button" type="submit">添加</button>
-          </form>
-          <div class="settings-chip-list" v-if="settingsDraft.quickSearchTags.length > 0">
-            <span v-for="tag in settingsDraft.quickSearchTags" :key="tag" class="settings-chip">
-              {{ tag }}
-              <button type="button" title="删除标签" @click="removeSettingsQuickTag(tag)">×</button>
-            </span>
-          </div>
-          <p v-else class="settings-empty">还没有快捷搜索标签。</p>
-        </section>
-
-        <section class="settings-section">
-          <h3>入口显示方式</h3>
-          <div class="segmented-control">
+        <div class="settings-body">
+          <nav class="settings-nav" aria-label="设置分类">
             <button
+              v-for="section in settingsSections"
+              :key="section.id"
               type="button"
-              :class="{ active: settingsDraft.tagDisplayMode === 'compact' }"
-              @click="settingsDraft.tagDisplayMode = 'compact'"
+              :class="{ active: activeSettingsSection === section.id }"
+              @click="activeSettingsSection = section.id"
             >
-              缩略显示
+              <strong>{{ section.label }}</strong>
+              <span>{{ section.description }}</span>
             </button>
-            <button
-              type="button"
-              :class="{ active: settingsDraft.tagDisplayMode === 'detailed' }"
-              @click="settingsDraft.tagDisplayMode = 'detailed'"
-            >
-              详细显示
-            </button>
-          </div>
-        </section>
+          </nav>
 
-        <section class="settings-section">
-          <h3>窗口置顶</h3>
-          <label class="settings-toggle-row">
-            <span>
-              <strong>宠物置顶</strong>
-              <small>宠物窗口保持在其他窗口上方</small>
-            </span>
-            <input v-model="settingsDraft.petAlwaysOnTop" type="checkbox" />
-          </label>
-          <label class="settings-toggle-row">
-            <span>
-              <strong>抽屉置顶</strong>
-              <small>抽屉窗口打开后保持在其他窗口上方</small>
-            </span>
-            <input v-model="settingsDraft.drawerAlwaysOnTop" type="checkbox" />
-          </label>
-        </section>
+          <div class="settings-panels">
+            <section v-show="activeSettingsSection === 'entries'" class="settings-section">
+              <h3>分类选项</h3>
+              <form class="settings-add-row" @submit.prevent="addSettingsCategory">
+                <input v-model="settingsDraft.newCategory" placeholder="输入分类名称" />
+                <button class="primary-button" type="submit">添加</button>
+              </form>
+              <div class="settings-chip-list">
+                <span
+                  v-for="category in settingsDraft.categories"
+                  :key="category"
+                  class="settings-chip"
+                  :class="{ locked: isCoreCategory(category) }"
+                >
+                  {{ category }}
+                  <button
+                    v-if="!isCoreCategory(category)"
+                    type="button"
+                    title="删除分类"
+                    @click="removeSettingsCategory(category)"
+                  >
+                    ×
+                  </button>
+                </span>
+              </div>
 
-        <section class="settings-section">
-          <h3>软件更新</h3>
-          <div class="settings-update-panel">
-            <div>
-              <strong>当前版本</strong>
-              <small>
-                v{{ updateInfo?.currentVersion || '读取中' }}
-                <template v-if="updateInfo?.latestVersion">
-                  / 最新 v{{ updateInfo.latestVersion }}
-                </template>
-              </small>
-            </div>
-            <div class="settings-update-actions">
-              <button type="button" :disabled="updateChecking" @click="checkForUpdate">
-                {{ updateChecking ? '检查中...' : '检查更新' }}
-              </button>
-              <button
-                v-if="updateInfo?.updateUrl"
-                type="button"
-                class="primary-button"
-                @click="openUpdatePage"
-              >
-                {{ updateInfo.status === 'available' ? '下载新版' : '打开发布页' }}
-              </button>
-            </div>
-          </div>
-          <p v-if="updateInfo?.assetName" class="settings-empty">
-            下载文件：{{ updateInfo.assetName }}
-          </p>
-          <p v-if="updateInfo" class="settings-empty">{{ updateInfo.message }}</p>
-          <p v-if="updateError" class="form-error">{{ updateError }}</p>
-        </section>
+              <h3>快捷搜索</h3>
+              <form class="settings-add-row" @submit.prevent="addSettingsQuickTag">
+                <input
+                  v-model="settingsDraft.newQuickTag"
+                  placeholder="输入搜索标签，如 VS Code、AI、办公"
+                />
+                <button class="primary-button" type="submit">添加</button>
+              </form>
+              <div class="settings-chip-list" v-if="settingsDraft.quickSearchTags.length > 0">
+                <span v-for="tag in settingsDraft.quickSearchTags" :key="tag" class="settings-chip">
+                  {{ tag }}
+                  <button type="button" title="删除标签" @click="removeSettingsQuickTag(tag)">×</button>
+                </span>
+              </div>
+              <p v-else class="settings-empty">还没有快捷搜索标签。</p>
+            </section>
 
-        <section class="settings-section">
-          <h3>运行诊断</h3>
-          <div class="settings-update-panel">
-            <div>
-              <strong>当前启动信息</strong>
-              <small>用于确认现在打开的是哪个程序和哪份本机数据。</small>
-            </div>
-            <div class="settings-update-actions">
-              <button type="button" :disabled="runtimeInfoLoading" @click="loadRuntimeInfo">
-                {{ runtimeInfoLoading ? '读取中...' : '刷新诊断' }}
-              </button>
-            </div>
+            <section v-show="activeSettingsSection === 'ai'" class="settings-section">
+              <h3>AI 接口</h3>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>启用宠物聊天 API</strong>
+                  <small>配置会保存到本机 config.json，宠物聊天会读取这里的接口信息。</small>
+                </span>
+                <input v-model="settingsDraft.aiEnabled" type="checkbox" />
+              </label>
+
+              <div class="settings-form-grid">
+                <label class="settings-field">
+                  服务商
+                  <select v-model="settingsDraft.aiProvider" @change="applyAiProviderPreset">
+                    <option
+                      v-for="option in aiProviderOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                </label>
+
+                <label class="settings-field">
+                  模型
+                  <input v-model="settingsDraft.aiModel" placeholder="例如 gpt-4o-mini" />
+                </label>
+
+                <label class="settings-field wide">
+                  Base URL
+                  <input
+                    v-model="settingsDraft.aiBaseUrl"
+                    placeholder="https://api.example.com/v1"
+                    autocomplete="off"
+                  />
+                </label>
+
+                <label class="settings-field wide">
+                  API Key
+                  <input
+                    v-model="settingsDraft.aiApiKey"
+                    type="password"
+                    placeholder="留空则只保存服务商和模型"
+                    autocomplete="off"
+                  />
+                </label>
+
+                <label class="settings-field">
+                  温度
+                  <input
+                    v-model.number="settingsDraft.aiTemperature"
+                    type="number"
+                    min="0"
+                    max="2"
+                    step="0.1"
+                  />
+                </label>
+
+                <label class="settings-field">
+                  最大输出 Token
+                  <input
+                    v-model.number="settingsDraft.aiMaxTokens"
+                    type="number"
+                    min="64"
+                    max="32768"
+                    step="64"
+                  />
+                </label>
+
+                <label class="settings-field wide">
+                  宠物系统提示词
+                  <textarea
+                    v-model="settingsDraft.aiSystemPrompt"
+                    rows="4"
+                    placeholder="定义宠物聊天时的性格、语气和边界"
+                  />
+                </label>
+              </div>
+
+              <p class="settings-empty">{{ selectedAiProviderPreset().help }}</p>
+            </section>
+
+            <section v-show="activeSettingsSection === 'window'" class="settings-section">
+              <h3>窗口置顶</h3>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>宠物置顶</strong>
+                  <small>宠物窗口保持在其他窗口上方</small>
+                </span>
+                <input v-model="settingsDraft.petAlwaysOnTop" type="checkbox" />
+              </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>抽屉置顶</strong>
+                  <small>抽屉窗口打开后保持在其他窗口上方</small>
+                </span>
+                <input v-model="settingsDraft.drawerAlwaysOnTop" type="checkbox" />
+              </label>
+            </section>
+
+            <section v-show="activeSettingsSection === 'update'" class="settings-section">
+              <h3>软件更新</h3>
+              <div class="settings-update-panel">
+                <div>
+                  <strong>当前版本</strong>
+                  <small>
+                    v{{ updateInfo?.currentVersion || '读取中' }}
+                    <template v-if="updateInfo?.latestVersion">
+                      / 最新 v{{ updateInfo.latestVersion }}
+                    </template>
+                  </small>
+                </div>
+                <div class="settings-update-actions">
+                  <button type="button" :disabled="updateChecking" @click="checkForUpdate">
+                    {{ updateChecking ? '检查中...' : '检查更新' }}
+                  </button>
+                  <button
+                    v-if="updateInfo?.updateUrl"
+                    type="button"
+                    class="primary-button"
+                    @click="openUpdatePage"
+                  >
+                    {{ updateInfo.status === 'available' ? '下载新版' : '打开发布页' }}
+                  </button>
+                </div>
+              </div>
+              <p v-if="updateInfo?.assetName" class="settings-empty">
+                下载文件：{{ updateInfo.assetName }}
+              </p>
+              <p v-if="updateInfo" class="settings-empty">{{ updateInfo.message }}</p>
+              <p v-if="updateError" class="form-error">{{ updateError }}</p>
+            </section>
+
+            <section v-show="activeSettingsSection === 'diagnostics'" class="settings-section">
+              <h3>运行诊断</h3>
+              <div class="settings-update-panel">
+                <div>
+                  <strong>当前启动信息</strong>
+                  <small>用于确认现在打开的是哪个程序和哪份本机数据。</small>
+                </div>
+                <div class="settings-update-actions">
+                  <button type="button" :disabled="runtimeInfoLoading" @click="loadRuntimeInfo">
+                    {{ runtimeInfoLoading ? '读取中...' : '刷新诊断' }}
+                  </button>
+                </div>
+              </div>
+              <div v-if="runtimeInfo" class="settings-runtime-list">
+                <div class="settings-runtime-row">
+                  <strong>程序版本</strong>
+                  <code>v{{ runtimeInfo.version }}</code>
+                </div>
+                <div class="settings-runtime-row">
+                  <strong>当前 exe</strong>
+                  <code :title="runtimeInfo.executablePath">{{ runtimeInfo.executablePath }}</code>
+                </div>
+                <div class="settings-runtime-row">
+                  <strong>数据目录</strong>
+                  <code :title="runtimeInfo.dataDir">{{ runtimeInfo.dataDir }}</code>
+                </div>
+              </div>
+              <p v-if="runtimeInfoError" class="form-error">{{ runtimeInfoError }}</p>
+            </section>
           </div>
-          <div v-if="runtimeInfo" class="settings-runtime-list">
-            <div class="settings-runtime-row">
-              <strong>程序版本</strong>
-              <code>v{{ runtimeInfo.version }}</code>
-            </div>
-            <div class="settings-runtime-row">
-              <strong>当前 exe</strong>
-              <code :title="runtimeInfo.executablePath">{{ runtimeInfo.executablePath }}</code>
-            </div>
-            <div class="settings-runtime-row">
-              <strong>数据目录</strong>
-              <code :title="runtimeInfo.dataDir">{{ runtimeInfo.dataDir }}</code>
-            </div>
-          </div>
-          <p v-if="runtimeInfoError" class="form-error">{{ runtimeInfoError }}</p>
-        </section>
+        </div>
 
         <p v-if="settingsError" class="form-error">{{ settingsError }}</p>
 

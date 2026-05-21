@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, PhysicalPosition, Position, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Position, WebviewWindow};
 
 use crate::app_data;
 
@@ -117,6 +117,26 @@ pub fn hide_pet_menu(app: &AppHandle) -> Result<(), String> {
     menu.hide().map_err(|err| err.to_string())
 }
 
+pub fn show_pet_chat(app: &AppHandle) -> Result<(), String> {
+    let chat = app
+        .get_webview_window("pet-chat")
+        .ok_or_else(|| "未找到宠物对话窗口".to_string())?;
+
+    position_pet_chat(app)?;
+    chat.show().map_err(|err| err.to_string())?;
+    chat.set_focus().map_err(|err| err.to_string())?;
+    app.emit("pet-chat-opened", ())
+        .map_err(|err| err.to_string())
+}
+
+pub fn hide_pet_chat(app: &AppHandle) -> Result<(), String> {
+    let chat = app
+        .get_webview_window("pet-chat")
+        .ok_or_else(|| "未找到宠物对话窗口".to_string())?;
+
+    chat.hide().map_err(|err| err.to_string())
+}
+
 pub fn show_pet(app: &AppHandle) -> Result<(), String> {
     let pet = app
         .get_webview_window("pet")
@@ -190,6 +210,44 @@ fn position_drawer(app: &AppHandle) -> Result<(), String> {
 
     drawer
         .set_position(Position::Physical(PhysicalPosition { x, y }))
+        .map_err(|err| err.to_string())
+}
+
+fn position_pet_chat(app: &AppHandle) -> Result<(), String> {
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or_else(|| "未找到宠物窗口".to_string())?;
+    let chat = app
+        .get_webview_window("pet-chat")
+        .ok_or_else(|| "未找到宠物对话窗口".to_string())?;
+
+    let pet_pos = pet.outer_position().map_err(|err| err.to_string())?;
+    let pet_size = pet.outer_size().map_err(|err| err.to_string())?;
+    let chat_size = chat.outer_size().map_err(|err| err.to_string())?;
+    let margin = 12;
+
+    let mut x = pet_pos.x + pet_size.width as i32 + margin;
+    let mut y = pet_pos.y - 32;
+
+    if let Ok(Some(monitor)) = pet.current_monitor() {
+        let monitor_pos = monitor.position();
+        let monitor_size = monitor.size();
+        let max_x = monitor_pos.x + monitor_size.width as i32 - chat_size.width as i32 - margin;
+        let max_y = monitor_pos.y + monitor_size.height as i32 - chat_size.height as i32 - margin;
+
+        if x > max_x {
+            x = pet_pos.x - chat_size.width as i32 - margin;
+        }
+
+        x = x
+            .max(monitor_pos.x + margin)
+            .min(max_x.max(monitor_pos.x + margin));
+        y = y
+            .max(monitor_pos.y + margin)
+            .min(max_y.max(monitor_pos.y + margin));
+    }
+
+    chat.set_position(Position::Physical(PhysicalPosition { x, y }))
         .map_err(|err| err.to_string())
 }
 
