@@ -3,15 +3,17 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { emit as emitEvent } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { open } from '@tauri-apps/plugin-dialog'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import AppCard from '../components/AppCard.vue'
 import CategoryList from '../components/CategoryList.vue'
 import SearchBar from '../components/SearchBar.vue'
 import { useAppStore } from '../stores/appStore'
 import type {
   AiProvider,
+  AiConnectionTestResult,
   AppDraft,
   AppItemKind,
+  PetMemory,
   PetAnimationSet,
   PetApp,
   PetDrawerConfig,
@@ -51,6 +53,13 @@ const settingsError = ref('')
 const updateChecking = ref(false)
 const updateInfo = ref<UpdateCheckResult | null>(null)
 const updateError = ref('')
+const aiTesting = ref(false)
+const aiTestMessage = ref('')
+const aiTestError = ref('')
+const petMemories = ref<PetMemory[]>([])
+const petMemoriesLoading = ref(false)
+const petMemoryStatus = ref('')
+const petMemoryError = ref('')
 const runtimeInfo = ref<RuntimeInfo | null>(null)
 const runtimeInfoLoading = ref(false)
 const runtimeInfoError = ref('')
@@ -74,11 +83,20 @@ const animationFields: Array<{
   { key: 'dragging', label: '拖动动画' },
 ]
 
-type SettingsSectionId = 'entries' | 'ai' | 'window' | 'update' | 'diagnostics'
+type SettingsSectionId =
+  | 'entries'
+  | 'system'
+  | 'ai'
+  | 'memory'
+  | 'window'
+  | 'update'
+  | 'diagnostics'
 
 const settingsSections: Array<{ id: SettingsSectionId; label: string; description: string }> = [
   { id: 'entries', label: '入口管理', description: '分类和快捷搜索' },
+  { id: 'system', label: '系统', description: '自启和常用规则' },
   { id: 'ai', label: 'AI 接口', description: '宠物聊天 API' },
+  { id: 'memory', label: '记忆', description: '长期记忆管理' },
   { id: 'window', label: '窗口', description: '置顶行为' },
   { id: 'update', label: '更新', description: '版本检查' },
   { id: 'diagnostics', label: '诊断', description: '运行路径和数据' },
@@ -222,7 +240,10 @@ const settingsDraft = reactive({
   tagDisplayMode: 'compact' as 'compact' | 'detailed',
   petAlwaysOnTop: true,
   drawerAlwaysOnTop: true,
+  startOnBoot: false,
+  autoFavoriteEnabled: true,
   aiEnabled: false,
+  aiMemoryEnabled: true,
   aiProvider: 'openai' as AiProvider,
   aiApiKey: '',
   aiBaseUrl: 'https://api.openai.com/v1',
@@ -258,9 +279,17 @@ async function openSettings() {
   settingsModalVisible.value = true
   settingsError.value = ''
   updateError.value = ''
+  aiTestError.value = ''
+  aiTestMessage.value = ''
+  petMemoryError.value = ''
   runtimeInfoError.value = ''
   activeSettingsSection.value = 'entries'
-  await Promise.all([loadDrawerSettings(), checkForUpdate(), loadRuntimeInfo()])
+  await Promise.all([
+    loadDrawerSettings(),
+    loadPetMemories(),
+    checkForUpdate(),
+    loadRuntimeInfo(),
+  ])
 }
 
 function applyDrawerConfig(config: PetDrawerConfig) {
@@ -280,7 +309,10 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.tagDisplayMode = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
   settingsDraft.petAlwaysOnTop = config.pet.alwaysOnTop
   settingsDraft.drawerAlwaysOnTop = config.drawer.alwaysOnTop
+  settingsDraft.startOnBoot = Boolean(config.system?.startOnBoot)
+  settingsDraft.autoFavoriteEnabled = config.system?.autoFavoriteEnabled ?? true
   settingsDraft.aiEnabled = Boolean(config.ai?.enabled)
+  settingsDraft.aiMemoryEnabled = config.ai?.memoryEnabled ?? true
   settingsDraft.aiProvider = normalizeAiProvider(config.ai?.provider)
   settingsDraft.aiApiKey = config.ai?.apiKey ?? ''
   settingsDraft.aiBaseUrl = config.ai?.baseUrl ?? selectedAiProviderPreset().baseUrl
@@ -392,8 +424,11 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
     tagDisplayMode: tagMode,
     petAlwaysOnTop: settingsDraft.petAlwaysOnTop,
     drawerAlwaysOnTop: settingsDraft.drawerAlwaysOnTop,
+    startOnBoot: settingsDraft.startOnBoot,
+    autoFavoriteEnabled: settingsDraft.autoFavoriteEnabled,
     ai: {
       enabled: settingsDraft.aiEnabled,
+      memoryEnabled: settingsDraft.aiMemoryEnabled,
       provider: settingsDraft.aiProvider,
       apiKey: settingsDraft.aiApiKey,
       baseUrl: settingsDraft.aiBaseUrl,
@@ -417,6 +452,143 @@ async function saveDrawerPreferences(tagMode: 'compact' | 'detailed') {
   return invoke<PetDrawerConfig>('save_drawer_preferences', {
     preferences: buildDrawerPreferences(tagMode),
   })
+}
+
+async function testAiConnection() {
+  aiTesting.value = true
+  aiTestMessage.value = ''
+  aiTestError.value = ''
+
+  try {
+    const result = await invoke<AiConnectionTestResult>('test_ai_connection', {
+      settings: buildDrawerPreferences(settingsDraft.tagDisplayMode).ai,
+    })
+    aiTestMessage.value = result.message
+  } catch (err) {
+    aiTestError.value = String(err)
+  } finally {
+    aiTesting.value = false
+  }
+}
+
+async function loadPetMemories() {
+  petMemoriesLoading.value = true
+  petMemoryStatus.value = ''
+  petMemoryError.value = ''
+
+  try {
+    petMemories.value = await invoke<PetMemory[]>('list_pet_memories')
+  } catch (err) {
+    petMemoryError.value = String(err)
+  } finally {
+    petMemoriesLoading.value = false
+  }
+}
+
+async function deletePetMemory(memory: PetMemory) {
+  if (!confirm('确认删除这条宠物记忆？')) {
+    return
+  }
+
+  try {
+    petMemoryStatus.value = ''
+    petMemoryError.value = ''
+    await invoke('delete_pet_memory', { memoryId: memory.id })
+    await loadPetMemories()
+    petMemoryStatus.value = '已删除选中的长期记忆。'
+  } catch (err) {
+    petMemoryError.value = String(err)
+  }
+}
+
+async function clearPetMemories() {
+  if (
+    !confirm('确认清空所有宠物长期记忆？聊天记录不会显示在这里，但长期记忆会被软删除。')
+  ) {
+    return
+  }
+
+  try {
+    petMemoryStatus.value = ''
+    petMemoryError.value = ''
+    await invoke('clear_pet_memories')
+    await loadPetMemories()
+    petMemoryStatus.value = '已清空长期记忆。'
+  } catch (err) {
+    petMemoryError.value = String(err)
+  }
+}
+
+async function importPetMemory() {
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: '宠物记忆 JSON', extensions: ['json'] }],
+  })
+
+  if (typeof selected !== 'string') {
+    return
+  }
+
+  if (!confirm('导入会替换当前本机宠物记忆和最近聊天记录，确认继续？')) {
+    return
+  }
+
+  petMemoriesLoading.value = true
+  petMemoryStatus.value = ''
+  petMemoryError.value = ''
+
+  try {
+    petMemories.value = await invoke<PetMemory[]>('import_pet_memory', { path: selected })
+    petMemoryStatus.value = '记忆导入完成。'
+  } catch (err) {
+    petMemoryError.value = String(err)
+  } finally {
+    petMemoriesLoading.value = false
+  }
+}
+
+async function exportPetMemory() {
+  const target = await save({
+    defaultPath: 'pet-memory.json',
+    filters: [{ name: '宠物记忆 JSON', extensions: ['json'] }],
+  })
+
+  if (!target) {
+    return
+  }
+
+  petMemoryStatus.value = ''
+  petMemoryError.value = ''
+
+  try {
+    await invoke('export_pet_memory', { path: target })
+    petMemoryStatus.value = '记忆导出完成。导出的 JSON 可能包含私人聊天和长期记忆，请妥善保存。'
+  } catch (err) {
+    petMemoryError.value = String(err)
+  }
+}
+
+async function openPetMemoryDirectory() {
+  petMemoryStatus.value = ''
+  petMemoryError.value = ''
+
+  try {
+    await invoke('open_pet_memory_dir')
+  } catch (err) {
+    petMemoryError.value = String(err)
+  }
+}
+
+function memoryTypeLabel(type: string) {
+  const labels: Record<string, string> = {
+    preference: '偏好',
+    project: '项目',
+    event: '事件',
+    profile: '画像',
+  }
+
+  return labels[type] ?? type
 }
 
 async function setTagDisplayMode(mode: 'compact' | 'detailed') {
@@ -1196,7 +1368,7 @@ async function hideDrawer() {
         <header>
           <div>
             <h2>设置</h2>
-            <p>管理入口、AI 接口、窗口置顶、软件更新和运行诊断。</p>
+            <p>管理入口、系统启动、AI 接口、宠物记忆、软件更新和运行诊断。</p>
           </div>
           <button type="button" class="window-close" @click="settingsModalVisible = false">
             ×
@@ -1260,8 +1432,43 @@ async function hideDrawer() {
               <p v-else class="settings-empty">还没有快捷搜索标签。</p>
             </section>
 
+            <section v-show="activeSettingsSection === 'system'" class="settings-section">
+              <h3>启动和常用</h3>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>开机自启</strong>
+                  <small>登录 Windows 后自动启动 PetDrawer。</small>
+                </span>
+                <input v-model="settingsDraft.startOnBoot" type="checkbox" />
+              </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>自动加入常用</strong>
+                  <small>开启后，最近 7 天内打开 2 次及以上的入口会自动进入“常用”。</small>
+                </span>
+                <input v-model="settingsDraft.autoFavoriteEnabled" type="checkbox" />
+              </label>
+              <p class="settings-empty">
+                关闭自动加入常用后，程序仍会记录打开次数，但不会再根据打开频率自动新增或移出“常用”。
+              </p>
+            </section>
+
             <section v-show="activeSettingsSection === 'ai'" class="settings-section">
               <h3>AI 接口</h3>
+              <div class="settings-update-panel">
+                <div>
+                  <strong>接口连接测试</strong>
+                  <small>使用当前表单里的服务商、Base URL、模型和 API Key 发起一次短请求。</small>
+                </div>
+                <div class="settings-update-actions">
+                  <button type="button" :disabled="aiTesting" @click="testAiConnection">
+                    {{ aiTesting ? '测试中...' : '测试连接' }}
+                  </button>
+                </div>
+              </div>
+              <p v-if="aiTestMessage" class="settings-empty">{{ aiTestMessage }}</p>
+              <p v-if="aiTestError" class="form-error">{{ aiTestError }}</p>
+
               <label class="settings-toggle-row">
                 <span>
                   <strong>启用宠物聊天 API</strong>
@@ -1341,6 +1548,57 @@ async function hideDrawer() {
               </div>
 
               <p class="settings-empty">{{ selectedAiProviderPreset().help }}</p>
+            </section>
+
+            <section v-show="activeSettingsSection === 'memory'" class="settings-section">
+              <h3>宠物记忆</h3>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>启用宠物记忆</strong>
+                  <small>开启后会把最近聊天和提取出的长期记忆保存到本机应用数据目录。</small>
+                </span>
+                <input v-model="settingsDraft.aiMemoryEnabled" type="checkbox" />
+              </label>
+              <div class="settings-update-panel">
+                <div>
+                  <strong>长期记忆列表</strong>
+                  <small>用于查看、导入、导出、打开目录、删除或清空宠物已经记住的长期信息。</small>
+                </div>
+                <div class="settings-update-actions">
+                  <button type="button" :disabled="petMemoriesLoading" @click="loadPetMemories">
+                    {{ petMemoriesLoading ? '读取中...' : '刷新记忆' }}
+                  </button>
+                  <button type="button" :disabled="petMemoriesLoading" @click="importPetMemory">
+                    导入记忆
+                  </button>
+                  <button type="button" @click="exportPetMemory">导出记忆</button>
+                  <button type="button" @click="openPetMemoryDirectory">打开目录</button>
+                  <button
+                    type="button"
+                    :disabled="petMemoriesLoading || petMemories.length === 0"
+                    @click="clearPetMemories"
+                  >
+                    清空记忆
+                  </button>
+                </div>
+              </div>
+              <p v-if="petMemoryStatus" class="settings-empty">{{ petMemoryStatus }}</p>
+              <div v-if="petMemories.length > 0" class="settings-memory-list">
+                <article v-for="memory in petMemories" :key="memory.id" class="settings-memory-row">
+                  <div>
+                    <strong>
+                      {{ memoryTypeLabel(memory.memoryType) }} · 重要度 {{ memory.importance }}
+                    </strong>
+                    <p>{{ memory.content }}</p>
+                    <small v-if="memory.tags.length > 0">标签：{{ memory.tags.join('、') }}</small>
+                  </div>
+                  <button type="button" title="删除记忆" @click="deletePetMemory(memory)">删除</button>
+                </article>
+              </div>
+              <p v-else class="settings-empty">
+                还没有长期记忆。和宠物对话后，重要偏好或项目信息会自动保存到这里。
+              </p>
+              <p v-if="petMemoryError" class="form-error">{{ petMemoryError }}</p>
             </section>
 
             <section v-show="activeSettingsSection === 'window'" class="settings-section">

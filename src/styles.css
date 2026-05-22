@@ -1427,6 +1427,8 @@ button:disabled {
 .settings-update-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
   flex-shrink: 0;
 }
@@ -1487,6 +1489,59 @@ button:disabled {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-memory-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.settings-memory-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f6f9fd;
+}
+
+.settings-memory-row strong,
+.settings-memory-row p,
+.settings-memory-row small {
+  display: block;
+}
+
+.settings-memory-row strong {
+  color: #243049;
+  font-size: 12px;
+}
+
+.settings-memory-row p {
+  margin: 4px 0;
+  color: #46536b;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.settings-memory-row small {
+  color: #657188;
+  font-size: 12px;
+}
+
+.settings-memory-row button {
+  min-width: 56px;
+  height: 30px;
+  border-radius: 7px;
+  background: #edf2f8;
+  color: #46536b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-memory-row button:hover {
+  background: #dfe9f5;
 }
 
 .skin-modal h2,

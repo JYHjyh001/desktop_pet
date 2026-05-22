@@ -2,12 +2,13 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::{
+    ai_chat::{self, AiConnectionTestResult, PetChatMessageDraft, PetChatReply},
+    ai_memory::{self, PetMemory},
     app_data::{
         self, AiSettings, AppDraft, PetAnimationSet, PetApp, PetDrawerConfig, PetPosition,
         PetSkinSummary,
     },
-    ai_chat::{self, PetChatMessageDraft, PetChatReply},
-    launcher, updater, windowing,
+    launcher, startup, updater, windowing,
 };
 
 #[derive(Debug, Deserialize)]
@@ -19,6 +20,10 @@ pub struct DrawerPreferencesDraft {
     pub pet_always_on_top: bool,
     pub drawer_always_on_top: bool,
     #[serde(default)]
+    pub start_on_boot: bool,
+    #[serde(default = "default_true")]
+    pub auto_favorite_enabled: bool,
+    #[serde(default)]
     pub ai: AiSettingsDraft,
 }
 
@@ -26,6 +31,8 @@ pub struct DrawerPreferencesDraft {
 #[serde(rename_all = "camelCase")]
 pub struct AiSettingsDraft {
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_enabled: bool,
     pub provider: String,
     pub api_key: String,
     pub base_url: String,
@@ -40,6 +47,7 @@ impl Default for AiSettingsDraft {
         let settings = AiSettings::default();
         Self {
             enabled: settings.enabled,
+            memory_enabled: settings.memory_enabled,
             provider: settings.provider,
             api_key: settings.api_key,
             base_url: settings.base_url,
@@ -168,7 +176,12 @@ pub fn open_app_dir(app: AppHandle, app_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn get_config(app: AppHandle) -> Result<PetDrawerConfig, String> {
-    app_data::read_config(&app)
+    let mut config = app_data::read_config(&app)?;
+    if let Ok(start_on_boot) = startup::is_start_on_boot_enabled() {
+        config.system.start_on_boot = start_on_boot;
+    }
+
+    Ok(config)
 }
 
 #[tauri::command]
@@ -223,11 +236,19 @@ pub fn save_drawer_preferences(
     };
 
     let mut config = app_data::read_config(&app)?;
+    let current_start_on_boot =
+        startup::is_start_on_boot_enabled().unwrap_or(config.system.start_on_boot);
+    if current_start_on_boot != preferences.start_on_boot {
+        startup::set_start_on_boot(preferences.start_on_boot)?;
+    }
+
     config.drawer.categories = ensure_core_categories(categories);
     config.drawer.quick_search_tags = quick_search_tags;
     config.drawer.tag_display_mode = tag_display_mode;
     config.drawer.always_on_top = preferences.drawer_always_on_top;
     config.pet.always_on_top = preferences.pet_always_on_top;
+    config.system.start_on_boot = preferences.start_on_boot;
+    config.system.auto_favorite_enabled = preferences.auto_favorite_enabled;
     config.ai = normalize_ai_settings(preferences.ai);
     app_data::write_config(&app, &config)?;
 
@@ -246,6 +267,10 @@ fn normalize_unique_list(items: Vec<String>, max_items: usize) -> Vec<String> {
         .filter(|item| seen.insert(item.to_lowercase()))
         .take(max_items)
         .collect()
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn ensure_core_categories(categories: Vec<String>) -> Vec<String> {
@@ -273,6 +298,7 @@ fn ensure_core_categories(categories: Vec<String>) -> Vec<String> {
 fn normalize_ai_settings(settings: AiSettingsDraft) -> AiSettings {
     AiSettings {
         enabled: settings.enabled,
+        memory_enabled: settings.memory_enabled,
         provider: normalize_ai_provider(settings.provider),
         api_key: settings.api_key.trim().to_string(),
         base_url: normalize_ai_base_url(settings.base_url),
@@ -407,6 +433,47 @@ pub async fn send_pet_chat_message(
     tauri::async_runtime::spawn_blocking(move || ai_chat::send_pet_chat_message(&app, messages))
         .await
         .map_err(|err| format!("宠物对话任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn test_ai_connection(
+    settings: AiSettingsDraft,
+) -> Result<AiConnectionTestResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ai_chat::test_ai_connection(normalize_ai_settings(settings))
+    })
+    .await
+    .map_err(|err| format!("AI 连接测试任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub fn list_pet_memories(app: AppHandle) -> Result<Vec<PetMemory>, String> {
+    ai_memory::list_memories(&app)
+}
+
+#[tauri::command]
+pub fn delete_pet_memory(app: AppHandle, memory_id: u64) -> Result<(), String> {
+    ai_memory::delete_memory(&app, memory_id)
+}
+
+#[tauri::command]
+pub fn clear_pet_memories(app: AppHandle) -> Result<(), String> {
+    ai_memory::clear_memories(&app)
+}
+
+#[tauri::command]
+pub fn import_pet_memory(app: AppHandle, path: String) -> Result<Vec<PetMemory>, String> {
+    ai_memory::import_memory_file(&app, &path)
+}
+
+#[tauri::command]
+pub fn export_pet_memory(app: AppHandle, path: String) -> Result<(), String> {
+    ai_memory::export_memory_file(&app, &path)
+}
+
+#[tauri::command]
+pub fn open_pet_memory_dir(app: AppHandle) -> Result<(), String> {
+    ai_memory::open_memory_dir(&app)
 }
 
 #[tauri::command]

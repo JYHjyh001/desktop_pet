@@ -124,9 +124,29 @@ pub struct ShortcutSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SystemSettings {
+    #[serde(default)]
+    pub start_on_boot: bool,
+    #[serde(default = "default_true")]
+    pub auto_favorite_enabled: bool,
+}
+
+impl Default for SystemSettings {
+    fn default() -> Self {
+        Self {
+            start_on_boot: false,
+            auto_favorite_enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AiSettings {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub memory_enabled: bool,
     #[serde(default = "default_ai_provider")]
     pub provider: String,
     #[serde(default)]
@@ -147,6 +167,7 @@ impl Default for AiSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            memory_enabled: true,
             provider: default_ai_provider(),
             api_key: String::new(),
             base_url: default_ai_base_url(),
@@ -164,6 +185,8 @@ pub struct PetDrawerConfig {
     pub pet: PetSettings,
     pub drawer: DrawerSettings,
     pub shortcut: ShortcutSettings,
+    #[serde(default)]
+    pub system: SystemSettings,
     #[serde(default)]
     pub ai: AiSettings,
 }
@@ -190,6 +213,7 @@ impl Default for PetDrawerConfig {
             shortcut: ShortcutSettings {
                 toggle_drawer: "Ctrl+Space".to_string(),
             },
+            system: SystemSettings::default(),
             ai: AiSettings::default(),
         }
     }
@@ -286,7 +310,11 @@ pub fn read_apps(app: &AppHandle) -> Result<Vec<PetApp>, String> {
     let mut apps: Vec<PetApp> =
         serde_json::from_str(&content).map_err(|err| format!("apps.json 格式错误：{err}"))?;
 
-    if refresh_auto_favorites(&mut apps) {
+    let auto_favorite_enabled = read_config(app)
+        .map(|config| config.system.auto_favorite_enabled)
+        .unwrap_or(true);
+
+    if refresh_auto_favorites(&mut apps, auto_favorite_enabled) {
         write_apps(app, &apps)?;
     }
 
@@ -325,11 +353,11 @@ pub fn now_seconds() -> String {
         .to_string()
 }
 
-pub fn record_launch(app: &mut PetApp, launched_at: String) {
+pub fn record_launch(app: &mut PetApp, launched_at: String, auto_favorite_enabled: bool) {
     app.launch_history.push(launched_at);
     prune_launch_history(app, current_seconds());
 
-    if has_frequent_recent_launches(app) {
+    if auto_favorite_enabled && has_frequent_recent_launches(app) {
         app.favorite = true;
         app.auto_favorite = true;
     }
@@ -700,7 +728,7 @@ fn current_seconds() -> u64 {
         .as_secs()
 }
 
-fn refresh_auto_favorites(apps: &mut [PetApp]) -> bool {
+fn refresh_auto_favorites(apps: &mut [PetApp], auto_favorite_enabled: bool) -> bool {
     let now = current_seconds();
     let mut changed = false;
 
@@ -711,7 +739,7 @@ fn refresh_auto_favorites(apps: &mut [PetApp]) -> bool {
 
         prune_launch_history(app, now);
 
-        if app.auto_favorite && app.launch_history.is_empty() {
+        if auto_favorite_enabled && app.auto_favorite && app.launch_history.is_empty() {
             app.favorite = false;
             app.auto_favorite = false;
         }
@@ -766,7 +794,13 @@ try {
 "#;
 
     let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
         .arg(source)
         .arg(target)
         .creation_flags(CREATE_NO_WINDOW)

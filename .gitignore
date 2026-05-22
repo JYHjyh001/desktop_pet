@@ -42,9 +42,17 @@ prompt.md
 # Local app data that may contain private software paths, usage history, or user assets
 /apps.json
 /config.json
+/pet-memory.json
+pet-memory*.json
+memory-export*.json
+/memory.json
+/memories.json
+/chat-history.json
 /PetDrawer/
 /app-data/
 /data/
+/memory/
+/memories/
 /icons/
 /pets/
 /skins/

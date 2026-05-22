@@ -1,7 +1,9 @@
-mod app_data;
 mod ai_chat;
+mod ai_memory;
+mod app_data;
 mod commands;
 mod launcher;
+mod startup;
 mod tray;
 mod updater;
 mod windowing;
@@ -39,6 +41,13 @@ pub fn run() {
             commands::show_pet_chat,
             commands::hide_pet_chat,
             commands::send_pet_chat_message,
+            commands::test_ai_connection,
+            commands::list_pet_memories,
+            commands::delete_pet_memory,
+            commands::clear_pet_memories,
+            commands::import_pet_memory,
+            commands::export_pet_memory,
+            commands::open_pet_memory_dir,
             commands::show_pet,
             commands::hide_pet,
             commands::check_for_update,

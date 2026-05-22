@@ -33,7 +33,8 @@ const aiSummary = computed(() => {
     return '未启用 AI 接口'
   }
 
-  return `${providerLabel(ai.provider)} / ${ai.model || '未设置模型'}`
+  const memoryStatus = ai.memoryEnabled === false ? '记忆关闭' : '记忆开启'
+  return `${providerLabel(ai.provider)} / ${ai.model || '未设置模型'} / ${memoryStatus}`
 })
 
 onMounted(async () => {

@@ -71,6 +71,7 @@ export type AiProvider = 'openai' | 'deepseek' | 'anthropic' | 'gemini' | 'ollam
 
 export interface AiSettings {
   enabled: boolean
+  memoryEnabled?: boolean
   provider: AiProvider | string
   apiKey: string
   baseUrl: string
@@ -78,6 +79,24 @@ export interface AiSettings {
   systemPrompt: string
   temperature: number
   maxTokens: number
+}
+
+export interface AiConnectionTestResult {
+  ok: boolean
+  provider: string
+  model: string
+  message: string
+}
+
+export interface PetMemory {
+  id: number
+  memoryType: 'preference' | 'project' | 'event' | 'profile' | string
+  content: string
+  importance: number
+  tags: string[]
+  deleted?: boolean
+  createdAt: string
+  updatedAt: string
 }
 
 export interface PetChatMessage {
@@ -110,6 +129,10 @@ export interface PetDrawerConfig {
   }
   shortcut: {
     toggleDrawer: string
+  }
+  system?: {
+    startOnBoot: boolean
+    autoFavoriteEnabled: boolean
   }
   ai?: AiSettings
 }

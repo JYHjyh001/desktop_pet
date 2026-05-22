@@ -6,6 +6,9 @@ use crate::app_data::{self, PetApp};
 
 pub fn launch_app(app: &AppHandle, app_id: &str) -> Result<PetApp, String> {
     let mut apps = app_data::read_apps(app)?;
+    let auto_favorite_enabled = app_data::read_config(app)
+        .map(|config| config.system.auto_favorite_enabled)
+        .unwrap_or(true);
     let index = apps
         .iter()
         .position(|item| item.id == app_id)
@@ -27,7 +30,7 @@ pub fn launch_app(app: &AppHandle, app_id: &str) -> Result<PetApp, String> {
     let launched_at = app_data::now_seconds();
     apps[index].launch_count = apps[index].launch_count.saturating_add(1);
     apps[index].last_launch_at = Some(launched_at.clone());
-    app_data::record_launch(&mut apps[index], launched_at);
+    app_data::record_launch(&mut apps[index], launched_at, auto_favorite_enabled);
     let updated = apps[index].clone();
     app_data::write_apps(app, &apps)?;
 
