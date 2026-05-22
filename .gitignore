@@ -44,6 +44,9 @@ prompt.md
 /config.json
 /pet-memory.json
 pet-memory*.json
+/pet-memory.db
+/pet-memory.db-*
+pet-memory*.db
 memory-export*.json
 /memory.json
 /memories.json

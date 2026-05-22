@@ -34,7 +34,7 @@ PetDrawer 是一个基于 Tauri v2 + Vue 3 + TypeScript + Rust 的桌面宠物�
 2. 优先下载安装包文件，文件名通常类似：
 
 ```txt
-PetDrawer_0.2.1_x64-setup.exe
+PetDrawer_0.2.2_x64-setup.exe
 ```
 
 3. 如果发布者提供的是免安装版本，文件名通常类似：
@@ -47,7 +47,7 @@ pet_drawer.exe
 
 ### 安装版本使用步骤
 
-1. 双击 `PetDrawer_0.2.1_x64-setup.exe`。
+1. 双击 `PetDrawer_0.2.2_x64-setup.exe`。
 2. 如果 Windows 弹出安全提示，确认文件来自可信发布者后，选择“更多信息”，再选择“仍要运行”。
 3. 按安装向导完成安装。
 4. 安装完成后，从桌面快捷方式、开始菜单或安装目录启动 PetDrawer。
@@ -97,7 +97,8 @@ PetDrawer 会把快捷入口列表、设置、图标和导入的宠物保存到�
 ```txt
 apps.json      软件、文件夹和网站快捷入口列表
 config.json    窗口位置、当前宠物、分类、快捷搜索、开机自启等设置
-pet-memory.json 宠物最近聊天记录和长期记忆
+pet-memory.db   宠物最近聊天记录和长期记忆，使用 SQLite + FTS5
+pet-memory.json 旧版 JSON 记忆文件，首次升级后会自动迁移到 SQLite
 icons/         自定义软件图标
 pets/          导入的宠物形象
 ```
@@ -231,6 +232,7 @@ src-tauri/
 PetDrawer/
   apps.json
   config.json
+  pet-memory.db
   pet-memory.json
   icons/
   pets/
@@ -311,8 +313,9 @@ src/assets/pets/default/
 3. 右键点击宠物，在弹出的菜单中选择“对话”。
 4. 在宠物聊天窗口中输入消息，按 Enter 或点击“发送”即可对话。
 5. 如果 AI 接口未启用或配置不完整，聊天窗口会提示先打开抽屉设置补全配置。
-6. 如果启用了宠物记忆，对话时会自动保存最近聊天记录，并尝试把值得长期记住的偏好、项目和事件保存到本机 `pet-memory.json`。
-7. 如果需要迁移或备份记忆，可以在抽屉设置的“记忆”页面导出 JSON；导入 JSON 会替换当前本机的宠物记忆和最近聊天记录。
+6. 如果启用了宠物记忆，对话时会自动保存最近聊天记录，并尝试把值得长期记住的偏好、项目和事件保存到本机 `pet-memory.db`。
+7. 如果旧版应用数据目录里存在 `pet-memory.json`，程序首次读取记忆时会自动迁移到 SQLite 数据库。
+8. 如果需要迁移或备份记忆，可以在抽屉设置的“记忆”页面导出 JSON；导入 JSON 会替换当前本机的宠物记忆和最近聊天记录。
 
 ## 宠物记忆系统
 
@@ -320,10 +323,11 @@ src/assets/pets/default/
 2. 在“记忆”中启用宠物记忆。
 3. 用户对宠物说出长期偏好、正在做的项目或明确要求“记住”的内容时，后端会先尝试调用当前模型提取结构化长期记忆。
 4. 如果模型没有返回有效记忆 JSON，程序会使用本地启发式规则兜底识别“记住”“我喜欢”“项目”等信息。
-5. 后续对话会按关键词检索相关长期记忆，并把最近对话和相关记忆拼接进系统提示词。
-6. “打开目录”会直接打开系统应用数据目录，方便查看当前 `pet-memory.json` 所在位置。
-7. “导出记忆”会生成完整记忆 JSON，可能包含私人聊天、偏好、项目和事件信息，只适合用户自己备份或迁移。
-8. 长期记忆和聊天记录只保存到系统应用数据目录的 `pet-memory.json`，`.gitignore` 已忽略 `pet-memory*.json`、`memory-export*.json`、`memory.json`、`memories.json`、`chat-history.json`、`memory/` 和 `memories/`，避免本地记忆或导出备份被误传到仓库。
+5. 后续对话会先通过 SQLite FTS5 全文检索召回相关长期记忆，如果 FTS 查询没有结果，会回退到本地关键词打分。
+6. 检索结果会按 FTS 排名、重要度和更新时间排序，并把相关长期记忆和最近对话拼接进系统提示词。
+7. “打开目录”会直接打开系统应用数据目录，方便查看当前 `pet-memory.db` 所在位置。
+8. “导出记忆”会生成完整记忆 JSON，可能包含私人聊天、偏好、项目和事件信息，只适合用户自己备份或迁移。
+9. 长期记忆和聊天记录只保存到系统应用数据目录的 `pet-memory.db`，旧版 `pet-memory.json` 只用于首次迁移；`.gitignore` 已忽略 `pet-memory*.json`、`pet-memory*.db`、`pet-memory.db-*`、`memory-export*.json`、`memory.json`、`memories.json`、`chat-history.json`、`memory/` 和 `memories/`，避免本地记忆或导出备份被误传到仓库。
 
 ## 自动常用规则
 

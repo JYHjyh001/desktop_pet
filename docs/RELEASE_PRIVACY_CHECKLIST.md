@@ -14,6 +14,7 @@
 1. 读取 `.gitignore`，确认至少忽略：
    - `.env`、`.env.*`
    - `config.json`、`apps.json`
+   - `pet-memory.json`、`pet-memory.db`、`pet-memory.db-*`、记忆导出文件
    - `PetDrawer/`、`app-data/`、`data/`、`user-data/`、`local-data/`
    - `src-tauri/target/`、`dist/`、打包产物和日志
    - `*.key`、`*.pem`、`*.p12`、`*.pfx`、`*.token`、`*.credential*`
