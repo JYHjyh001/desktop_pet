@@ -34,7 +34,7 @@ PetDrawer 是一个基于 Tauri v2 + Vue 3 + TypeScript + Rust 的桌面宠物�
 2. 优先下载安装包文件，文件名通常类似：
 
 ```txt
-PetDrawer_0.2.2_x64-setup.exe
+PetDrawer_0.2.3_x64-setup.exe
 ```
 
 3. 如果发布者提供的是免安装版本，文件名通常类似：
@@ -47,7 +47,7 @@ pet_drawer.exe
 
 ### 安装版本使用步骤
 
-1. 双击 `PetDrawer_0.2.2_x64-setup.exe`。
+1. 双击 `PetDrawer_0.2.3_x64-setup.exe`。
 2. 如果 Windows 弹出安全提示，确认文件来自可信发布者后，选择“更多信息”，再选择“仍要运行”。
 3. 按安装向导完成安装。
 4. 安装完成后，从桌面快捷方式、开始菜单或安装目录启动 PetDrawer。

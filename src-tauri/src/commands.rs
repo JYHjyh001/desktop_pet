@@ -236,11 +236,7 @@ pub fn save_drawer_preferences(
     };
 
     let mut config = app_data::read_config(&app)?;
-    let current_start_on_boot =
-        startup::is_start_on_boot_enabled().unwrap_or(config.system.start_on_boot);
-    if current_start_on_boot != preferences.start_on_boot {
-        startup::set_start_on_boot(preferences.start_on_boot)?;
-    }
+    startup::set_start_on_boot(preferences.start_on_boot)?;
 
     config.drawer.categories = ensure_core_categories(categories);
     config.drawer.quick_search_tags = quick_search_tags;
