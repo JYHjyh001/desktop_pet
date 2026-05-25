@@ -39,6 +39,10 @@ pub struct PetMemory {
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
+    pub source_message: String,
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
+    #[serde(default)]
     pub deleted: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -54,6 +58,10 @@ pub struct PetMemoryDraft {
     pub importance: u8,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub source_message: String,
+    #[serde(default = "default_confidence")]
+    pub confidence: f32,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -73,7 +81,7 @@ pub fn save_message(app: &AppHandle, role: &str, content: &str) -> Result<(), St
     }
     let content = truncate_text(content, MAX_MESSAGE_CONTENT_LEN);
 
-    let mut conn = open_connection(app)?;
+    let conn = open_connection(app)?;
     let id = next_unique_id(&conn, "pet_memory_messages")?;
     conn.execute(
         "INSERT INTO pet_memory_messages (id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
@@ -135,6 +143,10 @@ pub fn save_memories(
             memory.content = draft.content;
             memory.importance = memory.importance.max(draft.importance);
             memory.tags = merge_tags(&memory.tags, &draft.tags);
+            if !draft.source_message.trim().is_empty() {
+                memory.source_message = draft.source_message;
+            }
+            memory.confidence = memory.confidence.max(draft.confidence);
             memory.updated_at = now;
             update_memory(&tx, &memory)?;
             saved.push(memory);
@@ -145,6 +157,8 @@ pub fn save_memories(
                 content: draft.content,
                 importance: draft.importance,
                 tags: draft.tags,
+                source_message: draft.source_message,
+                confidence: draft.confidence,
                 deleted: false,
                 created_at: now.clone(),
                 updated_at: now,
@@ -157,6 +171,37 @@ pub fn save_memories(
     tx.commit()
         .map_err(|err| format!("保存宠物长期记忆失败：{err}"))?;
     Ok(saved)
+}
+
+pub fn add_memory(app: &AppHandle, draft: PetMemoryDraft) -> Result<PetMemory, String> {
+    save_memories(app, vec![draft])?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "记忆内容为空或不适合保存".to_string())
+}
+
+pub fn update_memory_by_id(
+    app: &AppHandle,
+    memory_id: u64,
+    draft: PetMemoryDraft,
+) -> Result<PetMemory, String> {
+    let Some(draft) = normalize_memory_draft(draft) else {
+        return Err("记忆内容为空或不适合保存".to_string());
+    };
+
+    let conn = open_connection(app)?;
+    let mut memory =
+        load_memory_by_id(&conn, memory_id)?.ok_or_else(|| "未找到要修改的记忆".to_string())?;
+    memory.memory_type = draft.memory_type;
+    memory.content = draft.content;
+    memory.importance = draft.importance;
+    memory.tags = draft.tags;
+    memory.source_message = draft.source_message;
+    memory.confidence = draft.confidence;
+    memory.deleted = false;
+    memory.updated_at = app_data::now_seconds();
+    update_memory(&conn, &memory)?;
+    Ok(memory)
 }
 
 pub fn search_memories(
@@ -179,16 +224,14 @@ pub fn search_memories(
 
 pub fn delete_memory(app: &AppHandle, memory_id: u64) -> Result<(), String> {
     let conn = open_connection(app)?;
-    let updated = conn
+    let deleted = conn
         .execute(
-            "UPDATE pet_memories
-             SET deleted = 1, updated_at = ?1
-             WHERE id = ?2 AND deleted = 0",
-            params![app_data::now_seconds(), to_sql_id(memory_id)?],
+            "DELETE FROM pet_memories WHERE id = ?1",
+            params![to_sql_id(memory_id)?],
         )
         .map_err(|err| format!("删除宠物记忆失败：{err}"))?;
 
-    if updated == 0 {
+    if deleted == 0 {
         return Err("未找到要删除的记忆".to_string());
     }
 
@@ -197,12 +240,58 @@ pub fn delete_memory(app: &AppHandle, memory_id: u64) -> Result<(), String> {
 
 pub fn clear_memories(app: &AppHandle) -> Result<(), String> {
     let conn = open_connection(app)?;
-    conn.execute(
-        "UPDATE pet_memories SET deleted = 1, updated_at = ?1 WHERE deleted = 0",
-        params![app_data::now_seconds()],
-    )
-    .map_err(|err| format!("清空宠物记忆失败：{err}"))?;
+    clear_memories_from_conn(&conn)
+}
+
+fn clear_memories_from_conn(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM pet_memories", [])
+        .map_err(|err| format!("清空宠物记忆失败：{err}"))?;
     Ok(())
+}
+
+pub fn clear_messages(app: &AppHandle) -> Result<(), String> {
+    let conn = open_connection(app)?;
+    conn.execute("DELETE FROM pet_memory_messages", [])
+        .map_err(|err| format!("清空宠物短期聊天记录失败：{err}"))?;
+    Ok(())
+}
+
+pub fn delete_related_memories(
+    app: &AppHandle,
+    query: &str,
+    limit: usize,
+) -> Result<usize, String> {
+    let memories = search_memories(app, query, limit)?;
+    if memories.is_empty() {
+        return Ok(0);
+    }
+
+    let conn = open_connection(app)?;
+    let mut deleted = 0;
+    for memory in memories {
+        deleted += conn
+            .execute(
+                "DELETE FROM pet_memories WHERE id = ?1",
+                params![to_sql_id(memory.id)?],
+            )
+            .map_err(|err| format!("删除相关宠物记忆失败：{err}"))?;
+    }
+    Ok(deleted)
+}
+
+pub fn delete_latest_memory(app: &AppHandle) -> Result<usize, String> {
+    let conn = open_connection(app)?;
+    let Some(memory) = latest_memory(&conn)? else {
+        return Ok(0);
+    };
+
+    let deleted = conn
+        .execute(
+            "DELETE FROM pet_memories WHERE id = ?1",
+            params![to_sql_id(memory.id)?],
+        )
+        .map_err(|err| format!("删除最近宠物记忆失败：{err}"))?;
+    Ok(deleted)
 }
 
 pub fn import_memory_file(app: &AppHandle, source_path: &str) -> Result<Vec<PetMemory>, String> {
@@ -269,6 +358,7 @@ fn open_connection(app: &AppHandle) -> Result<Connection, String> {
         .map_err(|err| format!("打开记忆数据库失败：{err}"))?;
     initialize_schema(&conn)?;
     migrate_legacy_json(app, &conn)?;
+    purge_soft_deleted_memories(&conn)?;
     Ok(conn)
 }
 
@@ -296,6 +386,8 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
             importance INTEGER NOT NULL,
             tags_json TEXT NOT NULL,
             tags TEXT NOT NULL,
+            source_message TEXT NOT NULL DEFAULT '',
+            confidence REAL NOT NULL DEFAULT 0.8,
             deleted INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -346,7 +438,47 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
         PRAGMA user_version = 1;
         "#,
     )
-    .map_err(|err| format!("初始化记忆数据库失败：{err}"))
+    .map_err(|err| format!("初始化记忆数据库失败：{err}"))?;
+
+    ensure_memory_columns(conn)?;
+    Ok(())
+}
+
+fn ensure_memory_columns(conn: &Connection) -> Result<(), String> {
+    let columns = table_columns(conn, "pet_memories")?;
+    if !columns.contains("source_message") {
+        conn.execute(
+            "ALTER TABLE pet_memories ADD COLUMN source_message TEXT NOT NULL DEFAULT ''",
+            [],
+        )
+        .map_err(|err| format!("升级记忆数据库失败：{err}"))?;
+    }
+    if !columns.contains("confidence") {
+        conn.execute(
+            "ALTER TABLE pet_memories ADD COLUMN confidence REAL NOT NULL DEFAULT 0.8",
+            [],
+        )
+        .map_err(|err| format!("升级记忆数据库失败：{err}"))?;
+    }
+    Ok(())
+}
+
+fn table_columns(conn: &Connection, table_name: &str) -> Result<HashSet<String>, String> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table_name})"))
+        .map_err(|err| format!("读取记忆数据库结构失败：{err}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("读取记忆数据库结构失败：{err}"))?;
+
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(|err| format!("读取记忆数据库结构失败：{err}"))
+}
+
+fn purge_soft_deleted_memories(conn: &Connection) -> Result<(), String> {
+    conn.execute("DELETE FROM pet_memories WHERE deleted <> 0", [])
+        .map_err(|err| format!("清理旧版已删除长期记忆失败：{err}"))?;
+    Ok(())
 }
 
 fn migrate_legacy_json(app: &AppHandle, conn: &Connection) -> Result<(), String> {
@@ -399,7 +531,8 @@ fn read_all_messages(conn: &Connection) -> Result<Vec<PetMemoryMessage>, String>
 fn read_all_memories(conn: &Connection) -> Result<Vec<PetMemory>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, memory_type, content, importance, tags_json, deleted, created_at, updated_at
+            "SELECT id, memory_type, content, importance, tags_json, source_message,
+                    confidence, deleted, created_at, updated_at
              FROM pet_memories
              ORDER BY id ASC",
         )
@@ -413,7 +546,8 @@ fn read_all_memories(conn: &Connection) -> Result<Vec<PetMemory>, String> {
 fn list_memories_from_conn(conn: &Connection) -> Result<Vec<PetMemory>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, memory_type, content, importance, tags_json, deleted, created_at, updated_at
+            "SELECT id, memory_type, content, importance, tags_json, source_message,
+                    confidence, deleted, created_at, updated_at
              FROM pet_memories
              WHERE deleted = 0
              ORDER BY importance DESC, updated_at DESC",
@@ -423,6 +557,34 @@ fn list_memories_from_conn(conn: &Connection) -> Result<Vec<PetMemory>, String> 
         .query_map([], row_to_memory)
         .map_err(|err| format!("读取宠物长期记忆失败：{err}"))?;
     collect_rows(rows, "读取宠物长期记忆失败")
+}
+
+fn load_memory_by_id(conn: &Connection, memory_id: u64) -> Result<Option<PetMemory>, String> {
+    conn.query_row(
+        "SELECT id, memory_type, content, importance, tags_json, source_message,
+                confidence, deleted, created_at, updated_at
+         FROM pet_memories
+         WHERE id = ?1 AND deleted = 0",
+        params![to_sql_id(memory_id)?],
+        row_to_memory,
+    )
+    .optional()
+    .map_err(|err| format!("读取宠物长期记忆失败：{err}"))
+}
+
+fn latest_memory(conn: &Connection) -> Result<Option<PetMemory>, String> {
+    conn.query_row(
+        "SELECT id, memory_type, content, importance, tags_json, source_message,
+                confidence, deleted, created_at, updated_at
+         FROM pet_memories
+         WHERE deleted = 0
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 1",
+        [],
+        row_to_memory,
+    )
+    .optional()
+    .map_err(|err| format!("读取最近宠物记忆失败：{err}"))
 }
 
 fn search_memories_fts(
@@ -436,11 +598,12 @@ fn search_memories_fts(
 
     let mut stmt = conn
         .prepare(
-            "SELECT m.id, m.memory_type, m.content, m.importance, m.tags_json, m.deleted, m.created_at, m.updated_at
+            "SELECT m.id, m.memory_type, m.content, m.importance, m.tags_json, m.source_message,
+                    m.confidence, m.deleted, m.created_at, m.updated_at
              FROM pet_memories_fts
              JOIN pet_memories m ON m.id = pet_memories_fts.rowid
              WHERE pet_memories_fts MATCH ?1 AND m.deleted = 0
-             ORDER BY bm25(pet_memories_fts) ASC, m.importance DESC, m.updated_at DESC
+             ORDER BY m.importance DESC, m.updated_at DESC, bm25(pet_memories_fts) ASC
              LIMIT ?2",
         )
         .map_err(|err| format!("检索宠物记忆失败：{err}"))?;
@@ -484,7 +647,8 @@ fn find_duplicate_memory(
 ) -> Result<Option<PetMemory>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, memory_type, content, importance, tags_json, deleted, created_at, updated_at
+            "SELECT id, memory_type, content, importance, tags_json, source_message,
+                    confidence, deleted, created_at, updated_at
              FROM pet_memories
              WHERE deleted = 0 AND memory_type = ?1",
         )
@@ -508,8 +672,9 @@ fn insert_memory(conn: &Connection, memory: &PetMemory) -> Result<(), String> {
     let tags_text = memory.tags.join(" ");
     conn.execute(
         "INSERT INTO pet_memories
-         (id, memory_type, content, importance, tags_json, tags, deleted, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         (id, memory_type, content, importance, tags_json, tags, source_message, confidence,
+          deleted, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             to_sql_id(memory.id)?,
             &memory.memory_type,
@@ -517,6 +682,8 @@ fn insert_memory(conn: &Connection, memory: &PetMemory) -> Result<(), String> {
             i64::from(memory.importance),
             &tags_json,
             &tags_text,
+            &memory.source_message,
+            f64::from(memory.confidence),
             bool_to_i64(memory.deleted),
             &memory.created_at,
             &memory.updated_at,
@@ -532,14 +699,16 @@ fn update_memory(conn: &Connection, memory: &PetMemory) -> Result<(), String> {
     conn.execute(
         "UPDATE pet_memories
          SET memory_type = ?1, content = ?2, importance = ?3, tags_json = ?4, tags = ?5,
-             deleted = ?6, updated_at = ?7
-         WHERE id = ?8",
+             source_message = ?6, confidence = ?7, deleted = ?8, updated_at = ?9
+         WHERE id = ?10",
         params![
             &memory.memory_type,
             &memory.content,
             i64::from(memory.importance),
             &tags_json,
             &tags_text,
+            &memory.source_message,
+            f64::from(memory.confidence),
             bool_to_i64(memory.deleted),
             &memory.updated_at,
             to_sql_id(memory.id)?,
@@ -638,7 +807,8 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<PetMemoryMessage>
 fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<PetMemory> {
     let id: i64 = row.get(0)?;
     let tags_json: String = row.get(4)?;
-    let deleted: i64 = row.get(5)?;
+    let confidence = row.get::<_, f64>(6)?.clamp(0.0, 1.0) as f32;
+    let deleted: i64 = row.get(7)?;
 
     Ok(PetMemory {
         id: id.max(0) as u64,
@@ -646,9 +816,11 @@ fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<PetMemory> {
         content: row.get(2)?,
         importance: row.get::<_, i64>(3)?.clamp(1, 10) as u8,
         tags: parse_tags_json(&tags_json),
+        source_message: row.get(5)?,
+        confidence,
         deleted: deleted != 0,
-        created_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
     })
 }
 
@@ -711,22 +883,63 @@ fn normalize_memory_draft(draft: PetMemoryDraft) -> Option<PetMemoryDraft> {
     if content.is_empty() {
         return None;
     }
+    if contains_sensitive_memory(content) || contains_sensitive_memory(&draft.source_message) {
+        return None;
+    }
 
     let content = truncate_text(content, MAX_MEMORY_CONTENT_LEN);
+    let source_message = truncate_text(draft.source_message.trim(), MAX_MESSAGE_CONTENT_LEN);
 
     Some(PetMemoryDraft {
         memory_type: normalize_memory_type(&draft.memory_type),
         content,
         importance: draft.importance.clamp(1, 10),
         tags: normalize_tags(draft.tags),
+        source_message,
+        confidence: draft.confidence.clamp(0.0, 1.0),
     })
 }
 
 fn normalize_memory_type(value: &str) -> String {
     match value.trim().to_lowercase().as_str() {
-        "preference" | "project" | "event" | "profile" => value.trim().to_lowercase(),
+        "nickname" | "preference" | "dislike" | "relationship" | "emotion" | "habit"
+        | "life_event" | "important_person" | "interest" | "goal" | "boundary" | "instruction"
+        | "other" => value.trim().to_lowercase(),
+        "project" => "goal".to_string(),
+        "event" => "life_event".to_string(),
+        "profile" => "other".to_string(),
         _ => default_memory_type(),
     }
+}
+
+fn contains_sensitive_memory(value: &str) -> bool {
+    let lower = value.to_lowercase();
+    let sensitive_keywords = [
+        "密码",
+        "口令",
+        "银行卡",
+        "身份证",
+        "住址",
+        "精确地址",
+        "手机号",
+        "电话",
+        "联系方式",
+        "api key",
+        "apikey",
+        "access token",
+        "secret",
+        "token",
+        "验证码",
+    ];
+    if sensitive_keywords
+        .iter()
+        .any(|keyword| lower.contains(keyword))
+    {
+        return true;
+    }
+
+    let digit_count = value.chars().filter(|ch| ch.is_ascii_digit()).count();
+    digit_count >= 11 && value.chars().filter(|ch| ch.is_whitespace()).count() <= 4
 }
 
 fn normalize_tags(tags: Vec<String>) -> Vec<String> {
@@ -779,6 +992,9 @@ fn normalize_imported_store(store: &mut PetMemoryStore) {
         memory.content = truncate_text(&content, MAX_MEMORY_CONTENT_LEN);
         memory.importance = memory.importance.clamp(1, 10);
         memory.tags = normalize_tags(memory.tags.clone());
+        let source_message = memory.source_message.trim().to_string();
+        memory.source_message = truncate_text(&source_message, MAX_MESSAGE_CONTENT_LEN);
+        memory.confidence = memory.confidence.clamp(0.0, 1.0);
         if memory.created_at.trim().is_empty() {
             memory.created_at = app_data::now_seconds();
         }
@@ -787,7 +1003,9 @@ fn normalize_imported_store(store: &mut PetMemoryStore) {
         }
     }
 
-    store.memories.retain(|memory| !memory.content.is_empty());
+    store
+        .memories
+        .retain(|memory| !memory.content.is_empty() && !contains_sensitive_memory(&memory.content));
     ensure_unique_memory_ids(&mut store.memories);
 }
 
@@ -977,11 +1195,15 @@ fn now_millis() -> u64 {
 }
 
 fn default_memory_type() -> String {
-    "event".to_string()
+    "other".to_string()
 }
 
 fn default_importance() -> u8 {
     5
+}
+
+fn default_confidence() -> f32 {
+    0.8
 }
 
 #[cfg(test)]
@@ -1007,5 +1229,73 @@ mod tests {
             )
             .expect("query fts5");
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn sqlite_schema_includes_companion_memory_columns() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        initialize_schema(&conn).expect("initialize schema");
+        let columns = table_columns(&conn, "pet_memories").expect("read table columns");
+        assert!(columns.contains("source_message"));
+        assert!(columns.contains("confidence"));
+    }
+
+    #[test]
+    fn sensitive_memory_draft_is_skipped() {
+        let draft = PetMemoryDraft {
+            memory_type: "preference".to_string(),
+            content: "用户的 API Key 是 abc123。".to_string(),
+            importance: 10,
+            tags: vec!["敏感".to_string()],
+            source_message: String::new(),
+            confidence: 1.0,
+        };
+        assert!(normalize_memory_draft(draft).is_none());
+    }
+
+    #[test]
+    fn clear_memories_physically_removes_rows_and_search_index() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        initialize_schema(&conn).expect("initialize schema");
+        conn.execute(
+            "INSERT INTO pet_memories
+             (id, memory_type, content, importance, tags_json, tags, deleted, created_at, updated_at)
+             VALUES (1, 'preference', '喜欢安静', 8, '[]', '', 0, '1', '1')",
+            [],
+        )
+        .expect("insert active memory");
+
+        clear_memories_from_conn(&conn).expect("clear memories");
+
+        let memory_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pet_memories", [], |row| row.get(0))
+            .expect("query memories");
+        let index_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pet_memories_fts", [], |row| {
+                row.get(0)
+            })
+            .expect("query fts rows");
+        assert_eq!(memory_count, 0);
+        assert_eq!(index_count, 0);
+    }
+
+    #[test]
+    fn purge_soft_deleted_memories_removes_legacy_hidden_rows() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        initialize_schema(&conn).expect("initialize schema");
+        conn.execute(
+            "INSERT INTO pet_memories
+             (id, memory_type, content, importance, tags_json, tags, deleted, created_at, updated_at)
+             VALUES (1, 'preference', '旧的隐藏记录', 5, '[]', '', 1, '1', '1')",
+            [],
+        )
+        .expect("insert soft deleted memory");
+
+        purge_soft_deleted_memories(&conn).expect("purge hidden memories");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pet_memories", [], |row| row.get(0))
+            .expect("query memories");
+        assert_eq!(count, 0);
     }
 }

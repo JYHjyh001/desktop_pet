@@ -131,6 +131,9 @@ async function sendMessage() {
       role: 'assistant',
       content: reply.message,
     })
+    if (reply.memoryWarning) {
+      errorMessage.value = `本次回复已生成，但宠物记忆未能保存：${reply.memoryWarning}`
+    }
   } catch (err) {
     errorMessage.value = String(err)
   } finally {

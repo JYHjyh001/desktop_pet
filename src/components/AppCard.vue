@@ -70,7 +70,10 @@ const compactTagsTitle = computed(() => {
 })
 
 function onAdminToggle(event: Event) {
-  emit('toggle-admin', props.app, (event.target as HTMLInputElement).checked)
+  const input = event.target as HTMLInputElement
+  const runAsAdmin = input.checked
+  input.checked = props.app.runAsAdmin
+  emit('toggle-admin', props.app, runAsAdmin)
 }
 </script>
 

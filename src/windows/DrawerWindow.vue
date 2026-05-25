@@ -9,11 +9,13 @@ import CategoryList from '../components/CategoryList.vue'
 import SearchBar from '../components/SearchBar.vue'
 import { useAppStore } from '../stores/appStore'
 import type {
+  AiConnectionProfile,
   AiProvider,
   AiConnectionTestResult,
   AppDraft,
   AppItemKind,
   PetMemory,
+  PetMemoryDraft,
   PetAnimationSet,
   PetApp,
   PetDrawerConfig,
@@ -29,6 +31,14 @@ import {
   parseTags,
   websiteNameFromUrl,
 } from '../utils/format'
+
+type ImportantConfirmation = {
+  title: string
+  message: string
+  detail: string
+  confirmLabel: string
+  variant: 'danger' | 'warning'
+}
 
 const store = useAppStore()
 const modalVisible = ref(false)
@@ -56,13 +66,18 @@ const updateError = ref('')
 const aiTesting = ref(false)
 const aiTestMessage = ref('')
 const aiTestError = ref('')
+const aiProfileStatus = ref('')
+const aiProfileError = ref('')
 const petMemories = ref<PetMemory[]>([])
 const petMemoriesLoading = ref(false)
 const petMemoryStatus = ref('')
 const petMemoryError = ref('')
+const editingMemoryId = ref<number | null>(null)
 const runtimeInfo = ref<RuntimeInfo | null>(null)
 const runtimeInfoLoading = ref(false)
 const runtimeInfoError = ref('')
+const importantConfirmation = ref<ImportantConfirmation | null>(null)
+let resolveImportantConfirmation: ((confirmed: boolean) => void) | null = null
 
 const skinDraft = reactive({
   name: '',
@@ -82,6 +97,30 @@ const animationFields: Array<{
   { key: 'click', label: '点击动画' },
   { key: 'dragging', label: '拖动动画' },
 ]
+
+const memoryTypeOptions = [
+  { value: 'nickname', label: '称呼' },
+  { value: 'preference', label: '偏好' },
+  { value: 'dislike', label: '不喜欢' },
+  { value: 'relationship', label: '关系' },
+  { value: 'emotion', label: '情绪' },
+  { value: 'habit', label: '习惯' },
+  { value: 'life_event', label: '生活事件' },
+  { value: 'important_person', label: '重要人物' },
+  { value: 'interest', label: '兴趣' },
+  { value: 'goal', label: '目标' },
+  { value: 'boundary', label: '边界' },
+  { value: 'instruction', label: '回复要求' },
+  { value: 'other', label: '其他' },
+]
+
+const memoryDraft = reactive({
+  memoryType: 'preference',
+  content: '',
+  importance: 5,
+  tags: '',
+  confidence: 0.8,
+})
 
 type SettingsSectionId =
   | 'entries'
@@ -232,6 +271,8 @@ const targetPlaceholder = computed(() => {
   return '选择或填写本机 exe 路径'
 })
 
+const maxAiProfileCount = 20
+
 const settingsDraft = reactive({
   categories: [] as string[],
   quickSearchTags: [] as string[],
@@ -251,7 +292,14 @@ const settingsDraft = reactive({
   aiSystemPrompt: '你是一个友好、简洁的桌面宠物助手。',
   aiTemperature: 0.7,
   aiMaxTokens: 800,
+  aiActiveProfileId: '',
+  aiProfiles: [] as AiConnectionProfile[],
+  newAiProfileLabel: '',
 })
+
+const selectedAiProfile = computed(() =>
+  settingsDraft.aiProfiles.find((profile) => profile.id === settingsDraft.aiActiveProfileId),
+)
 
 onMounted(() => {
   void store.loadApps()
@@ -281,6 +329,8 @@ async function openSettings() {
   updateError.value = ''
   aiTestError.value = ''
   aiTestMessage.value = ''
+  aiProfileError.value = ''
+  aiProfileStatus.value = ''
   petMemoryError.value = ''
   runtimeInfoError.value = ''
   activeSettingsSection.value = 'entries'
@@ -321,6 +371,20 @@ function syncSettingsDraft(config: PetDrawerConfig) {
     config.ai?.systemPrompt || '你是一个友好、简洁的桌面宠物助手。'
   settingsDraft.aiTemperature = config.ai?.temperature ?? 0.7
   settingsDraft.aiMaxTokens = config.ai?.maxTokens ?? 800
+  settingsDraft.aiProfiles = (config.ai?.profiles ?? []).map((profile) => ({
+    id: profile.id,
+    label: profile.label,
+    provider: normalizeAiProvider(profile.provider),
+    apiKey: profile.apiKey ?? '',
+    baseUrl: profile.baseUrl ?? '',
+    model: profile.model ?? '',
+  }))
+  settingsDraft.aiActiveProfileId = settingsDraft.aiProfiles.some(
+    (profile) => profile.id === config.ai?.activeProfileId,
+  )
+    ? (config.ai?.activeProfileId ?? '')
+    : ''
+  settingsDraft.newAiProfileLabel = ''
 }
 
 function normalizeTagDisplayMode(value?: string | null): 'compact' | 'detailed' {
@@ -343,6 +407,97 @@ function applyAiProviderPreset() {
   const preset = selectedAiProviderPreset()
   settingsDraft.aiBaseUrl = preset.baseUrl
   settingsDraft.aiModel = preset.model
+}
+
+function makeAiProfileId() {
+  return `api_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function connectionProfileFromDraft(id: string, label: string): AiConnectionProfile {
+  return {
+    id,
+    label,
+    provider: settingsDraft.aiProvider,
+    apiKey: settingsDraft.aiApiKey.trim(),
+    baseUrl: settingsDraft.aiBaseUrl.trim(),
+    model: settingsDraft.aiModel.trim(),
+  }
+}
+
+function selectAiProfile(profile: AiConnectionProfile) {
+  settingsDraft.aiActiveProfileId = profile.id
+  settingsDraft.aiProvider = normalizeAiProvider(profile.provider)
+  settingsDraft.aiApiKey = profile.apiKey
+  settingsDraft.aiBaseUrl = profile.baseUrl
+  settingsDraft.aiModel = profile.model
+  aiProfileError.value = ''
+  aiProfileStatus.value = `已切换到「${profile.label}」，保存设置后宠物聊天将使用该配置。`
+}
+
+function addAiProfile() {
+  const label = settingsDraft.newAiProfileLabel.trim()
+  aiProfileError.value = ''
+  aiProfileStatus.value = ''
+
+  if (!label) {
+    aiProfileError.value = '请输入 API 配置标签名称。'
+    return
+  }
+
+  if (label.length > 40) {
+    aiProfileError.value = 'API 配置标签名称不能超过 40 个字符。'
+    return
+  }
+
+  if (settingsDraft.aiProfiles.length >= maxAiProfileCount) {
+    aiProfileError.value = `最多保存 ${maxAiProfileCount} 个 API 配置标签。`
+    return
+  }
+
+  if (settingsDraft.aiProfiles.some((profile) => profile.label.toLowerCase() === label.toLowerCase())) {
+    aiProfileError.value = 'API 配置标签名称已存在。'
+    return
+  }
+
+  const profile = connectionProfileFromDraft(makeAiProfileId(), label)
+  settingsDraft.aiProfiles.push(profile)
+  settingsDraft.newAiProfileLabel = ''
+  settingsDraft.aiActiveProfileId = profile.id
+  aiProfileStatus.value = `已添加「${label}」，点击“保存设置”后写入本机配置。`
+}
+
+function updateSelectedAiProfile() {
+  const profile = selectedAiProfile.value
+  aiProfileError.value = ''
+  aiProfileStatus.value = ''
+  if (!profile) {
+    aiProfileError.value = '请先选择一个已有标签，或添加新的 API 配置标签。'
+    return
+  }
+
+  Object.assign(profile, connectionProfileFromDraft(profile.id, profile.label))
+  aiProfileStatus.value = `已更新「${profile.label}」，点击“保存设置”后生效。`
+}
+
+async function removeAiProfile(profile: AiConnectionProfile) {
+  if (
+    !(await requestImportantConfirmation({
+      title: '删除 API 配置标签',
+      message: `确认删除 API 配置标签「${profile.label}」？`,
+      detail: '该标签将从列表中移除；若当前表单仍保留同一连接，保存后它仍会作为当前聊天连接保存在本机。',
+      confirmLabel: '删除标签',
+      variant: 'danger',
+    }))
+  ) {
+    return
+  }
+
+  settingsDraft.aiProfiles = settingsDraft.aiProfiles.filter((item) => item.id !== profile.id)
+  if (settingsDraft.aiActiveProfileId === profile.id) {
+    settingsDraft.aiActiveProfileId = ''
+  }
+  aiProfileError.value = ''
+  aiProfileStatus.value = `已移除「${profile.label}」，点击“保存设置”后写入本机配置。`
 }
 
 function addSettingsCategory() {
@@ -418,6 +573,12 @@ async function saveSettings() {
 }
 
 function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
+  const profiles = settingsDraft.aiProfiles.map((profile) =>
+    profile.id === settingsDraft.aiActiveProfileId
+      ? connectionProfileFromDraft(profile.id, profile.label)
+      : { ...profile },
+  )
+
   return {
     categories: [...settingsDraft.categories],
     quickSearchTags: [...settingsDraft.quickSearchTags],
@@ -436,6 +597,8 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
       systemPrompt: settingsDraft.aiSystemPrompt,
       temperature: safeNumber(settingsDraft.aiTemperature, 0.7),
       maxTokens: safeInteger(settingsDraft.aiMaxTokens, 800),
+      activeProfileId: settingsDraft.aiActiveProfileId,
+      profiles,
     },
   }
 }
@@ -446,6 +609,32 @@ function safeNumber(value: number, fallback: number) {
 
 function safeInteger(value: number, fallback: number) {
   return Number.isFinite(value) ? Math.round(value) : fallback
+}
+
+function requestImportantConfirmation(confirmation: ImportantConfirmation) {
+  resolveImportantConfirmation?.(false)
+  importantConfirmation.value = confirmation
+
+  return new Promise<boolean>((resolve) => {
+    resolveImportantConfirmation = resolve
+  })
+}
+
+function settleImportantConfirmation(confirmed: boolean) {
+  const resolve = resolveImportantConfirmation
+  importantConfirmation.value = null
+  resolveImportantConfirmation = null
+  resolve?.(confirmed)
+}
+
+function confirmAdministratorLaunch(appName: string) {
+  return requestImportantConfirmation({
+    title: '启用管理员启动',
+    message: `确认允许「${appName}」以管理员身份启动？`,
+    detail: '之后启动该软件时，系统可能弹出 Windows 管理员权限授权提示。',
+    confirmLabel: '允许启用',
+    variant: 'warning',
+  })
 }
 
 async function saveDrawerPreferences(tagMode: 'compact' | 'detailed') {
@@ -485,8 +674,77 @@ async function loadPetMemories() {
   }
 }
 
+function resetMemoryDraft() {
+  editingMemoryId.value = null
+  memoryDraft.memoryType = 'preference'
+  memoryDraft.content = ''
+  memoryDraft.importance = 5
+  memoryDraft.tags = ''
+  memoryDraft.confidence = 0.8
+}
+
+function buildPetMemoryDraft(): PetMemoryDraft {
+  return {
+    memoryType: memoryDraft.memoryType,
+    content: memoryDraft.content.trim(),
+    importance: safeInteger(memoryDraft.importance, 5),
+    tags: parseTags(memoryDraft.tags),
+    confidence: safeNumber(memoryDraft.confidence, 0.8),
+  }
+}
+
+async function savePetMemoryDraft() {
+  const draft = buildPetMemoryDraft()
+  if (!draft.content) {
+    petMemoryError.value = '请先填写记忆内容。'
+    return
+  }
+
+  petMemoriesLoading.value = true
+  petMemoryStatus.value = ''
+  petMemoryError.value = ''
+
+  try {
+    let successMessage = ''
+    if (editingMemoryId.value) {
+      await invoke<PetMemory>('update_pet_memory', {
+        memoryId: editingMemoryId.value,
+        draft,
+      })
+      successMessage = '记忆已更新。'
+    } else {
+      await invoke<PetMemory>('add_pet_memory', { draft })
+      successMessage = '记忆已添加。'
+    }
+    resetMemoryDraft()
+    await loadPetMemories()
+    petMemoryStatus.value = successMessage
+  } catch (err) {
+    petMemoryError.value = String(err)
+  } finally {
+    petMemoriesLoading.value = false
+  }
+}
+
+function editPetMemory(memory: PetMemory) {
+  editingMemoryId.value = memory.id
+  memoryDraft.memoryType = memory.memoryType
+  memoryDraft.content = memory.content
+  memoryDraft.importance = memory.importance
+  memoryDraft.tags = memory.tags.join('、')
+  memoryDraft.confidence = memory.confidence ?? 0.8
+}
+
 async function deletePetMemory(memory: PetMemory) {
-  if (!confirm('确认删除这条宠物记忆？')) {
+  if (
+    !(await requestImportantConfirmation({
+      title: '删除长期记忆',
+      message: '确认删除这条宠物长期记忆？',
+      detail: '该信息将从本机数据库中永久删除，并且不会继续参与宠物回复。',
+      confirmLabel: '永久删除',
+      variant: 'danger',
+    }))
+  ) {
     return
   }
 
@@ -503,7 +761,13 @@ async function deletePetMemory(memory: PetMemory) {
 
 async function clearPetMemories() {
   if (
-    !confirm('确认清空所有宠物长期记忆？聊天记录不会显示在这里，但长期记忆会被软删除。')
+    !(await requestImportantConfirmation({
+      title: '清空长期记忆',
+      message: '确认清空所有宠物长期记忆？短期聊天记录不会被删除。',
+      detail: '所有长期记忆将从本机数据库永久删除，且此操作无法撤销。',
+      confirmLabel: '永久清空',
+      variant: 'danger',
+    }))
   ) {
     return
   }
@@ -519,6 +783,32 @@ async function clearPetMemories() {
   }
 }
 
+async function clearPetMemoryMessages() {
+  if (
+    !(await requestImportantConfirmation({
+      title: '清空短期聊天记录',
+      message: '确认清空所有宠物短期聊天记录？长期记忆不会被删除。',
+      detail: '清空后宠物不会再读取这些最近对话作为上下文，且无法撤销。',
+      confirmLabel: '永久清空',
+      variant: 'danger',
+    }))
+  ) {
+    return
+  }
+
+  petMemoriesLoading.value = true
+  try {
+    petMemoryStatus.value = ''
+    petMemoryError.value = ''
+    await invoke('clear_pet_memory_messages')
+    petMemoryStatus.value = '已清空短期聊天记录。'
+  } catch (err) {
+    petMemoryError.value = String(err)
+  } finally {
+    petMemoriesLoading.value = false
+  }
+}
+
 async function importPetMemory() {
   const selected = await open({
     multiple: false,
@@ -530,7 +820,15 @@ async function importPetMemory() {
     return
   }
 
-  if (!confirm('导入会替换当前本机宠物记忆和最近聊天记录，确认继续？')) {
+  if (
+    !(await requestImportantConfirmation({
+      title: '覆盖本机记忆',
+      message: '导入会替换当前本机宠物长期记忆和最近聊天记录，确认继续？',
+      detail: '当前本机记忆将被所选 JSON 文件中的内容覆盖，原数据无法从应用恢复。',
+      confirmLabel: '覆盖并导入',
+      variant: 'danger',
+    }))
+  ) {
     return
   }
 
@@ -549,6 +847,18 @@ async function importPetMemory() {
 }
 
 async function exportPetMemory() {
+  if (
+    !(await requestImportantConfirmation({
+      title: '导出隐私数据',
+      message: '确认导出宠物记忆？导出的 JSON 可能包含私人聊天和长期记忆。',
+      detail: '请只保存到你信任的位置，并避免将文件分享给无关人员。',
+      confirmLabel: '继续导出',
+      variant: 'warning',
+    }))
+  ) {
+    return
+  }
+
   const target = await save({
     defaultPath: 'pet-memory.json',
     filters: [{ name: '宠物记忆 JSON', extensions: ['json'] }],
@@ -582,13 +892,29 @@ async function openPetMemoryDirectory() {
 
 function memoryTypeLabel(type: string) {
   const labels: Record<string, string> = {
+    nickname: '称呼',
     preference: '偏好',
+    dislike: '不喜欢',
+    relationship: '关系',
+    emotion: '情绪',
+    habit: '习惯',
+    life_event: '生活事件',
+    important_person: '重要人物',
+    interest: '兴趣',
+    goal: '目标',
+    boundary: '边界',
+    instruction: '回复要求',
+    other: '其他',
     project: '项目',
     event: '事件',
     profile: '画像',
   }
 
   return labels[type] ?? type
+}
+
+function confidencePercent(value?: number) {
+  return `${Math.round((value ?? 0.8) * 100)}%`
 }
 
 async function setTagDisplayMode(mode: 'compact' | 'detailed') {
@@ -887,7 +1213,13 @@ async function deleteSelectedPetSkin() {
     return
   }
 
-  const confirmed = confirm(`确认删除宠物形象「${skin.name}」？此操作会删除本机保存的动画文件。`)
+  const confirmed = await requestImportantConfirmation({
+    title: '删除宠物形象',
+    message: `确认删除宠物形象「${skin.name}」？`,
+    detail: '本机保存的动画文件将被删除；之后需要重新导入素材才能再次使用该形象。',
+    confirmLabel: '永久删除',
+    variant: 'danger',
+  })
   if (!confirmed) {
     return
   }
@@ -986,6 +1318,17 @@ async function saveApp() {
     return
   }
 
+  const storedApp = form.id ? store.apps.find((app) => app.id === form.id) : undefined
+  if (
+    form.itemKind === 'app' &&
+    form.runAsAdmin &&
+    (!storedApp || !storedApp.runAsAdmin) &&
+    !(await confirmAdministratorLaunch(itemName))
+  ) {
+    form.runAsAdmin = Boolean(storedApp?.runAsAdmin)
+    return
+  }
+
   const entryCategory = normalizeEntryCategory(form.category)
   saving.value = true
 
@@ -1012,7 +1355,15 @@ async function saveApp() {
 }
 
 async function removeApp(app: PetApp) {
-  if (!confirm(`确认删除 ${app.name}？`)) {
+  if (
+    !(await requestImportantConfirmation({
+      title: '删除快捷入口',
+      message: `确认删除快捷入口「${app.name}」？`,
+      detail: '该入口会从抽屉列表中移除；如需恢复，需要重新添加。',
+      confirmLabel: '确认删除',
+      variant: 'danger',
+    }))
+  ) {
     return
   }
 
@@ -1029,6 +1380,10 @@ async function launchApp(app: PetApp) {
 }
 
 async function toggleAppAdminLaunch(app: PetApp, runAsAdmin: boolean) {
+  if (runAsAdmin && !app.runAsAdmin && !(await confirmAdministratorLaunch(app.name))) {
+    return
+  }
+
   try {
     await store.setAppRunAsAdmin(app.id, runAsAdmin)
   } catch (err) {
@@ -1455,6 +1810,55 @@ async function hideDrawer() {
 
             <section v-show="activeSettingsSection === 'ai'" class="settings-section">
               <h3>AI 接口</h3>
+              <div class="settings-ai-profiles">
+                <div class="settings-ai-profile-heading">
+                  <div>
+                    <strong>API 配置标签</strong>
+                    <small>最多保存 20 个接口连接，点击标签后快速切换当前服务商、地址、模型和密钥。</small>
+                  </div>
+                  <button
+                    v-if="selectedAiProfile"
+                    type="button"
+                    class="settings-ai-profile-update"
+                    @click="updateSelectedAiProfile"
+                  >
+                    更新当前标签
+                  </button>
+                </div>
+                <form class="settings-ai-profile-add" @submit.prevent="addAiProfile">
+                  <input
+                    v-model="settingsDraft.newAiProfileLabel"
+                    placeholder="输入标签，例如：DeepSeek 工作、Ollama 本地"
+                    maxlength="40"
+                    autocomplete="off"
+                  />
+                  <button class="primary-button" type="submit">保存当前连接</button>
+                </form>
+                <div v-if="settingsDraft.aiProfiles.length > 0" class="settings-ai-profile-list">
+                  <article
+                    v-for="profile in settingsDraft.aiProfiles"
+                    :key="profile.id"
+                    class="settings-ai-profile"
+                    :class="{ active: settingsDraft.aiActiveProfileId === profile.id }"
+                  >
+                    <button class="settings-ai-profile-select" type="button" @click="selectAiProfile(profile)">
+                      <strong>{{ profile.label }}</strong>
+                      <small>{{ profile.provider }} / {{ profile.model || '未设置模型' }}</small>
+                    </button>
+                    <button
+                      class="settings-ai-profile-delete"
+                      type="button"
+                      title="删除配置标签"
+                      @click="removeAiProfile(profile)"
+                    >
+                      删除
+                    </button>
+                  </article>
+                </div>
+                <p v-else class="settings-empty">还没有 API 配置标签，当前表单仍可直接保存并使用。</p>
+                <p v-if="aiProfileStatus" class="settings-empty">{{ aiProfileStatus }}</p>
+                <p v-if="aiProfileError" class="form-error">{{ aiProfileError }}</p>
+              </div>
               <div class="settings-update-panel">
                 <div>
                   <strong>接口连接测试</strong>
@@ -1559,44 +1963,148 @@ async function hideDrawer() {
                 </span>
                 <input v-model="settingsDraft.aiMemoryEnabled" type="checkbox" />
               </label>
-              <div class="settings-update-panel">
-                <div>
-                  <strong>长期记忆列表</strong>
-                  <small>用于查看、导入、导出、打开目录、删除或清空宠物已经记住的长期信息。</small>
-                </div>
-                <div class="settings-update-actions">
-                  <button type="button" :disabled="petMemoriesLoading" @click="loadPetMemories">
-                    {{ petMemoriesLoading ? '读取中...' : '刷新记忆' }}
-                  </button>
-                  <button type="button" :disabled="petMemoriesLoading" @click="importPetMemory">
-                    导入记忆
-                  </button>
-                  <button type="button" @click="exportPetMemory">导出记忆</button>
-                  <button type="button" @click="openPetMemoryDirectory">打开目录</button>
+              <div class="settings-memory-panel">
+                <div class="settings-memory-toolbar-header">
+                  <div class="settings-memory-copy">
+                    <strong>记忆管理</strong>
+                    <small>查看长期记忆，备份数据，或清理本机聊天记录。</small>
+                  </div>
                   <button
                     type="button"
-                    :disabled="petMemoriesLoading || petMemories.length === 0"
-                    @click="clearPetMemories"
+                    class="settings-memory-refresh"
+                    :disabled="petMemoriesLoading"
+                    @click="loadPetMemories"
                   >
-                    清空记忆
+                    {{ petMemoriesLoading ? '读取中...' : '刷新列表' }}
                   </button>
+                </div>
+                <div class="settings-memory-toolbar" aria-label="记忆数据操作">
+                  <div class="settings-memory-toolbar-group">
+                    <span class="settings-memory-toolbar-label">数据</span>
+                    <button type="button" :disabled="petMemoriesLoading" @click="importPetMemory">
+                      导入 JSON
+                    </button>
+                    <button type="button" @click="exportPetMemory">导出 JSON</button>
+                    <button type="button" @click="openPetMemoryDirectory">打开目录</button>
+                  </div>
+                  <div class="settings-memory-toolbar-group">
+                    <span class="settings-memory-toolbar-label">清理</span>
+                    <button
+                      type="button"
+                      class="caution-button"
+                      :disabled="petMemoriesLoading"
+                      @click="clearPetMemoryMessages"
+                    >
+                      清空短期
+                    </button>
+                    <button
+                      type="button"
+                      class="danger-button"
+                      :disabled="petMemoriesLoading || petMemories.length === 0"
+                      @click="clearPetMemories"
+                    >
+                      清空长期
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="settings-memory-editor">
+                <div class="settings-memory-block-heading">
+                  <strong>{{ editingMemoryId ? '编辑长期记忆' : '手动添加长期记忆' }}</strong>
+                  <small>适合补充需要稳定记住的偏好、边界或重要信息。</small>
+                </div>
+                <div class="settings-form-grid settings-memory-form">
+                  <label class="settings-field">
+                    记忆类型
+                    <select v-model="memoryDraft.memoryType">
+                      <option
+                        v-for="option in memoryTypeOptions"
+                        :key="option.value"
+                        :value="option.value"
+                      >
+                        {{ option.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label class="settings-field">
+                    重要度
+                    <input v-model.number="memoryDraft.importance" type="number" min="1" max="10" />
+                  </label>
+                  <label class="settings-field">
+                    可信度
+                    <input
+                      v-model.number="memoryDraft.confidence"
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.1"
+                    />
+                  </label>
+                  <label class="settings-field wide">
+                    记忆内容
+                    <textarea
+                      v-model="memoryDraft.content"
+                      rows="3"
+                      placeholder="例如：用户难过时不喜欢被说教，更希望被温柔安慰。"
+                    />
+                  </label>
+                  <label class="settings-field wide">
+                    标签
+                    <input v-model="memoryDraft.tags" placeholder="用逗号、空格或顿号分隔" />
+                  </label>
+                  <div class="settings-memory-editor-actions wide">
+                    <button
+                      type="button"
+                      class="primary-button"
+                      :disabled="petMemoriesLoading"
+                      @click="savePetMemoryDraft"
+                    >
+                      {{ editingMemoryId ? '保存修改' : '添加记忆' }}
+                    </button>
+                    <button
+                      v-if="editingMemoryId"
+                      type="button"
+                      :disabled="petMemoriesLoading"
+                      @click="resetMemoryDraft"
+                    >
+                      取消编辑
+                    </button>
+                  </div>
                 </div>
               </div>
               <p v-if="petMemoryStatus" class="settings-empty">{{ petMemoryStatus }}</p>
-              <div v-if="petMemories.length > 0" class="settings-memory-list">
-                <article v-for="memory in petMemories" :key="memory.id" class="settings-memory-row">
-                  <div>
-                    <strong>
-                      {{ memoryTypeLabel(memory.memoryType) }} · 重要度 {{ memory.importance }}
-                    </strong>
-                    <p>{{ memory.content }}</p>
-                    <small v-if="memory.tags.length > 0">标签：{{ memory.tags.join('、') }}</small>
-                  </div>
-                  <button type="button" title="删除记忆" @click="deletePetMemory(memory)">删除</button>
-                </article>
+              <div v-if="petMemories.length > 0" class="settings-memory-results">
+                <div class="settings-memory-block-heading">
+                  <strong>已保存的长期记忆</strong>
+                  <small>已保存 {{ petMemories.length }} 条长期记忆，可直接编辑或删除。</small>
+                </div>
+                <div class="settings-memory-list">
+                  <article v-for="memory in petMemories" :key="memory.id" class="settings-memory-row">
+                    <div>
+                      <strong>
+                        {{ memoryTypeLabel(memory.memoryType) }} · 重要度 {{ memory.importance }} ·
+                        可信度 {{ confidencePercent(memory.confidence) }}
+                      </strong>
+                      <p>{{ memory.content }}</p>
+                      <small v-if="memory.tags.length > 0">标签：{{ memory.tags.join('、') }}</small>
+                      <small>更新时间：{{ memory.updatedAt }}</small>
+                    </div>
+                    <div class="settings-memory-row-actions">
+                      <button type="button" title="编辑记忆" @click="editPetMemory(memory)">编辑</button>
+                      <button
+                        type="button"
+                        class="danger-button"
+                        title="删除记忆"
+                        @click="deletePetMemory(memory)"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </article>
+                </div>
               </div>
               <p v-else class="settings-empty">
-                还没有长期记忆。和宠物对话后，重要偏好或项目信息会自动保存到这里。
+                还没有长期记忆。和宠物对话后，称呼、偏好、边界、习惯或共同经历会自动保存到这里。
               </p>
               <p v-if="petMemoryError" class="form-error">{{ petMemoryError }}</p>
             </section>
@@ -1690,6 +2198,34 @@ async function hideDrawer() {
           <button type="button" @click="settingsModalVisible = false">取消</button>
           <button class="primary-button" type="button" :disabled="settingsSaving" @click="saveSettings">
             {{ settingsSaving ? '保存中...' : '保存设置' }}
+          </button>
+        </footer>
+      </section>
+    </div>
+
+    <div
+      v-if="importantConfirmation"
+      class="modal-backdrop confirmation-backdrop"
+      @click.self="settleImportantConfirmation(false)"
+    >
+      <section class="confirmation-modal" role="alertdialog" aria-modal="true">
+        <header>
+          <span class="confirmation-badge">重要操作</span>
+          <button type="button" class="window-close" @click="settleImportantConfirmation(false)">
+            ×
+          </button>
+        </header>
+        <h2>{{ importantConfirmation.title }}</h2>
+        <p class="confirmation-message">{{ importantConfirmation.message }}</p>
+        <p class="confirmation-detail">{{ importantConfirmation.detail }}</p>
+        <footer>
+          <button type="button" @click="settleImportantConfirmation(false)">取消</button>
+          <button
+            type="button"
+            :class="importantConfirmation.variant === 'danger' ? 'danger-button' : 'warning-button'"
+            @click="settleImportantConfirmation(true)"
+          >
+            {{ importantConfirmation.confirmLabel }}
           </button>
         </footer>
       </section>

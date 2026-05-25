@@ -142,6 +142,23 @@ impl Default for SystemSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AiConnectionProfile {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default = "default_ai_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_ai_base_url")]
+    pub base_url: String,
+    #[serde(default = "default_ai_model")]
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AiSettings {
     #[serde(default)]
     pub enabled: bool,
@@ -161,6 +178,10 @@ pub struct AiSettings {
     pub temperature: f32,
     #[serde(default = "default_ai_max_tokens")]
     pub max_tokens: u32,
+    #[serde(default)]
+    pub active_profile_id: String,
+    #[serde(default)]
+    pub profiles: Vec<AiConnectionProfile>,
 }
 
 impl Default for AiSettings {
@@ -175,6 +196,8 @@ impl Default for AiSettings {
             system_prompt: default_ai_system_prompt(),
             temperature: default_ai_temperature(),
             max_tokens: default_ai_max_tokens(),
+            active_profile_id: String::new(),
+            profiles: Vec::new(),
         }
     }
 }

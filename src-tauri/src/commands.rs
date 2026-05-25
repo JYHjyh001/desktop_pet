@@ -3,10 +3,10 @@ use tauri::{AppHandle, Manager};
 
 use crate::{
     ai_chat::{self, AiConnectionTestResult, PetChatMessageDraft, PetChatReply},
-    ai_memory::{self, PetMemory},
+    ai_memory::{self, PetMemory, PetMemoryDraft},
     app_data::{
-        self, AiSettings, AppDraft, PetAnimationSet, PetApp, PetDrawerConfig, PetPosition,
-        PetSkinSummary,
+        self, AiConnectionProfile, AiSettings, AppDraft, PetAnimationSet, PetApp, PetDrawerConfig,
+        PetPosition, PetSkinSummary,
     },
     launcher, startup, updater, windowing,
 };
@@ -40,6 +40,21 @@ pub struct AiSettingsDraft {
     pub system_prompt: String,
     pub temperature: f32,
     pub max_tokens: u32,
+    #[serde(default)]
+    pub active_profile_id: String,
+    #[serde(default)]
+    pub profiles: Vec<AiConnectionProfileDraft>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiConnectionProfileDraft {
+    pub id: String,
+    pub label: String,
+    pub provider: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
 }
 
 impl Default for AiSettingsDraft {
@@ -55,6 +70,8 @@ impl Default for AiSettingsDraft {
             system_prompt: settings.system_prompt,
             temperature: settings.temperature,
             max_tokens: settings.max_tokens,
+            active_profile_id: settings.active_profile_id,
+            profiles: Vec::new(),
         }
     }
 }
@@ -178,7 +195,9 @@ pub fn open_app_dir(app: AppHandle, app_id: String) -> Result<(), String> {
 pub fn get_config(app: AppHandle) -> Result<PetDrawerConfig, String> {
     let mut config = app_data::read_config(&app)?;
     if let Ok(start_on_boot) = startup::is_start_on_boot_enabled() {
-        config.system.start_on_boot = start_on_boot;
+        if start_on_boot {
+            config.system.start_on_boot = true;
+        }
     }
 
     Ok(config)
@@ -292,6 +311,14 @@ fn ensure_core_categories(categories: Vec<String>) -> Vec<String> {
 }
 
 fn normalize_ai_settings(settings: AiSettingsDraft) -> AiSettings {
+    let profiles = normalize_ai_profiles(settings.profiles);
+    let requested_profile_id = settings.active_profile_id.trim();
+    let active_profile_id = profiles
+        .iter()
+        .find(|profile| profile.id == requested_profile_id)
+        .map(|profile| profile.id.clone())
+        .unwrap_or_default();
+
     AiSettings {
         enabled: settings.enabled,
         memory_enabled: settings.memory_enabled,
@@ -302,7 +329,39 @@ fn normalize_ai_settings(settings: AiSettingsDraft) -> AiSettings {
         system_prompt: settings.system_prompt.trim().to_string(),
         temperature: settings.temperature.clamp(0.0, 2.0),
         max_tokens: settings.max_tokens.clamp(64, 32768),
+        active_profile_id,
+        profiles,
     }
+}
+
+fn normalize_ai_profiles(profiles: Vec<AiConnectionProfileDraft>) -> Vec<AiConnectionProfile> {
+    let mut ids = std::collections::HashSet::new();
+    let mut labels = std::collections::HashSet::new();
+
+    profiles
+        .into_iter()
+        .filter_map(|profile| {
+            let id = profile.id.trim().chars().take(80).collect::<String>();
+            let label = profile.label.trim().chars().take(40).collect::<String>();
+            if id.is_empty()
+                || label.is_empty()
+                || !ids.insert(id.to_lowercase())
+                || !labels.insert(label.to_lowercase())
+            {
+                return None;
+            }
+
+            Some(AiConnectionProfile {
+                id,
+                label,
+                provider: normalize_ai_provider(profile.provider),
+                api_key: profile.api_key.trim().to_string(),
+                base_url: normalize_ai_base_url(profile.base_url),
+                model: profile.model.trim().to_string(),
+            })
+        })
+        .take(20)
+        .collect()
 }
 
 fn normalize_ai_provider(provider: String) -> String {
@@ -448,6 +507,20 @@ pub fn list_pet_memories(app: AppHandle) -> Result<Vec<PetMemory>, String> {
 }
 
 #[tauri::command]
+pub fn add_pet_memory(app: AppHandle, draft: PetMemoryDraft) -> Result<PetMemory, String> {
+    ai_memory::add_memory(&app, draft)
+}
+
+#[tauri::command]
+pub fn update_pet_memory(
+    app: AppHandle,
+    memory_id: u64,
+    draft: PetMemoryDraft,
+) -> Result<PetMemory, String> {
+    ai_memory::update_memory_by_id(&app, memory_id, draft)
+}
+
+#[tauri::command]
 pub fn delete_pet_memory(app: AppHandle, memory_id: u64) -> Result<(), String> {
     ai_memory::delete_memory(&app, memory_id)
 }
@@ -455,6 +528,11 @@ pub fn delete_pet_memory(app: AppHandle, memory_id: u64) -> Result<(), String> {
 #[tauri::command]
 pub fn clear_pet_memories(app: AppHandle) -> Result<(), String> {
     ai_memory::clear_memories(&app)
+}
+
+#[tauri::command]
+pub fn clear_pet_memory_messages(app: AppHandle) -> Result<(), String> {
+    ai_memory::clear_messages(&app)
 }
 
 #[tauri::command]

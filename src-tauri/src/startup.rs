@@ -11,6 +11,13 @@ pub fn is_start_on_boot_enabled() -> Result<bool, String> {
     let Some(run_path) = run_value_exe_path(&run_value) else {
         return Ok(false);
     };
+    let current_path =
+        std::env::current_exe().map_err(|err| format!("无法获取当前程序路径：{err}"))?;
+    let current_path = current_path.to_string_lossy().to_string();
+    if same_windows_path(&run_path, &current_path) {
+        return Ok(true);
+    }
+
     let startup_path = match startup_exe_path() {
         Ok(path) => path,
         Err(_) => return Ok(false),
