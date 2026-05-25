@@ -26,6 +26,7 @@ pub fn run() {
             commands::get_current_pet_skin,
             commands::set_pet_skin,
             commands::import_pet_skin,
+            commands::update_pet_skin,
             commands::delete_pet_skin,
             commands::import_pet_image,
             commands::reset_pet_image,

@@ -17,6 +17,10 @@ pub struct DrawerPreferencesDraft {
     pub categories: Vec<String>,
     pub quick_search_tags: Vec<String>,
     pub tag_display_mode: String,
+    #[serde(default = "default_drawer_theme")]
+    pub theme: String,
+    #[serde(default = "default_true")]
+    pub chat_typewriter_enabled: bool,
     pub pet_always_on_top: bool,
     pub drawer_always_on_top: bool,
     #[serde(default)]
@@ -253,6 +257,7 @@ pub fn save_drawer_preferences(
     } else {
         "compact".to_string()
     };
+    let theme = normalize_drawer_theme(preferences.theme);
 
     let mut config = app_data::read_config(&app)?;
     startup::set_start_on_boot(preferences.start_on_boot)?;
@@ -260,6 +265,8 @@ pub fn save_drawer_preferences(
     config.drawer.categories = ensure_core_categories(categories);
     config.drawer.quick_search_tags = quick_search_tags;
     config.drawer.tag_display_mode = tag_display_mode;
+    config.drawer.theme = theme;
+    config.drawer.chat_typewriter_enabled = preferences.chat_typewriter_enabled;
     config.drawer.always_on_top = preferences.drawer_always_on_top;
     config.pet.always_on_top = preferences.pet_always_on_top;
     config.system.start_on_boot = preferences.start_on_boot;
@@ -286,6 +293,17 @@ fn normalize_unique_list(items: Vec<String>, max_items: usize) -> Vec<String> {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_drawer_theme() -> String {
+    "light".to_string()
+}
+
+fn normalize_drawer_theme(theme: String) -> String {
+    match theme.trim().to_lowercase().as_str() {
+        "animal-island" => "animal-island".to_string(),
+        _ => default_drawer_theme(),
+    }
 }
 
 fn ensure_core_categories(categories: Vec<String>) -> Vec<String> {
@@ -403,6 +421,17 @@ pub fn import_pet_skin(
     animations: PetAnimationSet,
 ) -> Result<PetSkinSummary, String> {
     app_data::import_pet_skin(&app, &name, animations)
+}
+
+#[tauri::command]
+pub fn update_pet_skin(
+    app: AppHandle,
+    skin_id: String,
+    name: String,
+    animations: PetAnimationSet,
+    cleared_states: Vec<String>,
+) -> Result<PetSkinSummary, String> {
+    app_data::update_pet_skin(&app, &skin_id, &name, animations, cleared_states)
 }
 
 #[tauri::command]

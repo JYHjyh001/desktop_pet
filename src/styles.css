@@ -344,6 +344,23 @@ button:disabled {
   box-shadow: 0 8px 20px rgba(31, 50, 86, 0.08);
 }
 
+.pet-chat-message p.typing::after {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -0.15em;
+  background: #2168e8;
+  content: "";
+  animation: pet-chat-caret 0.85s steps(1, end) infinite;
+}
+
+@keyframes pet-chat-caret {
+  50% {
+    opacity: 0;
+  }
+}
+
 .pet-chat-message.user {
   align-self: flex-end;
 }
@@ -2139,6 +2156,10 @@ button:disabled {
   line-height: 1.5;
 }
 
+.skin-edit-button {
+  width: 100%;
+}
+
 .skin-delete-button {
   width: 100%;
   border: 1px solid #ffc7cf;
@@ -2271,6 +2292,332 @@ button:disabled {
   font-size: 13px;
 }
 
+.theme-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.theme-choice-card {
+  display: grid;
+  gap: 7px;
+  padding: 11px;
+  border: 2px solid transparent;
+  border-radius: 12px;
+  color: #243049;
+  background: #f1f5fa;
+  text-align: left;
+}
+
+.theme-choice-card:hover {
+  background: #e8f0f9;
+}
+
+.theme-choice-card.active {
+  border-color: #347cff;
+  background: #eef5ff;
+}
+
+.theme-choice-card strong,
+.theme-choice-card small {
+  display: block;
+}
+
+.theme-choice-card small {
+  color: #657188;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.theme-choice-preview {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 46px;
+  padding: 9px;
+  border-radius: 9px;
+}
+
+.theme-choice-preview i {
+  display: block;
+  height: 22px;
+  flex: 1;
+  border-radius: 7px;
+}
+
+.preview-light .theme-choice-preview {
+  background: #ffffff;
+}
+
+.preview-light .theme-choice-preview i {
+  background: #2168e8;
+}
+
+.preview-light .theme-choice-preview i:nth-child(2) {
+  background: #dff3ff;
+}
+
+.preview-light .theme-choice-preview i:nth-child(3) {
+  background: #e5edf6;
+}
+
+.preview-animal-island .theme-choice-preview {
+  background: #fff3dc;
+}
+
+.preview-animal-island .theme-choice-preview i {
+  background: #48c9ad;
+  box-shadow: 0 3px 0 #228b79;
+}
+
+.preview-animal-island .theme-choice-preview i:nth-child(2) {
+  background: #ffb75c;
+  box-shadow: 0 3px 0 #df8235;
+}
+
+.preview-animal-island .theme-choice-preview i:nth-child(3) {
+  background: #f6df8b;
+  box-shadow: 0 3px 0 #c99c46;
+}
+
+/* Warm, playful built-in theme inspired by island-style game UI. */
+.drawer-window.theme-animal-island,
+.pet-chat-window.theme-animal-island,
+.pet-menu-window.theme-animal-island {
+  color: #553b2b;
+  border: 2px solid #d9ac67;
+  background:
+    radial-gradient(circle at 12% 10%, rgba(255, 203, 111, 0.24), transparent 26%),
+    linear-gradient(165deg, #fffaf0, #fff0d7);
+  box-shadow:
+    0 10px 0 rgba(183, 122, 58, 0.18),
+    0 22px 48px rgba(102, 67, 33, 0.18);
+}
+
+.drawer-window.theme-animal-island {
+  border-radius: 28px;
+}
+
+.theme-animal-island .drawer-header h1,
+.theme-animal-island .pet-chat-header h1,
+.theme-animal-island .empty-state h2,
+.theme-animal-island .pet-preview-copy h2,
+.theme-animal-island .settings-section h3 {
+  color: #533728;
+}
+
+.theme-animal-island .drawer-header p,
+.theme-animal-island .pet-chat-header p,
+.theme-animal-island .app-meta,
+.theme-animal-island .app-last,
+.theme-animal-island .app-path,
+.theme-animal-island .settings-empty,
+.theme-animal-island .pet-preview-copy p {
+  color: #87654d;
+}
+
+.theme-animal-island .display-mode-switch,
+.theme-animal-island .kind-filter,
+.theme-animal-island .kind-editor,
+.theme-animal-island .settings-nav {
+  background: #f5dcae;
+}
+
+.theme-animal-island .display-mode-switch button,
+.theme-animal-island .kind-filter button,
+.theme-animal-island .kind-editor button,
+.theme-animal-island .settings-nav button {
+  color: #765039;
+}
+
+.theme-animal-island .display-mode-switch button.active,
+.theme-animal-island .kind-filter button.active,
+.theme-animal-island .kind-editor button.active,
+.theme-animal-island .settings-nav button.active {
+  color: #553528;
+  background: #fff6e6;
+  box-shadow: 0 2px 0 rgba(173, 113, 53, 0.18);
+}
+
+.theme-animal-island .category-button {
+  color: #765039;
+  border-radius: 14px;
+}
+
+.theme-animal-island .category-button:hover,
+.theme-animal-island .category-button.active {
+  color: #533728;
+  background: #ffdf99;
+}
+
+.theme-animal-island .pet-preview-panel,
+.theme-animal-island .app-card,
+.theme-animal-island .settings-update-panel,
+.theme-animal-island .settings-memory-panel,
+.theme-animal-island .settings-memory-editor,
+.theme-animal-island .settings-memory-results,
+.theme-animal-island .settings-ai-profiles {
+  border-color: #e7c88c;
+  border-radius: 16px;
+  background: #fff9ed;
+}
+
+.theme-animal-island .app-card {
+  box-shadow: 0 3px 0 rgba(206, 156, 85, 0.18);
+}
+
+.theme-animal-island .app-icon {
+  color: #4b3a27;
+  border-radius: 14px;
+  background: linear-gradient(150deg, #55d8b9, #acecd2);
+}
+
+.theme-animal-island .app-card.kind-folder .app-icon {
+  color: #654523;
+  background: linear-gradient(145deg, #ffe183, #ffbd61);
+}
+
+.theme-animal-island .app-card.kind-website .app-icon {
+  color: #37544b;
+  background: linear-gradient(145deg, #a9ebd6, #66c9bc);
+}
+
+.theme-animal-island .app-compact-name,
+.theme-animal-island .app-title {
+  color: #533728;
+}
+
+.theme-animal-island .search-input,
+.theme-animal-island .app-modal input,
+.theme-animal-island .settings-add-row input,
+.theme-animal-island .settings-field input,
+.theme-animal-island .settings-field textarea,
+.theme-animal-island .settings-field select,
+.theme-animal-island .pet-chat-input textarea {
+  border: 2px solid #ebd29c;
+  border-radius: 14px;
+  color: #553b2b;
+  background: #fffdf8;
+}
+
+.theme-animal-island .search-input:focus,
+.theme-animal-island .app-modal input:focus,
+.theme-animal-island .settings-add-row input:focus,
+.theme-animal-island .settings-field input:focus,
+.theme-animal-island .settings-field textarea:focus,
+.theme-animal-island .settings-field select:focus,
+.theme-animal-island .pet-chat-input textarea:focus {
+  border-color: #f3ad4e;
+  box-shadow: 0 0 0 3px rgba(255, 188, 76, 0.24);
+}
+
+.theme-animal-island .primary-button,
+.theme-animal-island .pet-chat-input button,
+.theme-animal-island .pet-chat-notice button,
+.theme-animal-island .settings-modal footer .primary-button,
+.theme-animal-island .app-modal footer .primary-button {
+  color: #ffffff;
+  border-radius: 14px;
+  background: #43c6a9;
+  box-shadow: 0 4px 0 #248f7c;
+  transform: translateY(-2px);
+}
+
+.theme-animal-island .primary-button:hover,
+.theme-animal-island .pet-chat-input button:hover:not(:disabled),
+.theme-animal-island .pet-chat-notice button:hover,
+.theme-animal-island .settings-modal footer .primary-button:hover,
+.theme-animal-island .app-modal footer .primary-button:hover {
+  background: #35b99b;
+}
+
+.theme-animal-island .primary-button:active,
+.theme-animal-island .pet-chat-input button:active:not(:disabled) {
+  box-shadow: 0 2px 0 #248f7c;
+  transform: translateY(0);
+}
+
+.theme-animal-island .secondary-button,
+.theme-animal-island .window-close,
+.theme-animal-island .app-actions button,
+.theme-animal-island .settings-update-actions button,
+.theme-animal-island .settings-memory-toolbar button,
+.theme-animal-island .settings-memory-editor-actions button:not(.primary-button) {
+  color: #6d4832;
+  border-radius: 12px;
+  background: #f6dfac;
+}
+
+.theme-animal-island .search-quick-tags button,
+.theme-animal-island .app-tags span {
+  color: #694735;
+  background: #fde5aa;
+}
+
+.theme-animal-island .favorite-mark {
+  color: #37604f;
+  background: #c9efda;
+}
+
+.theme-animal-island .modal-backdrop {
+  background: rgba(92, 63, 35, 0.3);
+}
+
+.theme-animal-island .app-modal,
+.theme-animal-island .settings-modal,
+.theme-animal-island .confirmation-modal,
+.theme-animal-island .skin-modal {
+  border: 2px solid #e1bd7c;
+  border-radius: 22px;
+  background: #fff7e8;
+  box-shadow: 0 12px 0 rgba(181, 120, 53, 0.12), 0 20px 44px rgba(85, 57, 30, 0.18);
+}
+
+.theme-animal-island .theme-choice-card {
+  border-radius: 16px;
+  color: #553b2b;
+  background: #ffefcf;
+}
+
+.theme-animal-island .theme-choice-card.active {
+  border-color: #43c6a9;
+  background: #fffaf0;
+}
+
+.theme-animal-island .pet-chat-header,
+.theme-animal-island .pet-chat-input {
+  border-color: #e7c88c;
+}
+
+.theme-animal-island .pet-chat-message p {
+  color: #553b2b;
+  background: #fffaf0;
+  box-shadow: 0 3px 0 rgba(206, 156, 85, 0.18);
+}
+
+.theme-animal-island .pet-chat-message.user p {
+  color: #ffffff;
+  background: #43c6a9;
+}
+
+.theme-animal-island .pet-chat-message p.typing::after {
+  background: #43c6a9;
+}
+
+.pet-menu-window.theme-animal-island {
+  border-radius: 16px;
+  padding: 8px;
+}
+
+.pet-menu-window.theme-animal-island button {
+  color: #62412d;
+  border-radius: 11px;
+}
+
+.pet-menu-window.theme-animal-island button:hover {
+  background: #ffdda0;
+}
+
 @media (max-width: 520px) {
   .drawer-window {
     border-radius: 0;
@@ -2310,6 +2657,10 @@ button:disabled {
   }
 
   .settings-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .theme-choice-grid {
     grid-template-columns: 1fr;
   }
 

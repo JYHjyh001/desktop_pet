@@ -105,7 +105,10 @@ pub struct PetSkinSummary {
 pub struct DrawerSettings {
     pub width: u32,
     pub height: u32,
+    #[serde(default = "default_drawer_theme")]
     pub theme: String,
+    #[serde(default = "default_true")]
+    pub chat_typewriter_enabled: bool,
     #[serde(default = "default_true")]
     pub always_on_top: bool,
     #[serde(default = "default_categories")]
@@ -227,7 +230,8 @@ impl Default for PetDrawerConfig {
             drawer: DrawerSettings {
                 width: 760,
                 height: 540,
-                theme: "light".to_string(),
+                theme: default_drawer_theme(),
+                chat_typewriter_enabled: true,
                 always_on_top: true,
                 categories: default_categories(),
                 quick_search_tags: default_quick_search_tags(),
@@ -244,6 +248,10 @@ impl Default for PetDrawerConfig {
 
 fn default_current_skin() -> String {
     "default".to_string()
+}
+
+fn default_drawer_theme() -> String {
+    "light".to_string()
 }
 
 fn default_true() -> bool {
@@ -519,6 +527,113 @@ pub fn import_pet_skin(
     set_current_pet_skin(app, &skin_id)
 }
 
+pub fn update_pet_skin(
+    app: &AppHandle,
+    skin_id: &str,
+    name: &str,
+    animations: PetAnimationSet,
+    cleared_states: Vec<String>,
+) -> Result<PetSkinSummary, String> {
+    ensure_data_files(app)?;
+
+    let skin_id = safe_skin_id(skin_id)?.to_string();
+    if builtin_pet_skin(&skin_id).is_some() {
+        return Err("内置宠物形象不能编辑".to_string());
+    }
+
+    let skin_dir = skins_dir(app)?.join(&skin_id);
+    let manifest_path = skin_dir.join("pet.json");
+    if !manifest_path.is_file() {
+        return Err("未找到要编辑的宠物形象".to_string());
+    }
+
+    let content = fs::read_to_string(&manifest_path).map_err(|err| err.to_string())?;
+    let mut manifest: PetSkinManifest =
+        serde_json::from_str(&content).map_err(|err| format!("宠物配置格式错误：{err}"))?;
+    let previous_animations = manifest.animations.clone();
+    let cleared_states = cleared_states
+        .into_iter()
+        .filter(|state| matches!(state.as_str(), "hover" | "click" | "dragging"))
+        .collect::<std::collections::HashSet<_>>();
+
+    let updated_animations = PetAnimationSet {
+        idle: update_pet_animation(
+            app,
+            &skin_id,
+            "idle",
+            animations.idle.as_deref(),
+            previous_animations.idle.clone(),
+            false,
+        )?,
+        hover: update_pet_animation(
+            app,
+            &skin_id,
+            "hover",
+            animations.hover.as_deref(),
+            previous_animations.hover.clone(),
+            cleared_states.contains("hover"),
+        )?,
+        dragging: update_pet_animation(
+            app,
+            &skin_id,
+            "dragging",
+            animations.dragging.as_deref(),
+            previous_animations.dragging.clone(),
+            cleared_states.contains("dragging"),
+        )?,
+        click: update_pet_animation(
+            app,
+            &skin_id,
+            "click",
+            animations.click.as_deref(),
+            previous_animations.click.clone(),
+            cleared_states.contains("click"),
+        )?,
+    };
+
+    if updated_animations
+        .idle
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return Err("宠物至少需要保留待机动画".to_string());
+    }
+
+    manifest.name = if name.trim().is_empty() {
+        manifest.name
+    } else {
+        name.trim().to_string()
+    };
+    manifest.animations = updated_animations.clone();
+
+    let content = serde_json::to_string_pretty(&manifest).map_err(|err| err.to_string())?;
+    fs::write(manifest_path, content).map_err(|err| err.to_string())?;
+
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.idle.as_deref(),
+        updated_animations.idle.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.hover.as_deref(),
+        updated_animations.hover.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.dragging.as_deref(),
+        updated_animations.dragging.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.click.as_deref(),
+        updated_animations.click.as_deref(),
+    );
+
+    read_pet_skin(app, &skin_id)
+}
+
 pub fn delete_pet_skin(app: &AppHandle, skin_id: &str) -> Result<PetSkinSummary, String> {
     ensure_data_files(app)?;
 
@@ -651,6 +766,42 @@ fn copy_optional_pet_animation(
     };
 
     copy_pet_animation(app, skin_id, state, source_path).map(Some)
+}
+
+fn update_pet_animation(
+    app: &AppHandle,
+    skin_id: &str,
+    state: &str,
+    source_path: Option<&str>,
+    current_path: Option<String>,
+    remove: bool,
+) -> Result<Option<String>, String> {
+    if remove {
+        return Ok(None);
+    }
+
+    let Some(source_path) = source_path.filter(|value| !value.trim().is_empty()) else {
+        return Ok(current_path);
+    };
+
+    copy_pet_animation(app, skin_id, state, source_path).map(Some)
+}
+
+fn remove_replaced_pet_animation(
+    app: &AppHandle,
+    previous_path: Option<&str>,
+    current_path: Option<&str>,
+) -> Result<(), String> {
+    let Some(previous_path) = previous_path.filter(|path| Some(*path) != current_path) else {
+        return Ok(());
+    };
+
+    let full_path = data_dir(app)?.join(safe_relative_path(previous_path)?);
+    if full_path.is_file() {
+        fs::remove_file(full_path).map_err(|err| format!("清理旧动画失败：{err}"))?;
+    }
+
+    Ok(())
 }
 
 fn copy_pet_animation(

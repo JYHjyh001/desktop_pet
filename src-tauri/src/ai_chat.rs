@@ -456,7 +456,10 @@ fn forget_intent(input: &str) -> Option<ForgetIntent> {
 }
 
 fn normalize_forget_command(input: &str) -> String {
-    let mut command = input.trim().trim_end_matches(['。', '！', '!', '？', '?']).trim();
+    let mut command = input
+        .trim()
+        .trim_end_matches(['。', '！', '!', '？', '?'])
+        .trim();
     for prefix in ["请你", "请", "帮我", "麻烦你"] {
         if let Some(rest) = command.strip_prefix(prefix) {
             command = rest.trim_start();

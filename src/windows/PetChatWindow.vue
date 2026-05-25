@@ -3,11 +3,13 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import type { PetChatMessage, PetChatReply, PetDrawerConfig } from '../types/app'
+import type { DrawerTheme, PetChatMessage, PetChatReply, PetDrawerConfig } from '../types/app'
 
 type ChatMessage = PetChatMessage & {
   id: string
   local?: boolean
+  visibleContent?: string
+  typing?: boolean
 }
 
 const chatWindow = getCurrentWindow()
@@ -25,8 +27,19 @@ const errorMessage = ref('')
 const config = ref<PetDrawerConfig | null>(null)
 const messageListRef = ref<HTMLElement | null>(null)
 let unlistenChatOpened: (() => void) | null = null
+let unlistenThemeChanged: (() => void) | null = null
+let unlistenChatDisplayChanged: (() => void) | null = null
+let typewriterTimer: number | null = null
+let activeTypewriterMessageId: string | null = null
+
+const typewriterBaseDelayMs = 18
+const typewriterMaxSteps = 260
 
 const aiEnabled = computed(() => Boolean(config.value?.ai?.enabled))
+const typewriterEnabled = computed(() => config.value?.drawer.chatTypewriterEnabled !== false)
+const drawerTheme = computed<DrawerTheme>(() =>
+  config.value?.drawer.theme === 'animal-island' ? 'animal-island' : 'light',
+)
 const aiSummary = computed(() => {
   const ai = config.value?.ai
   if (!ai?.enabled) {
@@ -42,10 +55,26 @@ onMounted(async () => {
   unlistenChatOpened = await listen('pet-chat-opened', () => {
     void loadConfig()
   })
+  unlistenThemeChanged = await listen<string>('ui-theme-changed', (event) => {
+    if (config.value) {
+      config.value.drawer.theme = event.payload
+    }
+  })
+  unlistenChatDisplayChanged = await listen<boolean>('ui-chat-display-changed', (event) => {
+    if (config.value) {
+      config.value.drawer.chatTypewriterEnabled = event.payload
+    }
+    if (!event.payload) {
+      finishTypewriter()
+    }
+  })
 })
 
 onBeforeUnmount(() => {
   unlistenChatOpened?.()
+  unlistenThemeChanged?.()
+  unlistenChatDisplayChanged?.()
+  clearTypewriterTimer()
 })
 
 watch(
@@ -107,12 +136,97 @@ function requestMessages() {
     .map(({ role, content }) => ({ role, content }))
 }
 
+function displayedContent(message: ChatMessage) {
+  return message.visibleContent ?? message.content
+}
+
+function clearTypewriterTimer() {
+  if (typewriterTimer !== null) {
+    window.clearTimeout(typewriterTimer)
+    typewriterTimer = null
+  }
+}
+
+function finishTypewriter(messageId = activeTypewriterMessageId) {
+  if (!messageId || messageId !== activeTypewriterMessageId) {
+    return
+  }
+
+  const message = messages.value.find((item) => item.id === messageId)
+  if (message) {
+    message.visibleContent = message.content
+    message.typing = false
+  }
+
+  clearTypewriterTimer()
+  activeTypewriterMessageId = null
+}
+
+function typewriterDelay(character: string) {
+  if (['。', '！', '？', '!', '?', '\n'].includes(character)) {
+    return typewriterBaseDelayMs * 5
+  }
+
+  if (['，', '、', ',', '：', ':', '；', ';'].includes(character)) {
+    return typewriterBaseDelayMs * 2
+  }
+
+  return typewriterBaseDelayMs
+}
+
+function startTypewriter(messageId: string) {
+  finishTypewriter()
+  const message = messages.value.find((item) => item.id === messageId)
+  if (!message) {
+    return
+  }
+
+  const characters = Array.from(message.content)
+  if (
+    characters.length === 0 ||
+    !typewriterEnabled.value ||
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  ) {
+    return
+  }
+
+  message.visibleContent = ''
+  message.typing = true
+  activeTypewriterMessageId = message.id
+  let index = 0
+  const charactersPerStep = Math.max(1, Math.ceil(characters.length / typewriterMaxSteps))
+
+  const revealNext = () => {
+    if (!message.typing || activeTypewriterMessageId !== message.id) {
+      return
+    }
+
+    const nextCharacters = characters.slice(index, index + charactersPerStep).join('')
+    message.visibleContent = `${message.visibleContent ?? ''}${nextCharacters}`
+    index += charactersPerStep
+    if (index >= characters.length) {
+      message.typing = false
+      activeTypewriterMessageId = null
+      typewriterTimer = null
+      return
+    }
+
+    typewriterTimer = window.setTimeout(
+      revealNext,
+      typewriterDelay(nextCharacters[nextCharacters.length - 1] ?? ''),
+    )
+  }
+
+  revealNext()
+}
+
 async function sendMessage() {
   const content = inputText.value.trim()
   if (!content || sending.value) {
     return
   }
 
+  finishTypewriter()
   errorMessage.value = ''
   inputText.value = ''
   messages.value.push({
@@ -126,11 +240,13 @@ async function sendMessage() {
     const reply = await invoke<PetChatReply>('send_pet_chat_message', {
       messages: requestMessages(),
     })
-    messages.value.push({
+    const assistantMessage: ChatMessage = {
       id: `${Date.now()}-assistant`,
       role: 'assistant',
       content: reply.message,
-    })
+    }
+    messages.value.push(assistantMessage)
+    startTypewriter(assistantMessage.id)
     if (reply.memoryWarning) {
       errorMessage.value = `本次回复已生成，但宠物记忆未能保存：${reply.memoryWarning}`
     }
@@ -152,7 +268,7 @@ function handleInputKeydown(event: KeyboardEvent) {
 </script>
 
 <template>
-  <main class="pet-chat-window">
+  <main class="pet-chat-window" :class="`theme-${drawerTheme}`">
     <header class="pet-chat-header" @pointerdown="startDrag">
       <div>
         <h1>宠物对话</h1>
@@ -180,7 +296,7 @@ function handleInputKeydown(event: KeyboardEvent) {
         :class="message.role"
       >
         <span>{{ message.role === 'user' ? '你' : '宠物' }}</span>
-        <p>{{ message.content }}</p>
+        <p :class="{ typing: message.typing }">{{ displayedContent(message) }}</p>
       </article>
       <article v-if="sending" class="pet-chat-message assistant">
         <span>宠物</span>

@@ -68,6 +68,7 @@ export interface RuntimeInfo {
 }
 
 export type AiProvider = 'openai' | 'deepseek' | 'anthropic' | 'gemini' | 'ollama' | 'custom'
+export type DrawerTheme = 'light' | 'animal-island'
 
 export interface AiConnectionProfile {
   id: string
@@ -176,7 +177,8 @@ export interface PetDrawerConfig {
   drawer: {
     width: number
     height: number
-    theme: string
+    theme: DrawerTheme | string
+    chatTypewriterEnabled?: boolean
     alwaysOnTop: boolean
     categories?: string[]
     quickSearchTags?: string[]

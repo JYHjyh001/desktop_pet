@@ -1,5 +1,29 @@
 <script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import type { DrawerTheme, PetDrawerConfig } from '../types/app'
+
+const drawerTheme = ref<DrawerTheme>('light')
+const themeClass = computed(() => `theme-${drawerTheme.value}`)
+let unlistenThemeChanged: (() => void) | null = null
+
+onMounted(async () => {
+  try {
+    const config = await invoke<PetDrawerConfig>('get_config')
+    drawerTheme.value = config.drawer.theme === 'animal-island' ? 'animal-island' : 'light'
+  } catch {
+    drawerTheme.value = 'light'
+  }
+
+  unlistenThemeChanged = await listen<string>('ui-theme-changed', (event) => {
+    drawerTheme.value = event.payload === 'animal-island' ? 'animal-island' : 'light'
+  })
+})
+
+onBeforeUnmount(() => {
+  unlistenThemeChanged?.()
+})
 
 async function runAction(action: 'chat' | 'drawer' | 'hidePet' | 'quit') {
   await invoke('hide_pet_menu')
@@ -28,7 +52,7 @@ async function hideMenu() {
 </script>
 
 <template>
-  <main class="pet-menu-window" @mouseleave="hideMenu">
+  <main class="pet-menu-window" :class="themeClass" @mouseleave="hideMenu">
     <button type="button" @click="runAction('chat')">对话</button>
     <button type="button" @click="runAction('drawer')">打开抽屉</button>
     <button type="button" @click="runAction('hidePet')">隐藏宠物</button>

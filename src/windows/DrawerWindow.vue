@@ -14,6 +14,7 @@ import type {
   AiConnectionTestResult,
   AppDraft,
   AppItemKind,
+  DrawerTheme,
   PetMemory,
   PetMemoryDraft,
   PetAnimationSet,
@@ -55,8 +56,11 @@ const petSkinLoading = ref(false)
 const petSkinError = ref('')
 const skinImporting = ref(false)
 const skinDeleting = ref(false)
+const editingPetSkinId = ref<string | null>(null)
+const clearedPetAnimationStates = ref<Array<keyof PetAnimationSet>>([])
 const quickSearchTags = ref<string[]>([])
 const tagDisplayMode = ref<'compact' | 'detailed'>('compact')
+const drawerTheme = ref<DrawerTheme>('light')
 const displayModeSaving = ref(false)
 const settingsSaving = ref(false)
 const settingsError = ref('')
@@ -125,6 +129,7 @@ const memoryDraft = reactive({
 type SettingsSectionId =
   | 'entries'
   | 'system'
+  | 'appearance'
   | 'ai'
   | 'memory'
   | 'window'
@@ -134,6 +139,7 @@ type SettingsSectionId =
 const settingsSections: Array<{ id: SettingsSectionId; label: string; description: string }> = [
   { id: 'entries', label: '入口管理', description: '分类和快捷搜索' },
   { id: 'system', label: '系统', description: '自启和常用规则' },
+  { id: 'appearance', label: '外观', description: '界面主题风格' },
   { id: 'ai', label: 'AI 接口', description: '宠物聊天 API' },
   { id: 'memory', label: '记忆', description: '长期记忆管理' },
   { id: 'window', label: '窗口', description: '置顶行为' },
@@ -272,6 +278,22 @@ const targetPlaceholder = computed(() => {
 })
 
 const maxAiProfileCount = 20
+const themeOptions: Array<{
+  id: DrawerTheme
+  name: string
+  description: string
+}> = [
+  {
+    id: 'light',
+    name: '清爽默认',
+    description: '简洁蓝灰色面板，保留当前应用风格。',
+  },
+  {
+    id: 'animal-island',
+    name: '动物岛',
+    description: '暖色纸感底色，搭配薄荷绿、果橙和圆润按钮。',
+  },
+]
 
 const settingsDraft = reactive({
   categories: [] as string[],
@@ -283,6 +305,8 @@ const settingsDraft = reactive({
   drawerAlwaysOnTop: true,
   startOnBoot: false,
   autoFavoriteEnabled: true,
+  drawerTheme: 'light' as DrawerTheme,
+  chatTypewriterEnabled: true,
   aiEnabled: false,
   aiMemoryEnabled: true,
   aiProvider: 'openai' as AiProvider,
@@ -299,6 +323,18 @@ const settingsDraft = reactive({
 
 const selectedAiProfile = computed(() =>
   settingsDraft.aiProfiles.find((profile) => profile.id === settingsDraft.aiActiveProfileId),
+)
+const isEditingPetSkin = computed(() => Boolean(editingPetSkinId.value))
+const canManageSelectedPetSkin = computed(
+  () =>
+    Boolean(
+      selectedPetSkin.value &&
+        !selectedPetSkin.value.builtin &&
+        selectedPetSkin.value.id !== 'legacy_custom',
+    ),
+)
+const previewDrawerTheme = computed(() =>
+  settingsModalVisible.value ? settingsDraft.drawerTheme : drawerTheme.value,
 )
 
 onMounted(() => {
@@ -345,6 +381,7 @@ async function openSettings() {
 function applyDrawerConfig(config: PetDrawerConfig) {
   quickSearchTags.value = config.drawer.quickSearchTags ?? []
   tagDisplayMode.value = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
+  drawerTheme.value = normalizeDrawerTheme(config.drawer.theme)
   store.setConfiguredCategories(config.drawer.categories ?? [])
   syncSettingsDraft(config)
 }
@@ -357,6 +394,8 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.newCategory = ''
   settingsDraft.newQuickTag = ''
   settingsDraft.tagDisplayMode = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
+  settingsDraft.drawerTheme = normalizeDrawerTheme(config.drawer.theme)
+  settingsDraft.chatTypewriterEnabled = config.drawer.chatTypewriterEnabled ?? true
   settingsDraft.petAlwaysOnTop = config.pet.alwaysOnTop
   settingsDraft.drawerAlwaysOnTop = config.drawer.alwaysOnTop
   settingsDraft.startOnBoot = Boolean(config.system?.startOnBoot)
@@ -389,6 +428,10 @@ function syncSettingsDraft(config: PetDrawerConfig) {
 
 function normalizeTagDisplayMode(value?: string | null): 'compact' | 'detailed' {
   return value === 'detailed' ? 'detailed' : 'compact'
+}
+
+function normalizeDrawerTheme(value?: string | null): DrawerTheme {
+  return value === 'animal-island' ? 'animal-island' : 'light'
 }
 
 function normalizeAiProvider(value?: string | null): AiProvider {
@@ -564,6 +607,8 @@ async function saveSettings() {
   try {
     const config = await saveDrawerPreferences(settingsDraft.tagDisplayMode)
     applyDrawerConfig(config)
+    void emitEvent('ui-theme-changed', config.drawer.theme)
+    void emitEvent('ui-chat-display-changed', config.drawer.chatTypewriterEnabled ?? true)
     settingsModalVisible.value = false
   } catch (err) {
     settingsError.value = String(err)
@@ -583,6 +628,8 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
     categories: [...settingsDraft.categories],
     quickSearchTags: [...settingsDraft.quickSearchTags],
     tagDisplayMode: tagMode,
+    theme: settingsDraft.drawerTheme,
+    chatTypewriterEnabled: settingsDraft.chatTypewriterEnabled,
     petAlwaysOnTop: settingsDraft.petAlwaysOnTop,
     drawerAlwaysOnTop: settingsDraft.drawerAlwaysOnTop,
     startOnBoot: settingsDraft.startOnBoot,
@@ -999,6 +1046,7 @@ async function loadPetSkins() {
 }
 
 async function openPetSkinManager() {
+  resetPetSkinDraft()
   petSkinModalVisible.value = true
   await loadPetSkins()
 }
@@ -1137,6 +1185,9 @@ async function autoFillAppIcon(path: string) {
 }
 
 async function selectPetSkin(skin: PetSkinSummary) {
+  if (isEditingPetSkin.value && editingPetSkinId.value !== skin.id) {
+    resetPetSkinDraft()
+  }
   selectedPetSkin.value = skin
 
   try {
@@ -1156,6 +1207,7 @@ async function pickPetAnimation(state: keyof PetAnimationSet) {
   }
 
   skinDraft[state] = selected
+  clearedPetAnimationStates.value = clearedPetAnimationStates.value.filter((item) => item !== state)
 
   if (state === 'idle' && !skinDraft.name.trim()) {
     skinDraft.name = appNameFromPath(selected)
@@ -1164,10 +1216,87 @@ async function pickPetAnimation(state: keyof PetAnimationSet) {
 
 function clearPetAnimation(state: keyof PetAnimationSet) {
   skinDraft[state] = ''
+  if (
+    isEditingPetSkin.value &&
+    state !== 'idle' &&
+    selectedPetSkin.value?.id === editingPetSkinId.value &&
+    selectedPetSkin.value.animations[state]
+  ) {
+    if (!clearedPetAnimationStates.value.includes(state)) {
+      clearedPetAnimationStates.value.push(state)
+    }
+  }
 }
 
-async function importPetSkin() {
-  if (!skinDraft.idle) {
+function resetPetSkinDraft() {
+  editingPetSkinId.value = null
+  clearedPetAnimationStates.value = []
+  skinDraft.name = ''
+  skinDraft.idle = ''
+  skinDraft.hover = ''
+  skinDraft.dragging = ''
+  skinDraft.click = ''
+}
+
+function editSelectedPetSkin() {
+  const skin = selectedPetSkin.value
+  if (!skin || !canManageSelectedPetSkin.value) {
+    petSkinError.value =
+      skin?.id === 'legacy_custom'
+        ? '旧版单图形象请重新导入后再编辑动画'
+        : '内置宠物形象不能编辑'
+    return
+  }
+
+  editingPetSkinId.value = skin.id
+  clearedPetAnimationStates.value = []
+  skinDraft.name = skin.name
+  skinDraft.idle = ''
+  skinDraft.hover = ''
+  skinDraft.dragging = ''
+  skinDraft.click = ''
+  petSkinError.value = ''
+}
+
+function isPetAnimationCleared(state: keyof PetAnimationSet) {
+  return clearedPetAnimationStates.value.includes(state)
+}
+
+function restorePetAnimation(state: keyof PetAnimationSet) {
+  clearedPetAnimationStates.value = clearedPetAnimationStates.value.filter((item) => item !== state)
+}
+
+function canClearPetAnimation(state: keyof PetAnimationSet) {
+  if (skinDraft[state]) {
+    return true
+  }
+
+  return (
+    isEditingPetSkin.value &&
+    state !== 'idle' &&
+    Boolean(selectedPetSkin.value?.animations[state]) &&
+    !isPetAnimationCleared(state)
+  )
+}
+
+function petAnimationDraftLabel(state: keyof PetAnimationSet) {
+  if (skinDraft[state]) {
+    return skinDraft[state]
+  }
+
+  if (!isEditingPetSkin.value) {
+    return '未选择图片'
+  }
+
+  if (isPetAnimationCleared(state)) {
+    return '保存后移除此动画，改用待机动画'
+  }
+
+  return state === 'idle' ? '未选择替换素材，将保留当前待机动画' : '未选择替换素材，将保留当前设置'
+}
+
+async function savePetSkin() {
+  if (!isEditingPetSkin.value && !skinDraft.idle) {
     petSkinError.value = '导入宠物至少需要选择待机动画'
     return
   }
@@ -1176,24 +1305,32 @@ async function importPetSkin() {
   petSkinError.value = ''
 
   try {
-    const imported = await invoke<PetSkinSummary>('import_pet_skin', {
-      name: skinDraft.name.trim() || '自定义宠物',
-      animations: {
-        idle: skinDraft.idle,
-        hover: skinDraft.hover || null,
-        dragging: skinDraft.dragging || null,
-        click: skinDraft.click || null,
-      },
-    })
+    const editingId = editingPetSkinId.value
+    const animations = {
+      idle: skinDraft.idle || null,
+      hover: skinDraft.hover || null,
+      dragging: skinDraft.dragging || null,
+      click: skinDraft.click || null,
+    }
+    const saved = editingId
+      ? await invoke<PetSkinSummary>('update_pet_skin', {
+          skinId: editingId,
+          name: skinDraft.name.trim(),
+          animations,
+          clearedStates: clearedPetAnimationStates.value,
+        })
+      : await invoke<PetSkinSummary>('import_pet_skin', {
+          name: skinDraft.name.trim() || '自定义宠物',
+          animations,
+        })
 
-    currentPetSkin.value = imported
-    selectedPetSkin.value = imported
-    skinDraft.name = ''
-    skinDraft.idle = ''
-    skinDraft.hover = ''
-    skinDraft.dragging = ''
-    skinDraft.click = ''
-    await emitEvent('pet-skin-updated', imported.id)
+    const refreshCurrentSkin = !editingId || currentPetSkin.value?.id === saved.id
+    if (refreshCurrentSkin) {
+      currentPetSkin.value = saved
+      await emitEvent('pet-skin-updated', saved.id)
+    }
+    selectedPetSkin.value = saved
+    resetPetSkinDraft()
     await loadPetSkins()
   } catch (err) {
     petSkinError.value = String(err)
@@ -1405,7 +1542,7 @@ async function hideDrawer() {
 </script>
 
 <template>
-  <main class="drawer-window">
+  <main class="drawer-window" :class="`theme-${previewDrawerTheme}`">
     <header class="drawer-header" @pointerdown="startDrawerDrag">
       <div class="drawer-titlebar">
         <h1>PetDrawer</h1>
@@ -1586,7 +1723,7 @@ async function hideDrawer() {
         <header>
           <div>
             <h2>更换宠物形象</h2>
-            <p>从宠物形象文件夹选择，或导入新的多状态宠物。</p>
+            <p>选择现有形象，或导入、编辑本机多状态宠物。</p>
           </div>
           <button type="button" class="window-close" @click="petSkinModalVisible = false">
             ×
@@ -1662,7 +1799,15 @@ async function hideDrawer() {
 
             <div class="skin-detail-actions" v-if="selectedPetSkin">
               <button
-                v-if="!selectedPetSkin.builtin"
+                v-if="canManageSelectedPetSkin"
+                type="button"
+                class="secondary-button skin-edit-button"
+                @click="editSelectedPetSkin"
+              >
+                编辑动画
+              </button>
+              <button
+                v-if="canManageSelectedPetSkin"
                 type="button"
                 class="skin-delete-button"
                 :disabled="skinDeleting"
@@ -1670,13 +1815,17 @@ async function hideDrawer() {
               >
                 {{ skinDeleting ? '删除中...' : '删除形象' }}
               </button>
-              <small v-else>内置默认凯蒂会随程序保留，不能从这里删除。</small>
+              <small v-else-if="selectedPetSkin.builtin">内置默认凯蒂会随程序保留，不能从这里编辑或删除。</small>
+              <small v-else>旧版单图形象请在下方重新导入为多状态宠物后编辑。</small>
             </div>
           </aside>
         </div>
 
         <section class="skin-import-panel">
-          <h3>导入宠物</h3>
+          <h3>{{ isEditingPetSkin ? '编辑宠物形象' : '导入宠物' }}</h3>
+          <p v-if="isEditingPetSkin" class="settings-empty">
+            仅选择需要替换的素材；未选择的动画会继续保留当前配置。
+          </p>
           <label>
             宠物名称
             <input v-model="skinDraft.name" placeholder="例如：小猫助手" autocomplete="off" />
@@ -1686,28 +1835,47 @@ async function hideDrawer() {
             <div v-for="field in animationFields" :key="field.key" class="animation-picker">
               <div>
                 <strong>{{ field.label }}</strong>
-                <span>{{ field.required ? '必填' : '可选，未设置时使用待机动画' }}</span>
+                <span>
+                  {{
+                    isEditingPetSkin
+                      ? field.required
+                        ? '可替换，未选择时保留当前动画'
+                        : '可替换或移除，未选择时保留当前设置'
+                      : field.required
+                        ? '必填'
+                        : '可选，未设置时使用待机动画'
+                  }}
+                </span>
                 <p :title="skinDraft[field.key]">
-                  {{ skinDraft[field.key] || '未选择图片' }}
+                  {{ petAnimationDraftLabel(field.key) }}
                 </p>
               </div>
               <div class="animation-picker-actions">
                 <button type="button" @click="pickPetAnimation(field.key)">选择</button>
                 <button
-                  v-if="skinDraft[field.key]"
+                  v-if="canClearPetAnimation(field.key)"
                   type="button"
                   @click="clearPetAnimation(field.key)"
                 >
-                  清除
+                  {{ isEditingPetSkin && field.key !== 'idle' && selectedPetSkin?.animations[field.key] ? '移除' : '清除' }}
+                </button>
+                <button
+                  v-if="isPetAnimationCleared(field.key)"
+                  type="button"
+                  @click="restorePetAnimation(field.key)"
+                >
+                  保留原动画
                 </button>
               </div>
             </div>
           </div>
 
           <footer>
-            <button type="button" @click="petSkinModalVisible = false">关闭</button>
-            <button class="primary-button" type="button" :disabled="skinImporting" @click="importPetSkin">
-              {{ skinImporting ? '导入中...' : '导入并使用' }}
+            <button type="button" @click="isEditingPetSkin ? resetPetSkinDraft() : (petSkinModalVisible = false)">
+              {{ isEditingPetSkin ? '取消编辑' : '关闭' }}
+            </button>
+            <button class="primary-button" type="button" :disabled="skinImporting" @click="savePetSkin">
+              {{ skinImporting ? (isEditingPetSkin ? '保存中...' : '导入中...') : (isEditingPetSkin ? '保存修改' : '导入并使用') }}
             </button>
           </footer>
         </section>
@@ -1806,6 +1974,40 @@ async function hideDrawer() {
               <p class="settings-empty">
                 关闭自动加入常用后，程序仍会记录打开次数，但不会再根据打开频率自动新增或移出“常用”。
               </p>
+            </section>
+
+            <section v-show="activeSettingsSection === 'appearance'" class="settings-section">
+              <h3>界面主题</h3>
+              <p class="settings-empty">
+                选择后可立即预览，点击“保存设置”后将应用到抽屉、对话窗口与右键菜单。
+              </p>
+              <div class="theme-choice-grid" role="radiogroup" aria-label="界面主题">
+                <button
+                  v-for="option in themeOptions"
+                  :key="option.id"
+                  class="theme-choice-card"
+                  :class="{ active: settingsDraft.drawerTheme === option.id, [`preview-${option.id}`]: true }"
+                  type="button"
+                  role="radio"
+                  :aria-checked="settingsDraft.drawerTheme === option.id"
+                  @click="settingsDraft.drawerTheme = option.id"
+                >
+                  <span class="theme-choice-preview">
+                    <i></i>
+                    <i></i>
+                    <i></i>
+                  </span>
+                  <strong>{{ option.name }}</strong>
+                  <small>{{ option.description }}</small>
+                </button>
+              </div>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>逐字显示聊天回复</strong>
+                  <small>关闭后宠物回复会立即完整显示；开启时长回复会自动加速完成展示。</small>
+                </span>
+                <input v-model="settingsDraft.chatTypewriterEnabled" type="checkbox" />
+              </label>
             </section>
 
             <section v-show="activeSettingsSection === 'ai'" class="settings-section">
