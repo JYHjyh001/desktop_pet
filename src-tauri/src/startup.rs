@@ -204,15 +204,69 @@ fn command_result(output: std::process::Output, context: &str) -> Result<(), Str
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+pub fn is_start_on_boot_enabled() -> Result<bool, String> {
+    launch_agent_plist_path().map(|path| path.exists())
+}
+
+#[cfg(target_os = "macos")]
+pub fn set_start_on_boot(enabled: bool) -> Result<(), String> {
+    let plist_path = launch_agent_plist_path()?;
+    if enabled {
+        let current_path = std::env::current_exe()
+            .map_err(|err| format!("无法获取程序路径：{err}"))?;
+        let label = "com.petdrawer.app";
+        let plist = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>"#,
+            exe = current_path.to_string_lossy(),
+        );
+        if let Some(parent) = plist_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("创建 LaunchAgents 目录失败：{err}"))?;
+        }
+        std::fs::write(&plist_path, plist)
+            .map_err(|err| format!("写入 plist 失败：{err}"))?;
+    } else {
+        if plist_path.exists() {
+            std::fs::remove_file(&plist_path)
+                .map_err(|err| format!("移除 plist 失败：{err}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_plist_path() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "无法获取用户目录".to_string())?;
+    Ok(std::path::PathBuf::from(home)
+        .join("Library")
+        .join("LaunchAgents")
+        .join("com.petdrawer.app.plist"))
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 pub fn is_start_on_boot_enabled() -> Result<bool, String> {
     Ok(false)
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 pub fn set_start_on_boot(enabled: bool) -> Result<(), String> {
     if enabled {
-        Err("开机自启当前仅支持 Windows 版本".to_string())
+        Err("开机自启当前仅支持 Windows 和 macOS 版本".to_string())
     } else {
         Ok(())
     }

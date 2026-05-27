@@ -217,8 +217,26 @@ try {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn fetch_latest_release_url(_url: &str) -> Result<String, String> {
-    Err("当前检查更新功能仅支持 Windows 版本".to_string())
+fn fetch_latest_release_url(url: &str) -> Result<String, String> {
+    let output = std::process::Command::new("curl")
+        .args(["-sIL", "-o", "/dev/null", "-w", "%{url_effective}", url])
+        .output()
+        .map_err(|err| format!("无法启动 curl 检查更新：{err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            return Err("获取 GitHub 最新发布地址失败".to_string());
+        }
+        return Err(stderr);
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Err("GitHub 最新发布地址为空".to_string());
+    }
+
+    Ok(stdout)
 }
 
 fn release_tag_from_url(url: &str) -> Result<String, String> {
@@ -239,23 +257,33 @@ fn release_tag_from_url(url: &str) -> Result<String, String> {
     Ok(tag)
 }
 
+#[cfg(target_os = "windows")]
 fn setup_asset_name(version: &str) -> String {
     format!("PetDrawer_{version}_x64-setup.exe")
 }
 
+#[cfg(target_os = "macos")]
+fn setup_asset_name(version: &str) -> String {
+    format!("PetDrawer_{version}_aarch64.dmg")
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+fn setup_asset_name(version: &str) -> String {
+    format!("PetDrawer_{version}_amd64.AppImage")
+}
+
 fn select_exe_asset(assets: &[GitHubReleaseAsset]) -> Option<&GitHubReleaseAsset> {
-    assets
-        .iter()
-        .find(|asset| {
-            let name = asset.name.to_lowercase();
-            name.ends_with(".exe") && name.contains("setup")
-        })
-        .or_else(|| {
-            assets.iter().find(|asset| {
-                let name = asset.name.to_lowercase();
-                name.ends_with(".exe")
-            })
-        })
+    #[cfg(target_os = "windows")]
+    let ext = "exe";
+    #[cfg(target_os = "macos")]
+    let ext = "dmg";
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    let ext = "AppImage";
+
+    assets.iter().find(|asset| {
+        let name = asset.name.to_lowercase();
+        name.ends_with(ext)
+    })
 }
 
 fn normalize_version(value: &str) -> String {
