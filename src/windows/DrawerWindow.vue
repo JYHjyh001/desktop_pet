@@ -14,6 +14,8 @@ import type {
   AiConnectionTestResult,
   AppDraft,
   AppItemKind,
+  Companion,
+  CompanionDraft,
   DrawerTheme,
   PetMemory,
   PetMemoryDraft,
@@ -52,6 +54,12 @@ const settingsModalVisible = ref(false)
 const petSkins = ref<PetSkinSummary[]>([])
 const currentPetSkin = ref<PetSkinSummary | null>(null)
 const selectedPetSkin = ref<PetSkinSummary | null>(null)
+const companions = ref<Companion[]>([])
+const currentCompanion = ref<Companion | null>(null)
+const companionLoading = ref(false)
+const companionStatus = ref('')
+const companionError = ref('')
+const editingCompanionId = ref<string | null>(null)
 const petSkinLoading = ref(false)
 const petSkinError = ref('')
 const skinImporting = ref(false)
@@ -89,6 +97,17 @@ const skinDraft = reactive({
   hover: '',
   dragging: '',
   click: '',
+})
+const companionDraft = reactive({
+  name: '',
+  personaPrompt: '',
+  systemPrompt: '',
+  model: '',
+  voiceId: '',
+  skinId: 'default',
+  favorability: 0,
+  intimacy: 0,
+  mood: '',
 })
 
 const animationFields: Array<{
@@ -130,6 +149,7 @@ type SettingsSectionId =
   | 'entries'
   | 'system'
   | 'appearance'
+  | 'companion'
   | 'ai'
   | 'memory'
   | 'window'
@@ -140,6 +160,7 @@ const settingsSections: Array<{ id: SettingsSectionId; label: string; descriptio
   { id: 'entries', label: '入口管理', description: '分类和快捷搜索' },
   { id: 'system', label: '系统', description: '自启和常用规则' },
   { id: 'appearance', label: '外观', description: '界面主题风格' },
+  { id: 'companion', label: '伴侣', description: '角色与切换' },
   { id: 'ai', label: 'AI 接口', description: '宠物聊天 API' },
   { id: 'memory', label: '记忆', description: '长期记忆管理' },
   { id: 'window', label: '窗口', description: '置顶行为' },
@@ -313,7 +334,7 @@ const settingsDraft = reactive({
   aiApiKey: '',
   aiBaseUrl: 'https://api.openai.com/v1',
   aiModel: 'gpt-4o-mini',
-  aiSystemPrompt: '你是一个友好、简洁的桌面宠物助手。',
+  aiSystemPrompt: '请遵循当前伴侣档案中的身份与表达方式，尊重用户隐私，回复自然且清晰。',
   aiTemperature: 0.7,
   aiMaxTokens: 800,
   aiActiveProfileId: '',
@@ -340,6 +361,7 @@ const previewDrawerTheme = computed(() =>
 onMounted(() => {
   void store.loadApps()
   void loadPetSkins()
+  void loadCompanions()
   void loadDrawerSettings()
 })
 
@@ -367,11 +389,14 @@ async function openSettings() {
   aiTestMessage.value = ''
   aiProfileError.value = ''
   aiProfileStatus.value = ''
+  companionError.value = ''
+  companionStatus.value = ''
   petMemoryError.value = ''
   runtimeInfoError.value = ''
   activeSettingsSection.value = 'entries'
   await Promise.all([
     loadDrawerSettings(),
+    loadCompanions(),
     loadPetMemories(),
     checkForUpdate(),
     loadRuntimeInfo(),
@@ -407,7 +432,8 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.aiBaseUrl = config.ai?.baseUrl ?? selectedAiProviderPreset().baseUrl
   settingsDraft.aiModel = config.ai?.model ?? selectedAiProviderPreset().model
   settingsDraft.aiSystemPrompt =
-    config.ai?.systemPrompt || '你是一个友好、简洁的桌面宠物助手。'
+    config.ai?.systemPrompt ||
+    '请遵循当前伴侣档案中的身份与表达方式，尊重用户隐私，回复自然且清晰。'
   settingsDraft.aiTemperature = config.ai?.temperature ?? 0.7
   settingsDraft.aiMaxTokens = config.ai?.maxTokens ?? 800
   settingsDraft.aiProfiles = (config.ai?.profiles ?? []).map((profile) => ({
@@ -477,6 +503,17 @@ function selectAiProfile(profile: AiConnectionProfile) {
   aiProfileStatus.value = `已切换到「${profile.label}」，保存设置后宠物聊天将使用该配置。`
 }
 
+function selectAiProfileFromList(event: Event) {
+  const id = (event.target as HTMLSelectElement).value
+  const profile = settingsDraft.aiProfiles.find((item) => item.id === id)
+  if (profile) {
+    selectAiProfile(profile)
+    return
+  }
+  settingsDraft.aiActiveProfileId = ''
+  aiProfileStatus.value = '当前表单未绑定保存的 API 配置标签。'
+}
+
 function addAiProfile() {
   const label = settingsDraft.newAiProfileLabel.trim()
   aiProfileError.value = ''
@@ -541,6 +578,12 @@ async function removeAiProfile(profile: AiConnectionProfile) {
   }
   aiProfileError.value = ''
   aiProfileStatus.value = `已移除「${profile.label}」，点击“保存设置”后写入本机配置。`
+}
+
+function removeSelectedAiProfile() {
+  if (selectedAiProfile.value) {
+    void removeAiProfile(selectedAiProfile.value)
+  }
 }
 
 function addSettingsCategory() {
@@ -810,8 +853,8 @@ async function clearPetMemories() {
   if (
     !(await requestImportantConfirmation({
       title: '清空长期记忆',
-      message: '确认清空所有宠物长期记忆？短期聊天记录不会被删除。',
-      detail: '所有长期记忆将从本机数据库永久删除，且此操作无法撤销。',
+      message: '确认清空当前伴侣的长期记忆？聊天记录不会被删除。',
+      detail: '当前伴侣的长期记忆将从本机数据库永久删除，且此操作无法撤销。',
       confirmLabel: '永久清空',
       variant: 'danger',
     }))
@@ -824,7 +867,7 @@ async function clearPetMemories() {
     petMemoryError.value = ''
     await invoke('clear_pet_memories')
     await loadPetMemories()
-    petMemoryStatus.value = '已清空长期记忆。'
+    petMemoryStatus.value = '已清空当前伴侣的长期记忆。'
   } catch (err) {
     petMemoryError.value = String(err)
   }
@@ -834,8 +877,8 @@ async function clearPetMemoryMessages() {
   if (
     !(await requestImportantConfirmation({
       title: '清空短期聊天记录',
-      message: '确认清空所有宠物短期聊天记录？长期记忆不会被删除。',
-      detail: '清空后宠物不会再读取这些最近对话作为上下文，且无法撤销。',
+      message: '确认清空当前伴侣的聊天记录？长期记忆不会被删除。',
+      detail: '清空后当前伴侣不会再读取这些最近对话作为上下文，且无法撤销。',
       confirmLabel: '永久清空',
       variant: 'danger',
     }))
@@ -848,7 +891,8 @@ async function clearPetMemoryMessages() {
     petMemoryStatus.value = ''
     petMemoryError.value = ''
     await invoke('clear_pet_memory_messages')
-    petMemoryStatus.value = '已清空短期聊天记录。'
+    await emitEvent('companion-changed', currentCompanion.value?.id ?? 'default')
+    petMemoryStatus.value = '已清空当前伴侣的聊天记录。'
   } catch (err) {
     petMemoryError.value = String(err)
   } finally {
@@ -870,8 +914,8 @@ async function importPetMemory() {
   if (
     !(await requestImportantConfirmation({
       title: '覆盖本机记忆',
-      message: '导入会替换当前本机宠物长期记忆和最近聊天记录，确认继续？',
-      detail: '当前本机记忆将被所选 JSON 文件中的内容覆盖，原数据无法从应用恢复。',
+      message: '导入会替换当前伴侣的长期记忆和聊天记录，确认继续？',
+      detail: '当前伴侣的本机记忆将被所选 JSON 文件中的内容覆盖，原数据无法从应用恢复。',
       confirmLabel: '覆盖并导入',
       variant: 'danger',
     }))
@@ -885,6 +929,7 @@ async function importPetMemory() {
 
   try {
     petMemories.value = await invoke<PetMemory[]>('import_pet_memory', { path: selected })
+    await emitEvent('companion-changed', currentCompanion.value?.id ?? 'default')
     petMemoryStatus.value = '记忆导入完成。'
   } catch (err) {
     petMemoryError.value = String(err)
@@ -1019,6 +1064,159 @@ async function loadRuntimeInfo() {
     runtimeInfoError.value = String(err)
   } finally {
     runtimeInfoLoading.value = false
+  }
+}
+
+function fillCompanionDraft(companion?: Companion | null) {
+  editingCompanionId.value = companion?.id ?? null
+  companionDraft.name = companion?.name ?? ''
+  companionDraft.personaPrompt = companion?.personaPrompt ?? ''
+  companionDraft.systemPrompt = companion?.systemPrompt ?? ''
+  companionDraft.model = companion?.model ?? ''
+  companionDraft.voiceId = companion?.voiceId ?? ''
+  companionDraft.skinId = companion?.skinId ?? currentPetSkin.value?.id ?? 'default'
+  companionDraft.favorability = companion?.relationshipState.favorability ?? 0
+  companionDraft.intimacy = companion?.relationshipState.intimacy ?? 0
+  companionDraft.mood = companion?.relationshipState.mood ?? ''
+}
+
+async function loadCompanions() {
+  companionLoading.value = true
+  companionError.value = ''
+
+  try {
+    const [items, current] = await Promise.all([
+      invoke<Companion[]>('list_companions'),
+      invoke<Companion>('get_current_companion'),
+    ])
+    companions.value = items
+    currentCompanion.value = current
+    if (!editingCompanionId.value) {
+      fillCompanionDraft(current)
+    }
+  } catch (err) {
+    companionError.value = String(err)
+  } finally {
+    companionLoading.value = false
+  }
+}
+
+function startNewCompanion() {
+  fillCompanionDraft()
+  companionDraft.skinId = currentPetSkin.value?.id ?? 'default'
+  companionDraft.personaPrompt = '你是一个有独特性格的桌面伴侣，请自然、真诚地陪伴用户交流。'
+}
+
+function editCompanion(companion: Companion) {
+  fillCompanionDraft(companion)
+  companionStatus.value = `正在编辑「${companion.name}」的档案。`
+}
+
+function companionSkinLabel(companion: Companion) {
+  return petSkins.value.find((skin) => skin.id === companion.skinId)?.name ?? '默认形象'
+}
+
+function buildCompanionDraft(): CompanionDraft {
+  return {
+    ...(editingCompanionId.value ? { id: editingCompanionId.value } : {}),
+    name: companionDraft.name.trim(),
+    personaPrompt: companionDraft.personaPrompt.trim(),
+    systemPrompt: companionDraft.systemPrompt.trim(),
+    model: companionDraft.model.trim(),
+    voiceId: companionDraft.voiceId.trim(),
+    skinId: companionDraft.skinId || 'default',
+    relationshipState: {
+      favorability: safeInteger(companionDraft.favorability, 0),
+      intimacy: safeInteger(companionDraft.intimacy, 0),
+      mood: companionDraft.mood.trim(),
+    },
+  }
+}
+
+async function saveCompanion() {
+  if (!companionDraft.name.trim() || !companionDraft.personaPrompt.trim()) {
+    companionError.value = '伴侣名称和角色设定不能为空。'
+    return
+  }
+
+  companionLoading.value = true
+  companionError.value = ''
+  companionStatus.value = ''
+  try {
+    const isNewCompanion = !editingCompanionId.value
+    const saved = await invoke<Companion>('upsert_companion', { draft: buildCompanionDraft() })
+    editingCompanionId.value = saved.id
+    if (isNewCompanion || currentCompanion.value?.id === saved.id) {
+      const current = await invoke<Companion>('switch_companion', { companionId: saved.id })
+      currentCompanion.value = current
+      await emitEvent('pet-skin-updated', current.skinId)
+      await emitEvent('companion-changed', current.id)
+      await Promise.all([loadPetSkins(), loadPetMemories()])
+    }
+    await loadCompanions()
+    fillCompanionDraft(companions.value.find((companion) => companion.id === saved.id) ?? saved)
+    companionStatus.value = `伴侣「${saved.name}」已保存到本机。`
+  } catch (err) {
+    companionError.value = String(err)
+  } finally {
+    companionLoading.value = false
+  }
+}
+
+async function activateCompanion(companion: Companion) {
+  companionLoading.value = true
+  companionError.value = ''
+  companionStatus.value = ''
+  try {
+    const current = await invoke<Companion>('switch_companion', { companionId: companion.id })
+    currentCompanion.value = current
+    fillCompanionDraft(current)
+    await emitEvent('pet-skin-updated', current.skinId)
+    await emitEvent('companion-changed', current.id)
+    await Promise.all([loadPetSkins(), loadPetMemories(), loadCompanions()])
+    companionStatus.value = `已切换到「${current.name}」，聊天、记忆与形象已同步。`
+  } catch (err) {
+    companionError.value = String(err)
+  } finally {
+    companionLoading.value = false
+  }
+}
+
+function selectCompanionFromList(event: Event) {
+  const id = (event.target as HTMLSelectElement).value
+  const companion = companions.value.find((item) => item.id === id)
+  if (companion && companion.id !== currentCompanion.value?.id) {
+    void activateCompanion(companion)
+  }
+}
+
+async function removeCompanion(companion: Companion) {
+  if (
+    !(await requestImportantConfirmation({
+      title: '删除伴侣档案',
+      message: `确认删除伴侣「${companion.name}」？`,
+      detail: '该伴侣的聊天记录与长期记忆将从本机数据库永久删除，无法恢复。',
+      confirmLabel: '永久删除',
+      variant: 'danger',
+    }))
+  ) {
+    return
+  }
+
+  companionLoading.value = true
+  companionError.value = ''
+  try {
+    const current = await invoke<Companion>('delete_companion', { companionId: companion.id })
+    currentCompanion.value = current
+    fillCompanionDraft(current)
+    await emitEvent('pet-skin-updated', current.skinId)
+    await emitEvent('companion-changed', current.id)
+    await Promise.all([loadPetSkins(), loadPetMemories(), loadCompanions()])
+    companionStatus.value = `已删除「${companion.name}」。`
+  } catch (err) {
+    companionError.value = String(err)
+  } finally {
+    companionLoading.value = false
   }
 }
 
@@ -1194,7 +1392,7 @@ async function selectPetSkin(skin: PetSkinSummary) {
     currentPetSkin.value = await invoke<PetSkinSummary>('set_pet_skin', { skinId: skin.id })
     selectedPetSkin.value = currentPetSkin.value
     await emitEvent('pet-skin-updated', skin.id)
-    await loadPetSkins()
+    await Promise.all([loadPetSkins(), loadCompanions()])
   } catch (err) {
     petSkinError.value = String(err)
   }
@@ -1331,7 +1529,7 @@ async function savePetSkin() {
     }
     selectedPetSkin.value = saved
     resetPetSkinDraft()
-    await loadPetSkins()
+    await Promise.all([loadPetSkins(), loadCompanions()])
   } catch (err) {
     petSkinError.value = String(err)
   } finally {
@@ -1369,7 +1567,7 @@ async function deleteSelectedPetSkin() {
     currentPetSkin.value = nextSkin
     selectedPetSkin.value = nextSkin
     await emitEvent('pet-skin-updated', nextSkin.id)
-    await loadPetSkins()
+    await Promise.all([loadPetSkins(), loadCompanions()])
   } catch (err) {
     petSkinError.value = String(err)
   } finally {
@@ -1382,7 +1580,7 @@ async function resetPetImage() {
     currentPetSkin.value = await invoke<PetSkinSummary>('set_pet_skin', { skinId: 'default' })
     selectedPetSkin.value = currentPetSkin.value
     await emitEvent('pet-skin-updated', 'default')
-    await loadPetSkins()
+    await Promise.all([loadPetSkins(), loadCompanions()])
   } catch (err) {
     alert(`恢复默认宠物失败：${String(err)}`)
   }
@@ -1581,9 +1779,9 @@ async function hideDrawer() {
             <img :src="petSkinPreviewUrl(currentPetSkin)" alt="" />
           </div>
           <div class="pet-preview-copy">
-            <h2>当前宠物形象</h2>
-            <p v-if="currentPetSkin">{{ currentPetSkin.name }}</p>
-            <p v-else>内置默认形象</p>
+            <h2>当前伴侣</h2>
+            <p>{{ currentCompanion?.name || '默认伴侣' }}</p>
+            <small>{{ currentPetSkin?.name || '内置默认形象' }}</small>
           </div>
           <div class="pet-preview-actions">
             <button class="secondary-button" type="button" @click="openPetSkinManager">
@@ -1891,7 +2089,7 @@ async function hideDrawer() {
         <header>
           <div>
             <h2>设置</h2>
-            <p>管理入口、系统启动、AI 接口、宠物记忆、软件更新和运行诊断。</p>
+            <p>管理入口、伴侣档案、AI 接口、宠物记忆、软件更新和运行诊断。</p>
           </div>
           <button type="button" class="window-close" @click="settingsModalVisible = false">
             ×
@@ -2010,13 +2208,113 @@ async function hideDrawer() {
               </label>
             </section>
 
+            <section v-show="activeSettingsSection === 'companion'" class="settings-section">
+              <div class="settings-companion-heading">
+                <div>
+                  <h3>伴侣切换</h3>
+                  <p class="settings-empty">
+                    每位伴侣拥有独立人设、聊天记录、长期记忆和形象绑定。
+                  </p>
+                </div>
+                <button class="secondary-button" type="button" @click="startNewCompanion">
+                  添加伴侣
+                </button>
+              </div>
+              <div v-if="companionLoading && companions.length === 0" class="settings-empty">
+                正在读取伴侣档案...
+              </div>
+              <div v-else class="settings-companion-picker">
+                <label class="settings-field wide">
+                  伴侣标签
+                  <select
+                    :value="currentCompanion?.id || ''"
+                    :disabled="companionLoading"
+                    @change="selectCompanionFromList"
+                  >
+                    <option v-for="companion in companions" :key="companion.id" :value="companion.id">
+                      {{ companion.name }} / {{ companionSkinLabel(companion) }} /
+                      {{ companion.model || '沿用全局模型' }}
+                    </option>
+                  </select>
+                </label>
+                <div v-if="currentCompanion" class="settings-companion-current">
+                  <small>
+                    当前使用：{{ currentCompanion.name }} / {{ companionSkinLabel(currentCompanion) }} /
+                    {{ currentCompanion.model || '沿用全局模型' }}
+                  </small>
+                  <div class="settings-companion-current-actions">
+                    <button type="button" @click="editCompanion(currentCompanion)">编辑当前</button>
+                    <button
+                      v-if="currentCompanion.id !== 'default'"
+                      type="button"
+                      class="danger-button"
+                      @click="removeCompanion(currentCompanion)"
+                    >
+                      删除当前
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <h3>{{ editingCompanionId ? '编辑伴侣档案' : '添加伴侣档案' }}</h3>
+              <div class="settings-form-grid">
+                <label class="settings-field">
+                  名称
+                  <input v-model="companionDraft.name" maxlength="40" placeholder="例如：凯蒂" />
+                </label>
+                <label class="settings-field">
+                  绑定形象
+                  <select v-model="companionDraft.skinId">
+                    <option v-for="skin in petSkins" :key="skin.id" :value="skin.id">{{ skin.name }}</option>
+                  </select>
+                </label>
+                <label class="settings-field">
+                  模型覆盖（可选）
+                  <input v-model="companionDraft.model" placeholder="留空时沿用 AI 接口配置" />
+                  <small>仅覆盖模型名称；服务商、Base URL 与 API Key 仍使用“AI 接口”中的连接。</small>
+                </label>
+                <label class="settings-field">
+                  语音标识（预留）
+                  <input v-model="companionDraft.voiceId" placeholder="voice id" />
+                </label>
+                <label class="settings-field wide">
+                  角色设定
+                  <textarea v-model="companionDraft.personaPrompt" placeholder="描述该伴侣的身份、性格和说话风格" />
+                </label>
+                <label class="settings-field wide">
+                  附加规则（可选）
+                  <textarea v-model="companionDraft.systemPrompt" placeholder="仅对该伴侣生效的边界或回复规则" />
+                </label>
+                <label class="settings-field">
+                  好感度
+                  <input v-model.number="companionDraft.favorability" type="number" />
+                </label>
+                <label class="settings-field">
+                  亲密度
+                  <input v-model.number="companionDraft.intimacy" type="number" />
+                </label>
+                <label class="settings-field wide">
+                  当前情绪
+                  <input v-model="companionDraft.mood" placeholder="例如：开心、平静" />
+                </label>
+              </div>
+              <div class="settings-companion-actions">
+                <button class="primary-button" type="button" :disabled="companionLoading" @click="saveCompanion">
+                  {{ companionLoading ? '保存中...' : '保存档案' }}
+                </button>
+                <button type="button" @click="startNewCompanion">清空并新建</button>
+              </div>
+              <p v-if="companionStatus" class="form-success">{{ companionStatus }}</p>
+              <p v-if="companionError" class="form-error">{{ companionError }}</p>
+            </section>
+
             <section v-show="activeSettingsSection === 'ai'" class="settings-section">
               <h3>AI 接口</h3>
               <div class="settings-ai-profiles">
                 <div class="settings-ai-profile-heading">
                   <div>
                     <strong>API 配置标签</strong>
-                    <small>最多保存 20 个接口连接，点击标签后快速切换当前服务商、地址、模型和密钥。</small>
+                    <small>最多保存 20 个接口连接，通过列表选择，避免添加多个标签后占用设置空间。</small>
                   </div>
                   <button
                     v-if="selectedAiProfile"
@@ -2036,26 +2334,27 @@ async function hideDrawer() {
                   />
                   <button class="primary-button" type="submit">保存当前连接</button>
                 </form>
-                <div v-if="settingsDraft.aiProfiles.length > 0" class="settings-ai-profile-list">
-                  <article
-                    v-for="profile in settingsDraft.aiProfiles"
-                    :key="profile.id"
-                    class="settings-ai-profile"
-                    :class="{ active: settingsDraft.aiActiveProfileId === profile.id }"
-                  >
-                    <button class="settings-ai-profile-select" type="button" @click="selectAiProfile(profile)">
-                      <strong>{{ profile.label }}</strong>
-                      <small>{{ profile.provider }} / {{ profile.model || '未设置模型' }}</small>
-                    </button>
+                <div v-if="settingsDraft.aiProfiles.length > 0" class="settings-ai-profile-picker">
+                  <label class="settings-field">
+                    已保存的连接标签
+                    <select :value="settingsDraft.aiActiveProfileId" @change="selectAiProfileFromList">
+                      <option value="">不绑定标签 / 使用当前表单</option>
+                      <option v-for="profile in settingsDraft.aiProfiles" :key="profile.id" :value="profile.id">
+                        {{ profile.label }} / {{ profile.model || '未设置模型' }}
+                      </option>
+                    </select>
+                  </label>
+                  <div v-if="selectedAiProfile" class="settings-ai-profile-current">
+                    <small>{{ selectedAiProfile.provider }} / {{ selectedAiProfile.model || '未设置模型' }}</small>
                     <button
                       class="settings-ai-profile-delete"
                       type="button"
                       title="删除配置标签"
-                      @click="removeAiProfile(profile)"
+                      @click="removeSelectedAiProfile"
                     >
-                      删除
+                      删除标签
                     </button>
-                  </article>
+                  </div>
                 </div>
                 <p v-else class="settings-empty">还没有 API 配置标签，当前表单仍可直接保存并使用。</p>
                 <p v-if="aiProfileStatus" class="settings-empty">{{ aiProfileStatus }}</p>
@@ -2098,7 +2397,7 @@ async function hideDrawer() {
                 </label>
 
                 <label class="settings-field">
-                  模型
+                  默认模型
                   <input v-model="settingsDraft.aiModel" placeholder="例如 gpt-4o-mini" />
                 </label>
 
@@ -2144,15 +2443,19 @@ async function hideDrawer() {
                 </label>
 
                 <label class="settings-field wide">
-                  宠物系统提示词
+                  全局回复规则（所有伴侣共用）
                   <textarea
                     v-model="settingsDraft.aiSystemPrompt"
                     rows="4"
-                    placeholder="定义宠物聊天时的性格、语气和边界"
+                    placeholder="定义所有伴侣共用的隐私、安全与回复规则，不在这里重复具体角色人设"
                   />
                 </label>
               </div>
 
+              <p v-if="currentCompanion?.model" class="settings-empty">
+                当前伴侣「{{ currentCompanion.name }}」设置了模型覆盖
+                {{ currentCompanion.model }}；实际聊天使用该模型，但仍通过本页的服务商、Base URL 和 API Key 连接。
+              </p>
               <p class="settings-empty">{{ selectedAiProviderPreset().help }}</p>
             </section>
 
@@ -2161,7 +2464,7 @@ async function hideDrawer() {
               <label class="settings-toggle-row">
                 <span>
                   <strong>启用宠物记忆</strong>
-                  <small>开启后会把最近聊天和提取出的长期记忆保存到本机应用数据目录。</small>
+                  <small>开启后会从当前伴侣对话中提取长期记忆；按伴侣保存的聊天记录可在下方单独清空。</small>
                 </span>
                 <input v-model="settingsDraft.aiMemoryEnabled" type="checkbox" />
               </label>
@@ -2169,7 +2472,7 @@ async function hideDrawer() {
                 <div class="settings-memory-toolbar-header">
                   <div class="settings-memory-copy">
                     <strong>记忆管理</strong>
-                    <small>查看长期记忆，备份数据，或清理本机聊天记录。</small>
+                    <small>查看当前伴侣的长期记忆，备份数据，或清理其本机聊天记录。</small>
                   </div>
                   <button
                     type="button"
@@ -2278,7 +2581,7 @@ async function hideDrawer() {
               <div v-if="petMemories.length > 0" class="settings-memory-results">
                 <div class="settings-memory-block-heading">
                   <strong>已保存的长期记忆</strong>
-                  <small>已保存 {{ petMemories.length }} 条长期记忆，可直接编辑或删除。</small>
+                  <small>当前伴侣已保存 {{ petMemories.length }} 条长期记忆，可直接编辑或删除。</small>
                 </div>
                 <div class="settings-memory-list">
                   <article v-for="memory in petMemories" :key="memory.id" class="settings-memory-row">
@@ -2306,7 +2609,7 @@ async function hideDrawer() {
                 </div>
               </div>
               <p v-else class="settings-empty">
-                还没有长期记忆。和宠物对话后，称呼、偏好、边界、习惯或共同经历会自动保存到这里。
+                当前伴侣还没有长期记忆。启用记忆后，对话中的称呼、偏好、边界、习惯或共同经历会保存到这里。
               </p>
               <p v-if="petMemoryError" class="form-error">{{ petMemoryError }}</p>
             </section>

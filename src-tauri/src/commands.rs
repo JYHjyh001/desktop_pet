@@ -3,10 +3,10 @@ use tauri::{AppHandle, Manager};
 
 use crate::{
     ai_chat::{self, AiConnectionTestResult, PetChatMessageDraft, PetChatReply},
-    ai_memory::{self, PetMemory, PetMemoryDraft},
+    ai_memory::{self, PetMemory, PetMemoryDraft, PetMemoryMessage},
     app_data::{
-        self, AiConnectionProfile, AiSettings, AppDraft, PetAnimationSet, PetApp, PetDrawerConfig,
-        PetPosition, PetSkinSummary,
+        self, AiConnectionProfile, AiSettings, AppDraft, Companion, CompanionDraft,
+        PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinSummary,
     },
     launcher, startup, updater, windowing,
 };
@@ -205,6 +205,54 @@ pub fn get_config(app: AppHandle) -> Result<PetDrawerConfig, String> {
     }
 
     Ok(config)
+}
+
+#[tauri::command]
+pub fn list_companions(app: AppHandle) -> Result<Vec<Companion>, String> {
+    ai_memory::list_companions(&app)
+}
+
+#[tauri::command]
+pub fn get_current_companion(app: AppHandle) -> Result<Companion, String> {
+    ai_memory::current_companion(&app)
+}
+
+#[tauri::command]
+pub fn upsert_companion(app: AppHandle, draft: CompanionDraft) -> Result<Companion, String> {
+    ai_memory::upsert_companion(&app, draft)
+}
+
+#[tauri::command]
+pub fn switch_companion(app: AppHandle, companion_id: String) -> Result<Companion, String> {
+    let mut companion = ai_memory::switch_companion(&app, &companion_id)?;
+    if app_data::set_current_pet_skin(&app, &companion.skin_id).is_err() {
+        app_data::set_current_pet_skin(&app, "default")?;
+        ai_memory::set_current_companion_skin(&app, "default")?;
+        companion.skin_id = "default".to_string();
+    }
+    Ok(companion)
+}
+
+#[tauri::command]
+pub fn delete_companion(app: AppHandle, companion_id: String) -> Result<Companion, String> {
+    let mut companion = ai_memory::delete_companion(&app, &companion_id)?;
+    if app_data::set_current_pet_skin(&app, &companion.skin_id).is_err() {
+        app_data::set_current_pet_skin(&app, "default")?;
+        ai_memory::set_current_companion_skin(&app, "default")?;
+        companion.skin_id = "default".to_string();
+    }
+    Ok(companion)
+}
+
+#[tauri::command]
+pub fn get_companion_messages(app: AppHandle) -> Result<Vec<PetMemoryMessage>, String> {
+    let companion_id = ai_memory::current_companion_id(&app)?;
+    ai_memory::recent_messages(&app, &companion_id, 200)
+}
+
+#[tauri::command]
+pub fn delete_companion_messages(app: AppHandle, message_ids: Vec<u64>) -> Result<usize, String> {
+    ai_memory::delete_messages(&app, message_ids)
 }
 
 #[tauri::command]
@@ -411,7 +459,9 @@ pub fn get_current_pet_skin(app: AppHandle) -> Result<PetSkinSummary, String> {
 
 #[tauri::command]
 pub fn set_pet_skin(app: AppHandle, skin_id: String) -> Result<PetSkinSummary, String> {
-    app_data::set_current_pet_skin(&app, &skin_id)
+    let skin = app_data::set_current_pet_skin(&app, &skin_id)?;
+    ai_memory::set_current_companion_skin(&app, &skin.id)?;
+    Ok(skin)
 }
 
 #[tauri::command]
@@ -420,7 +470,9 @@ pub fn import_pet_skin(
     name: String,
     animations: PetAnimationSet,
 ) -> Result<PetSkinSummary, String> {
-    app_data::import_pet_skin(&app, &name, animations)
+    let skin = app_data::import_pet_skin(&app, &name, animations)?;
+    ai_memory::set_current_companion_skin(&app, &skin.id)?;
+    Ok(skin)
 }
 
 #[tauri::command]
@@ -436,7 +488,9 @@ pub fn update_pet_skin(
 
 #[tauri::command]
 pub fn delete_pet_skin(app: AppHandle, skin_id: String) -> Result<PetSkinSummary, String> {
-    app_data::delete_pet_skin(&app, &skin_id)
+    let skin = app_data::delete_pet_skin(&app, &skin_id)?;
+    ai_memory::set_current_companion_skin(&app, &skin.id)?;
+    Ok(skin)
 }
 
 #[tauri::command]
@@ -451,7 +505,8 @@ pub fn import_pet_image(app: AppHandle, path: String) -> Result<String, String> 
 
 #[tauri::command]
 pub fn reset_pet_image(app: AppHandle) -> Result<(), String> {
-    app_data::set_current_pet_skin(&app, "default").map(|_| ())
+    app_data::set_current_pet_skin(&app, "default")?;
+    ai_memory::set_current_companion_skin(&app, "default")
 }
 
 #[tauri::command]

@@ -100,6 +100,39 @@ export interface AiConnectionTestResult {
   message: string
 }
 
+export interface CompanionRelationshipState {
+  favorability: number
+  intimacy: number
+  mood: string
+}
+
+export interface Companion {
+  id: string
+  name: string
+  avatar?: string | null
+  personaPrompt: string
+  systemPrompt: string
+  model: string
+  voiceId: string
+  memoryScope: string
+  skinId: string
+  relationshipState: CompanionRelationshipState
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CompanionDraft {
+  id?: string
+  name: string
+  avatar?: string | null
+  personaPrompt: string
+  systemPrompt: string
+  model: string
+  voiceId: string
+  skinId: string
+  relationshipState: CompanionRelationshipState
+}
+
 export type MemoryType =
   | 'nickname'
   | 'preference'
@@ -120,6 +153,7 @@ export type MemoryAction = 'remember' | 'forget' | 'update' | 'none'
 
 export interface PetMemory {
   id: number
+  companionId?: string
   memoryType: MemoryType
   content: string
   importance: number
@@ -159,6 +193,12 @@ export interface PetChatMessage {
   content: string
 }
 
+export interface PetMemoryMessage extends PetChatMessage {
+  id: number
+  companionId: string
+  createdAt: string
+}
+
 export interface PetChatReply {
   message: string
   provider: string
@@ -192,4 +232,7 @@ export interface PetDrawerConfig {
     autoFavoriteEnabled: boolean
   }
   ai?: AiSettings
+  companions?: Companion[]
+  currentCompanionId?: string
+  companionsInitialized?: boolean
 }

@@ -10,10 +10,13 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::app_data;
+use crate::app_data::{
+    self, Companion, CompanionDraft, CompanionRelationshipState, PetDrawerConfig,
+};
 
 const MEMORY_DB_FILE_NAME: &str = "pet-memory.db";
 const LEGACY_MEMORY_JSON_FILE_NAME: &str = "pet-memory.json";
+pub const DEFAULT_COMPANION_ID: &str = "default";
 const MAX_MESSAGES: usize = 200;
 const MAX_MESSAGE_CONTENT_LEN: usize = 1200;
 const MAX_MEMORY_CONTENT_LEN: usize = 300;
@@ -22,6 +25,8 @@ const MAX_MEMORY_CONTENT_LEN: usize = 300;
 #[serde(rename_all = "camelCase")]
 pub struct PetMemoryMessage {
     pub id: u64,
+    #[serde(default = "default_companion_id")]
+    pub companion_id: String,
     pub role: String,
     pub content: String,
     pub created_at: String,
@@ -31,6 +36,8 @@ pub struct PetMemoryMessage {
 #[serde(rename_all = "camelCase")]
 pub struct PetMemory {
     pub id: u64,
+    #[serde(default = "default_companion_id")]
+    pub companion_id: String,
     #[serde(default = "default_memory_type")]
     pub memory_type: String,
     pub content: String,
@@ -73,7 +80,262 @@ struct PetMemoryStore {
     memories: Vec<PetMemory>,
 }
 
-pub fn save_message(app: &AppHandle, role: &str, content: &str) -> Result<(), String> {
+fn default_companion(skin_id: &str) -> Companion {
+    let now = app_data::now_seconds();
+    Companion {
+        id: DEFAULT_COMPANION_ID.to_string(),
+        name: "凯蒂".to_string(),
+        avatar: None,
+        persona_prompt: "你是温柔、活泼的桌面伴侣凯蒂，陪用户聊天并提供恰当帮助。".to_string(),
+        system_prompt: String::new(),
+        model: String::new(),
+        voice_id: String::new(),
+        memory_scope: DEFAULT_COMPANION_ID.to_string(),
+        skin_id: normalize_skin_id(skin_id),
+        relationship_state: CompanionRelationshipState {
+            favorability: 0,
+            intimacy: 0,
+            mood: String::new(),
+        },
+        created_at: now.clone(),
+        updated_at: now,
+    }
+}
+
+fn read_companion_config(app: &AppHandle) -> Result<PetDrawerConfig, String> {
+    let mut config = app_data::read_config(app)?;
+    let mut changed = false;
+    let inherited_skin_id = normalize_skin_id(&config.pet.current_skin);
+
+    if !config
+        .companions
+        .iter()
+        .any(|companion| companion.id == DEFAULT_COMPANION_ID)
+    {
+        config
+            .companions
+            .insert(0, default_companion(&inherited_skin_id));
+        changed = true;
+    }
+
+    if !config.companions_initialized {
+        if let Some(companion) = config
+            .companions
+            .iter_mut()
+            .find(|companion| companion.id == DEFAULT_COMPANION_ID)
+        {
+            companion.skin_id = inherited_skin_id.clone();
+            companion.updated_at = app_data::now_seconds();
+        }
+        config.companions_initialized = true;
+        changed = true;
+    }
+
+    if !config
+        .companions
+        .iter()
+        .any(|companion| companion.id == config.current_companion_id)
+    {
+        config.current_companion_id = DEFAULT_COMPANION_ID.to_string();
+        changed = true;
+    }
+
+    if changed {
+        app_data::write_config(app, &config)?;
+    }
+    Ok(config)
+}
+
+pub fn list_companions(app: &AppHandle) -> Result<Vec<Companion>, String> {
+    let mut config = read_companion_config(app)?;
+    config.companions.sort_by(|left, right| {
+        let left_rank = if left.id == DEFAULT_COMPANION_ID {
+            0
+        } else {
+            1
+        };
+        let right_rank = if right.id == DEFAULT_COMPANION_ID {
+            0
+        } else {
+            1
+        };
+        left_rank
+            .cmp(&right_rank)
+            .then_with(|| left.created_at.cmp(&right.created_at))
+    });
+    Ok(config.companions)
+}
+
+pub fn current_companion(app: &AppHandle) -> Result<Companion, String> {
+    let config = read_companion_config(app)?;
+    config
+        .companions
+        .iter()
+        .find(|companion| companion.id == config.current_companion_id)
+        .or_else(|| {
+            config
+                .companions
+                .iter()
+                .find(|companion| companion.id == DEFAULT_COMPANION_ID)
+        })
+        .cloned()
+        .ok_or_else(|| "未找到可用伴侣档案".to_string())
+}
+
+pub fn current_companion_id(app: &AppHandle) -> Result<String, String> {
+    Ok(current_companion(app)?.id)
+}
+
+pub fn upsert_companion(app: &AppHandle, draft: CompanionDraft) -> Result<Companion, String> {
+    let mut config = read_companion_config(app)?;
+    let name = draft.name.trim();
+    let persona_prompt = draft.persona_prompt.trim();
+    if name.is_empty() {
+        return Err("请填写伴侣名称".to_string());
+    }
+    if persona_prompt.is_empty() {
+        return Err("请填写伴侣角色设定".to_string());
+    }
+
+    let id = match draft
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(id) => {
+            safe_companion_id(id)?;
+            if !config.companions.iter().any(|companion| companion.id == id) {
+                return Err("未找到要编辑的伴侣".to_string());
+            }
+            id.to_string()
+        }
+        None => format!("companion_{}", now_millis()),
+    };
+    let existing = config
+        .companions
+        .iter()
+        .find(|companion| companion.id == id)
+        .cloned();
+    let now = app_data::now_seconds();
+    let state = draft
+        .relationship_state
+        .unwrap_or(CompanionRelationshipState {
+            favorability: 0,
+            intimacy: 0,
+            mood: String::new(),
+        });
+    let companion = Companion {
+        id: id.clone(),
+        name: truncate_text(name, 40),
+        avatar: draft
+            .avatar
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        persona_prompt: truncate_text(persona_prompt, 2000),
+        system_prompt: truncate_text(draft.system_prompt.trim(), 2000),
+        model: truncate_text(draft.model.trim(), 120),
+        voice_id: truncate_text(draft.voice_id.trim(), 120),
+        memory_scope: id.clone(),
+        skin_id: normalize_skin_id(&draft.skin_id),
+        relationship_state: CompanionRelationshipState {
+            favorability: state.favorability.clamp(-100, 100),
+            intimacy: state.intimacy.clamp(-100, 100),
+            mood: truncate_text(state.mood.trim(), 40),
+        },
+        created_at: existing
+            .as_ref()
+            .map(|item| item.created_at.clone())
+            .unwrap_or_else(|| now.clone()),
+        updated_at: now,
+    };
+    if let Some(index) = config
+        .companions
+        .iter()
+        .position(|existing| existing.id == companion.id)
+    {
+        config.companions[index] = companion.clone();
+    } else {
+        config.companions.push(companion.clone());
+    }
+    app_data::write_config(app, &config)?;
+    Ok(companion)
+}
+
+pub fn switch_companion(app: &AppHandle, companion_id: &str) -> Result<Companion, String> {
+    let mut config = read_companion_config(app)?;
+    let companion_id = safe_companion_id(companion_id)?;
+    let companion = config
+        .companions
+        .iter()
+        .find(|companion| companion.id == companion_id)
+        .cloned()
+        .ok_or_else(|| "未找到要切换的伴侣".to_string())?;
+    config.current_companion_id = companion_id.to_string();
+    app_data::write_config(app, &config)?;
+    Ok(companion)
+}
+
+pub fn delete_companion(app: &AppHandle, companion_id: &str) -> Result<Companion, String> {
+    let companion_id = safe_companion_id(companion_id)?;
+    if companion_id == DEFAULT_COMPANION_ID {
+        return Err("默认伴侣不能删除".to_string());
+    }
+
+    let mut config = read_companion_config(app)?;
+    if !config
+        .companions
+        .iter()
+        .any(|companion| companion.id == companion_id)
+    {
+        return Err("未找到要删除的伴侣".to_string());
+    }
+    let mut conn = open_connection(app)?;
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("删除伴侣失败：{err}"))?;
+    tx.execute(
+        "DELETE FROM pet_memory_messages WHERE companion_id = ?1",
+        params![companion_id],
+    )
+    .map_err(|err| format!("删除伴侣聊天记录失败：{err}"))?;
+    tx.execute(
+        "DELETE FROM pet_memories WHERE companion_id = ?1",
+        params![companion_id],
+    )
+    .map_err(|err| format!("删除伴侣长期记忆失败：{err}"))?;
+    tx.commit().map_err(|err| format!("删除伴侣失败：{err}"))?;
+    config
+        .companions
+        .retain(|companion| companion.id != companion_id);
+    if config.current_companion_id == companion_id {
+        config.current_companion_id = DEFAULT_COMPANION_ID.to_string();
+    }
+    app_data::write_config(app, &config)?;
+    current_companion(app)
+}
+
+pub fn set_current_companion_skin(app: &AppHandle, skin_id: &str) -> Result<(), String> {
+    let mut config = read_companion_config(app)?;
+    let current_id = config.current_companion_id.clone();
+    let companion = config
+        .companions
+        .iter_mut()
+        .find(|companion| companion.id == current_id)
+        .ok_or_else(|| "未找到当前伴侣档案".to_string())?;
+    companion.skin_id = normalize_skin_id(skin_id);
+    companion.updated_at = app_data::now_seconds();
+    app_data::write_config(app, &config)?;
+    Ok(())
+}
+
+pub fn save_message(
+    app: &AppHandle,
+    companion_id: &str,
+    role: &str,
+    content: &str,
+) -> Result<(), String> {
+    let companion_id = safe_companion_id(companion_id)?;
     let role = normalize_role(role).ok_or_else(|| "记忆消息角色不合法".to_string())?;
     let content = content.trim();
     if content.is_empty() {
@@ -84,48 +346,64 @@ pub fn save_message(app: &AppHandle, role: &str, content: &str) -> Result<(), St
     let conn = open_connection(app)?;
     let id = next_unique_id(&conn, "pet_memory_messages")?;
     conn.execute(
-        "INSERT INTO pet_memory_messages (id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
-        params![to_sql_id(id)?, role, content, app_data::now_seconds()],
+        "INSERT INTO pet_memory_messages (id, companion_id, role, content, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            to_sql_id(id)?,
+            companion_id,
+            role,
+            content,
+            app_data::now_seconds()
+        ],
     )
     .map_err(|err| format!("保存宠物聊天记忆失败：{err}"))?;
-    trim_messages(&conn)
+    trim_messages(&conn, companion_id)
 }
 
-pub fn recent_messages(app: &AppHandle, limit: usize) -> Result<Vec<PetMemoryMessage>, String> {
+pub fn recent_messages(
+    app: &AppHandle,
+    companion_id: &str,
+    limit: usize,
+) -> Result<Vec<PetMemoryMessage>, String> {
     if limit == 0 {
         return Ok(Vec::new());
     }
 
+    let companion_id = safe_companion_id(companion_id)?;
     let conn = open_connection(app)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, role, content, created_at
+            "SELECT id, companion_id, role, content, created_at
              FROM (
-                SELECT id, role, content, created_at
+                SELECT id, companion_id, role, content, created_at
                 FROM pet_memory_messages
+                WHERE companion_id = ?1
                 ORDER BY id DESC
-                LIMIT ?1
+                LIMIT ?2
              )
              ORDER BY id ASC",
         )
         .map_err(|err| format!("读取最近聊天记忆失败：{err}"))?;
 
     let rows = stmt
-        .query_map(params![limit as i64], row_to_message)
+        .query_map(params![companion_id, limit as i64], row_to_message)
         .map_err(|err| format!("读取最近聊天记忆失败：{err}"))?;
 
     collect_rows(rows, "读取最近聊天记忆失败")
 }
 
 pub fn list_memories(app: &AppHandle) -> Result<Vec<PetMemory>, String> {
+    let companion_id = current_companion_id(app)?;
     let conn = open_connection(app)?;
-    list_memories_from_conn(&conn)
+    list_memories_from_conn(&conn, &companion_id)
 }
 
 pub fn save_memories(
     app: &AppHandle,
+    companion_id: &str,
     drafts: Vec<PetMemoryDraft>,
 ) -> Result<Vec<PetMemory>, String> {
+    let companion_id = safe_companion_id(companion_id)?;
     let mut conn = open_connection(app)?;
     let tx = conn
         .transaction()
@@ -137,7 +415,7 @@ pub fn save_memories(
             continue;
         };
 
-        let duplicate = find_duplicate_memory(&tx, &draft)?;
+        let duplicate = find_duplicate_memory(&tx, companion_id, &draft)?;
         let now = app_data::now_seconds();
         if let Some(mut memory) = duplicate {
             memory.content = draft.content;
@@ -153,6 +431,7 @@ pub fn save_memories(
         } else {
             let memory = PetMemory {
                 id: next_unique_id(&tx, "pet_memories")?,
+                companion_id: companion_id.to_string(),
                 memory_type: draft.memory_type,
                 content: draft.content,
                 importance: draft.importance,
@@ -174,7 +453,8 @@ pub fn save_memories(
 }
 
 pub fn add_memory(app: &AppHandle, draft: PetMemoryDraft) -> Result<PetMemory, String> {
-    save_memories(app, vec![draft])?
+    let companion_id = current_companion_id(app)?;
+    save_memories(app, &companion_id, vec![draft])?
         .into_iter()
         .next()
         .ok_or_else(|| "记忆内容为空或不适合保存".to_string())
@@ -189,9 +469,10 @@ pub fn update_memory_by_id(
         return Err("记忆内容为空或不适合保存".to_string());
     };
 
+    let companion_id = current_companion_id(app)?;
     let conn = open_connection(app)?;
-    let mut memory =
-        load_memory_by_id(&conn, memory_id)?.ok_or_else(|| "未找到要修改的记忆".to_string())?;
+    let mut memory = load_memory_by_id(&conn, &companion_id, memory_id)?
+        .ok_or_else(|| "未找到要修改的记忆".to_string())?;
     memory.memory_type = draft.memory_type;
     memory.content = draft.content;
     memory.importance = draft.importance;
@@ -206,6 +487,7 @@ pub fn update_memory_by_id(
 
 pub fn search_memories(
     app: &AppHandle,
+    companion_id: &str,
     query: &str,
     limit: usize,
 ) -> Result<Vec<PetMemory>, String> {
@@ -214,20 +496,22 @@ pub fn search_memories(
         return Ok(Vec::new());
     }
 
+    let companion_id = safe_companion_id(companion_id)?;
     let conn = open_connection(app)?;
-    let fts_result = search_memories_fts(&conn, query, limit);
+    let fts_result = search_memories_fts(&conn, companion_id, query, limit);
     match fts_result {
         Ok(memories) if !memories.is_empty() => Ok(memories),
-        _ => search_memories_scored(&conn, query, limit),
+        _ => search_memories_scored(&conn, companion_id, query, limit),
     }
 }
 
 pub fn delete_memory(app: &AppHandle, memory_id: u64) -> Result<(), String> {
+    let companion_id = current_companion_id(app)?;
     let conn = open_connection(app)?;
     let deleted = conn
         .execute(
-            "DELETE FROM pet_memories WHERE id = ?1",
-            params![to_sql_id(memory_id)?],
+            "DELETE FROM pet_memories WHERE id = ?1 AND companion_id = ?2",
+            params![to_sql_id(memory_id)?, companion_id],
         )
         .map_err(|err| format!("删除宠物记忆失败：{err}"))?;
 
@@ -239,29 +523,68 @@ pub fn delete_memory(app: &AppHandle, memory_id: u64) -> Result<(), String> {
 }
 
 pub fn clear_memories(app: &AppHandle) -> Result<(), String> {
+    let companion_id = current_companion_id(app)?;
     let conn = open_connection(app)?;
-    clear_memories_from_conn(&conn)
+    clear_memories_from_conn(&conn, &companion_id)
 }
 
-fn clear_memories_from_conn(conn: &Connection) -> Result<(), String> {
-    conn.execute("DELETE FROM pet_memories", [])
-        .map_err(|err| format!("清空宠物记忆失败：{err}"))?;
+fn clear_memories_from_conn(conn: &Connection, companion_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM pet_memories WHERE companion_id = ?1",
+        params![companion_id],
+    )
+    .map_err(|err| format!("清空宠物记忆失败：{err}"))?;
     Ok(())
 }
 
 pub fn clear_messages(app: &AppHandle) -> Result<(), String> {
+    let companion_id = current_companion_id(app)?;
     let conn = open_connection(app)?;
-    conn.execute("DELETE FROM pet_memory_messages", [])
-        .map_err(|err| format!("清空宠物短期聊天记录失败：{err}"))?;
+    conn.execute(
+        "DELETE FROM pet_memory_messages WHERE companion_id = ?1",
+        params![companion_id],
+    )
+    .map_err(|err| format!("清空宠物短期聊天记录失败：{err}"))?;
     Ok(())
+}
+
+pub fn delete_messages(app: &AppHandle, message_ids: Vec<u64>) -> Result<usize, String> {
+    let mut message_ids = message_ids
+        .into_iter()
+        .filter(|message_id| *message_id > 0)
+        .collect::<Vec<_>>();
+    message_ids.sort_unstable();
+    message_ids.dedup();
+    if message_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let companion_id = current_companion_id(app)?;
+    let mut conn = open_connection(app)?;
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("开始删除聊天记录事务失败：{err}"))?;
+    let mut deleted = 0;
+    for message_id in message_ids {
+        deleted += tx
+            .execute(
+                "DELETE FROM pet_memory_messages WHERE id = ?1 AND companion_id = ?2",
+                params![to_sql_id(message_id)?, &companion_id],
+            )
+            .map_err(|err| format!("删除聊天记录失败：{err}"))?;
+    }
+    tx.commit()
+        .map_err(|err| format!("提交删除聊天记录事务失败：{err}"))?;
+    Ok(deleted)
 }
 
 pub fn delete_related_memories(
     app: &AppHandle,
+    companion_id: &str,
     query: &str,
     limit: usize,
 ) -> Result<usize, String> {
-    let memories = search_memories(app, query, limit)?;
+    let memories = search_memories(app, companion_id, query, limit)?;
     if memories.is_empty() {
         return Ok(0);
     }
@@ -271,24 +594,24 @@ pub fn delete_related_memories(
     for memory in memories {
         deleted += conn
             .execute(
-                "DELETE FROM pet_memories WHERE id = ?1",
-                params![to_sql_id(memory.id)?],
+                "DELETE FROM pet_memories WHERE id = ?1 AND companion_id = ?2",
+                params![to_sql_id(memory.id)?, companion_id],
             )
             .map_err(|err| format!("删除相关宠物记忆失败：{err}"))?;
     }
     Ok(deleted)
 }
 
-pub fn delete_latest_memory(app: &AppHandle) -> Result<usize, String> {
+pub fn delete_latest_memory(app: &AppHandle, companion_id: &str) -> Result<usize, String> {
     let conn = open_connection(app)?;
-    let Some(memory) = latest_memory(&conn)? else {
+    let Some(memory) = latest_memory(&conn, companion_id)? else {
         return Ok(0);
     };
 
     let deleted = conn
         .execute(
-            "DELETE FROM pet_memories WHERE id = ?1",
-            params![to_sql_id(memory.id)?],
+            "DELETE FROM pet_memories WHERE id = ?1 AND companion_id = ?2",
+            params![to_sql_id(memory.id)?, companion_id],
         )
         .map_err(|err| format!("删除最近宠物记忆失败：{err}"))?;
     Ok(deleted)
@@ -311,9 +634,16 @@ pub fn import_memory_file(app: &AppHandle, source_path: &str) -> Result<Vec<PetM
         serde_json::from_str(&content).map_err(|err| format!("记忆导入文件格式错误：{err}"))?;
     normalize_imported_store(&mut store);
 
+    let companion_id = current_companion_id(app)?;
+    for message in &mut store.messages {
+        message.companion_id = companion_id.clone();
+    }
+    for memory in &mut store.memories {
+        memory.companion_id = companion_id.clone();
+    }
     let mut conn = open_connection(app)?;
-    replace_store(&mut conn, &store)?;
-    list_memories_from_conn(&conn)
+    replace_store(&mut conn, &companion_id, &store)?;
+    list_memories_from_conn(&conn, &companion_id)
 }
 
 pub fn export_memory_file(app: &AppHandle, target_path: &str) -> Result<(), String> {
@@ -346,8 +676,9 @@ pub fn open_memory_dir(app: &AppHandle) -> Result<(), String> {
 }
 
 fn read_store(app: &AppHandle) -> Result<PetMemoryStore, String> {
+    let companion_id = current_companion_id(app)?;
     let conn = open_connection(app)?;
-    read_store_from_conn(&conn)
+    read_store_from_conn(&conn, &companion_id)
 }
 
 fn open_connection(app: &AppHandle) -> Result<Connection, String> {
@@ -374,6 +705,7 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE TABLE IF NOT EXISTS pet_memory_messages (
             id INTEGER PRIMARY KEY,
+            companion_id TEXT NOT NULL DEFAULT 'default',
             role TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TEXT NOT NULL
@@ -381,6 +713,7 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
 
         CREATE TABLE IF NOT EXISTS pet_memories (
             id INTEGER PRIMARY KEY,
+            companion_id TEXT NOT NULL DEFAULT 'default',
             memory_type TEXT NOT NULL,
             content TEXT NOT NULL,
             importance INTEGER NOT NULL,
@@ -435,17 +768,26 @@ fn initialize_schema(conn: &Connection) -> Result<(), String> {
             VALUES (new.id, new.content, new.memory_type, new.tags);
         END;
 
-        PRAGMA user_version = 1;
+        PRAGMA user_version = 2;
         "#,
     )
     .map_err(|err| format!("初始化记忆数据库失败：{err}"))?;
 
     ensure_memory_columns(conn)?;
+    conn.execute_batch("DROP TABLE IF EXISTS companions; DROP TABLE IF EXISTS user_settings;")
+        .map_err(|err| format!("清理旧版伴侣配置表失败：{err}"))?;
     Ok(())
 }
 
 fn ensure_memory_columns(conn: &Connection) -> Result<(), String> {
     let columns = table_columns(conn, "pet_memories")?;
+    if !columns.contains("companion_id") {
+        conn.execute(
+            "ALTER TABLE pet_memories ADD COLUMN companion_id TEXT NOT NULL DEFAULT 'default'",
+            [],
+        )
+        .map_err(|err| format!("升级记忆数据库失败：{err}"))?;
+    }
     if !columns.contains("source_message") {
         conn.execute(
             "ALTER TABLE pet_memories ADD COLUMN source_message TEXT NOT NULL DEFAULT ''",
@@ -459,6 +801,14 @@ fn ensure_memory_columns(conn: &Connection) -> Result<(), String> {
             [],
         )
         .map_err(|err| format!("升级记忆数据库失败：{err}"))?;
+    }
+    let message_columns = table_columns(conn, "pet_memory_messages")?;
+    if !message_columns.contains("companion_id") {
+        conn.execute(
+            "ALTER TABLE pet_memory_messages ADD COLUMN companion_id TEXT NOT NULL DEFAULT 'default'",
+            [],
+        )
+        .map_err(|err| format!("升级聊天数据库失败：{err}"))?;
     }
     Ok(())
 }
@@ -507,80 +857,94 @@ fn migrate_legacy_json(app: &AppHandle, conn: &Connection) -> Result<(), String>
     let mut store: PetMemoryStore =
         serde_json::from_str(&content).map_err(|err| format!("旧版 JSON 记忆格式错误：{err}"))?;
     normalize_imported_store(&mut store);
-    replace_store_in_conn(conn, &store)?;
+    replace_store_in_conn(conn, DEFAULT_COMPANION_ID, &store)?;
     set_meta(conn, "legacy_json_migrated", "1")
 }
 
-fn read_store_from_conn(conn: &Connection) -> Result<PetMemoryStore, String> {
+fn read_store_from_conn(conn: &Connection, companion_id: &str) -> Result<PetMemoryStore, String> {
     Ok(PetMemoryStore {
-        messages: read_all_messages(conn)?,
-        memories: read_all_memories(conn)?,
+        messages: read_all_messages(conn, companion_id)?,
+        memories: read_all_memories(conn, companion_id)?,
     })
 }
 
-fn read_all_messages(conn: &Connection) -> Result<Vec<PetMemoryMessage>, String> {
+fn read_all_messages(
+    conn: &Connection,
+    companion_id: &str,
+) -> Result<Vec<PetMemoryMessage>, String> {
     let mut stmt = conn
-        .prepare("SELECT id, role, content, created_at FROM pet_memory_messages ORDER BY id ASC")
+        .prepare(
+            "SELECT id, companion_id, role, content, created_at
+             FROM pet_memory_messages WHERE companion_id = ?1 ORDER BY id ASC",
+        )
         .map_err(|err| format!("读取宠物聊天记忆失败：{err}"))?;
     let rows = stmt
-        .query_map([], row_to_message)
+        .query_map(params![companion_id], row_to_message)
         .map_err(|err| format!("读取宠物聊天记忆失败：{err}"))?;
     collect_rows(rows, "读取宠物聊天记忆失败")
 }
 
-fn read_all_memories(conn: &Connection) -> Result<Vec<PetMemory>, String> {
+fn read_all_memories(conn: &Connection, companion_id: &str) -> Result<Vec<PetMemory>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, memory_type, content, importance, tags_json, source_message,
+            "SELECT id, companion_id, memory_type, content, importance, tags_json, source_message,
                     confidence, deleted, created_at, updated_at
              FROM pet_memories
+             WHERE companion_id = ?1
              ORDER BY id ASC",
         )
         .map_err(|err| format!("读取宠物长期记忆失败：{err}"))?;
     let rows = stmt
-        .query_map([], row_to_memory)
+        .query_map(params![companion_id], row_to_memory)
         .map_err(|err| format!("读取宠物长期记忆失败：{err}"))?;
     collect_rows(rows, "读取宠物长期记忆失败")
 }
 
-fn list_memories_from_conn(conn: &Connection) -> Result<Vec<PetMemory>, String> {
+fn list_memories_from_conn(
+    conn: &Connection,
+    companion_id: &str,
+) -> Result<Vec<PetMemory>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, memory_type, content, importance, tags_json, source_message,
+            "SELECT id, companion_id, memory_type, content, importance, tags_json, source_message,
                     confidence, deleted, created_at, updated_at
              FROM pet_memories
-             WHERE deleted = 0
+             WHERE companion_id = ?1 AND deleted = 0
              ORDER BY importance DESC, updated_at DESC",
         )
         .map_err(|err| format!("读取宠物长期记忆失败：{err}"))?;
     let rows = stmt
-        .query_map([], row_to_memory)
+        .query_map(params![companion_id], row_to_memory)
         .map_err(|err| format!("读取宠物长期记忆失败：{err}"))?;
     collect_rows(rows, "读取宠物长期记忆失败")
 }
 
-fn load_memory_by_id(conn: &Connection, memory_id: u64) -> Result<Option<PetMemory>, String> {
+fn load_memory_by_id(
+    conn: &Connection,
+    companion_id: &str,
+    memory_id: u64,
+) -> Result<Option<PetMemory>, String> {
     conn.query_row(
-        "SELECT id, memory_type, content, importance, tags_json, source_message,
+        "SELECT id, companion_id, memory_type, content, importance, tags_json, source_message,
                 confidence, deleted, created_at, updated_at
          FROM pet_memories
-         WHERE id = ?1 AND deleted = 0",
-        params![to_sql_id(memory_id)?],
+         WHERE id = ?1 AND companion_id = ?2 AND deleted = 0",
+        params![to_sql_id(memory_id)?, companion_id],
         row_to_memory,
     )
     .optional()
     .map_err(|err| format!("读取宠物长期记忆失败：{err}"))
 }
 
-fn latest_memory(conn: &Connection) -> Result<Option<PetMemory>, String> {
+fn latest_memory(conn: &Connection, companion_id: &str) -> Result<Option<PetMemory>, String> {
     conn.query_row(
-        "SELECT id, memory_type, content, importance, tags_json, source_message,
+        "SELECT id, companion_id, memory_type, content, importance, tags_json, source_message,
                 confidence, deleted, created_at, updated_at
          FROM pet_memories
-         WHERE deleted = 0
+         WHERE companion_id = ?1 AND deleted = 0
          ORDER BY updated_at DESC, id DESC
          LIMIT 1",
-        [],
+        params![companion_id],
         row_to_memory,
     )
     .optional()
@@ -589,6 +953,7 @@ fn latest_memory(conn: &Connection) -> Result<Option<PetMemory>, String> {
 
 fn search_memories_fts(
     conn: &Connection,
+    companion_id: &str,
     query: &str,
     limit: usize,
 ) -> Result<Vec<PetMemory>, String> {
@@ -598,28 +963,32 @@ fn search_memories_fts(
 
     let mut stmt = conn
         .prepare(
-            "SELECT m.id, m.memory_type, m.content, m.importance, m.tags_json, m.source_message,
-                    m.confidence, m.deleted, m.created_at, m.updated_at
+            "SELECT m.id, m.companion_id, m.memory_type, m.content, m.importance, m.tags_json,
+                    m.source_message, m.confidence, m.deleted, m.created_at, m.updated_at
              FROM pet_memories_fts
              JOIN pet_memories m ON m.id = pet_memories_fts.rowid
-             WHERE pet_memories_fts MATCH ?1 AND m.deleted = 0
+             WHERE pet_memories_fts MATCH ?1 AND m.companion_id = ?2 AND m.deleted = 0
              ORDER BY m.importance DESC, m.updated_at DESC, bm25(pet_memories_fts) ASC
-             LIMIT ?2",
+             LIMIT ?3",
         )
         .map_err(|err| format!("检索宠物记忆失败：{err}"))?;
     let rows = stmt
-        .query_map(params![fts_query, limit as i64], row_to_memory)
+        .query_map(
+            params![fts_query, companion_id, limit as i64],
+            row_to_memory,
+        )
         .map_err(|err| format!("检索宠物记忆失败：{err}"))?;
     collect_rows(rows, "检索宠物记忆失败")
 }
 
 fn search_memories_scored(
     conn: &Connection,
+    companion_id: &str,
     query: &str,
     limit: usize,
 ) -> Result<Vec<PetMemory>, String> {
     let tokens = query_tokens(query);
-    let mut scored = list_memories_from_conn(conn)?
+    let mut scored = list_memories_from_conn(conn, companion_id)?
         .into_iter()
         .filter_map(|memory| {
             let score = memory_score(&memory, &tokens, query);
@@ -643,18 +1012,19 @@ fn search_memories_scored(
 
 fn find_duplicate_memory(
     conn: &Connection,
+    companion_id: &str,
     draft: &PetMemoryDraft,
 ) -> Result<Option<PetMemory>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, memory_type, content, importance, tags_json, source_message,
+            "SELECT id, companion_id, memory_type, content, importance, tags_json, source_message,
                     confidence, deleted, created_at, updated_at
              FROM pet_memories
-             WHERE deleted = 0 AND memory_type = ?1",
+             WHERE companion_id = ?1 AND deleted = 0 AND memory_type = ?2",
         )
         .map_err(|err| format!("查找重复宠物记忆失败：{err}"))?;
     let rows = stmt
-        .query_map(params![&draft.memory_type], row_to_memory)
+        .query_map(params![companion_id, &draft.memory_type], row_to_memory)
         .map_err(|err| format!("查找重复宠物记忆失败：{err}"))?;
 
     for row in rows {
@@ -672,11 +1042,12 @@ fn insert_memory(conn: &Connection, memory: &PetMemory) -> Result<(), String> {
     let tags_text = memory.tags.join(" ");
     conn.execute(
         "INSERT INTO pet_memories
-         (id, memory_type, content, importance, tags_json, tags, source_message, confidence,
-          deleted, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         (id, companion_id, memory_type, content, importance, tags_json, tags, source_message,
+          confidence, deleted, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             to_sql_id(memory.id)?,
+            &memory.companion_id,
             &memory.memory_type,
             &memory.content,
             i64::from(memory.importance),
@@ -700,7 +1071,7 @@ fn update_memory(conn: &Connection, memory: &PetMemory) -> Result<(), String> {
         "UPDATE pet_memories
          SET memory_type = ?1, content = ?2, importance = ?3, tags_json = ?4, tags = ?5,
              source_message = ?6, confidence = ?7, deleted = ?8, updated_at = ?9
-         WHERE id = ?10",
+         WHERE id = ?10 AND companion_id = ?11",
         params![
             &memory.memory_type,
             &memory.content,
@@ -712,31 +1083,53 @@ fn update_memory(conn: &Connection, memory: &PetMemory) -> Result<(), String> {
             bool_to_i64(memory.deleted),
             &memory.updated_at,
             to_sql_id(memory.id)?,
+            &memory.companion_id,
         ],
     )
     .map_err(|err| format!("更新宠物长期记忆失败：{err}"))?;
     Ok(())
 }
 
-fn replace_store(conn: &mut Connection, store: &PetMemoryStore) -> Result<(), String> {
+fn replace_store(
+    conn: &mut Connection,
+    companion_id: &str,
+    store: &PetMemoryStore,
+) -> Result<(), String> {
     let tx = conn
         .transaction()
         .map_err(|err| format!("导入宠物记忆失败：{err}"))?;
-    replace_store_in_conn(&tx, store)?;
+    replace_store_in_conn(&tx, companion_id, store)?;
     tx.commit()
         .map_err(|err| format!("导入宠物记忆失败：{err}"))
 }
 
-fn replace_store_in_conn(conn: &Connection, store: &PetMemoryStore) -> Result<(), String> {
-    conn.execute("DELETE FROM pet_memory_messages", [])
-        .map_err(|err| format!("导入宠物聊天记忆失败：{err}"))?;
-    conn.execute("DELETE FROM pet_memories", [])
-        .map_err(|err| format!("导入宠物长期记忆失败：{err}"))?;
+fn replace_store_in_conn(
+    conn: &Connection,
+    companion_id: &str,
+    store: &PetMemoryStore,
+) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM pet_memory_messages WHERE companion_id = ?1",
+        params![companion_id],
+    )
+    .map_err(|err| format!("导入宠物聊天记忆失败：{err}"))?;
+    conn.execute(
+        "DELETE FROM pet_memories WHERE companion_id = ?1",
+        params![companion_id],
+    )
+    .map_err(|err| format!("导入宠物长期记忆失败：{err}"))?;
 
     for message in &store.messages {
         conn.execute(
-            "INSERT INTO pet_memory_messages (id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![to_sql_id(message.id)?, &message.role, &message.content, &message.created_at],
+            "INSERT INTO pet_memory_messages (id, companion_id, role, content, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                to_sql_id(message.id)?,
+                companion_id,
+                &message.role,
+                &message.content,
+                &message.created_at
+            ],
         )
         .map_err(|err| format!("导入宠物聊天记忆失败：{err}"))?;
     }
@@ -745,17 +1138,18 @@ fn replace_store_in_conn(conn: &Connection, store: &PetMemoryStore) -> Result<()
         insert_memory(conn, memory)?;
     }
 
-    trim_messages(conn)?;
+    trim_messages(conn, companion_id)?;
     Ok(())
 }
 
-fn trim_messages(conn: &Connection) -> Result<(), String> {
+fn trim_messages(conn: &Connection, companion_id: &str) -> Result<(), String> {
     conn.execute(
         "DELETE FROM pet_memory_messages
-         WHERE id NOT IN (
-            SELECT id FROM pet_memory_messages ORDER BY id DESC LIMIT ?1
+         WHERE companion_id = ?1 AND id NOT IN (
+            SELECT id FROM pet_memory_messages
+            WHERE companion_id = ?1 ORDER BY id DESC LIMIT ?2
          )",
-        params![MAX_MESSAGES as i64],
+        params![companion_id, MAX_MESSAGES as i64],
     )
     .map_err(|err| format!("裁剪宠物聊天记忆失败：{err}"))?;
     Ok(())
@@ -798,29 +1192,31 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<PetMemoryMessage>
     let id: i64 = row.get(0)?;
     Ok(PetMemoryMessage {
         id: id.max(0) as u64,
-        role: row.get(1)?,
-        content: row.get(2)?,
-        created_at: row.get(3)?,
+        companion_id: row.get(1)?,
+        role: row.get(2)?,
+        content: row.get(3)?,
+        created_at: row.get(4)?,
     })
 }
 
 fn row_to_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<PetMemory> {
     let id: i64 = row.get(0)?;
-    let tags_json: String = row.get(4)?;
-    let confidence = row.get::<_, f64>(6)?.clamp(0.0, 1.0) as f32;
-    let deleted: i64 = row.get(7)?;
+    let tags_json: String = row.get(5)?;
+    let confidence = row.get::<_, f64>(7)?.clamp(0.0, 1.0) as f32;
+    let deleted: i64 = row.get(8)?;
 
     Ok(PetMemory {
         id: id.max(0) as u64,
-        memory_type: row.get(1)?,
-        content: row.get(2)?,
-        importance: row.get::<_, i64>(3)?.clamp(1, 10) as u8,
+        companion_id: row.get(1)?,
+        memory_type: row.get(2)?,
+        content: row.get(3)?,
+        importance: row.get::<_, i64>(4)?.clamp(1, 10) as u8,
         tags: parse_tags_json(&tags_json),
-        source_message: row.get(5)?,
+        source_message: row.get(6)?,
         confidence,
         deleted: deleted != 0,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 
@@ -875,6 +1271,31 @@ fn normalize_role(role: &str) -> Option<String> {
         "user" => Some("user".to_string()),
         "assistant" => Some("assistant".to_string()),
         _ => None,
+    }
+}
+
+fn safe_companion_id(companion_id: &str) -> Result<&str, String> {
+    let companion_id = companion_id.trim();
+    if companion_id.is_empty()
+        || !companion_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return Err("伴侣 ID 不合法".to_string());
+    }
+    Ok(companion_id)
+}
+
+fn normalize_skin_id(skin_id: &str) -> String {
+    let skin_id = skin_id.trim();
+    if skin_id.is_empty()
+        || !skin_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        default_skin_id()
+    } else {
+        skin_id.to_string()
     }
 }
 
@@ -975,6 +1396,9 @@ fn normalize_imported_store(store: &mut PetMemoryStore) {
     }
 
     for message in &mut store.messages {
+        message.companion_id = safe_companion_id(&message.companion_id)
+            .unwrap_or(DEFAULT_COMPANION_ID)
+            .to_string();
         message.role = normalize_role(&message.role).unwrap_or_else(|| "user".to_string());
         let content = message.content.trim().to_string();
         message.content = truncate_text(&content, MAX_MESSAGE_CONTENT_LEN);
@@ -987,6 +1411,9 @@ fn normalize_imported_store(store: &mut PetMemoryStore) {
     ensure_unique_message_ids(&mut store.messages);
 
     for memory in &mut store.memories {
+        memory.companion_id = safe_companion_id(&memory.companion_id)
+            .unwrap_or(DEFAULT_COMPANION_ID)
+            .to_string();
         memory.memory_type = normalize_memory_type(&memory.memory_type);
         let content = memory.content.trim().to_string();
         memory.content = truncate_text(&content, MAX_MEMORY_CONTENT_LEN);
@@ -1198,6 +1625,14 @@ fn default_memory_type() -> String {
     "other".to_string()
 }
 
+fn default_companion_id() -> String {
+    DEFAULT_COMPANION_ID.to_string()
+}
+
+fn default_skin_id() -> String {
+    "default".to_string()
+}
+
 fn default_importance() -> u8 {
     5
 }
@@ -1238,6 +1673,10 @@ mod tests {
         let columns = table_columns(&conn, "pet_memories").expect("read table columns");
         assert!(columns.contains("source_message"));
         assert!(columns.contains("confidence"));
+        assert!(columns.contains("companion_id"));
+        let message_columns =
+            table_columns(&conn, "pet_memory_messages").expect("read message columns");
+        assert!(message_columns.contains("companion_id"));
     }
 
     #[test]
@@ -1265,7 +1704,7 @@ mod tests {
         )
         .expect("insert active memory");
 
-        clear_memories_from_conn(&conn).expect("clear memories");
+        clear_memories_from_conn(&conn, DEFAULT_COMPANION_ID).expect("clear memories");
 
         let memory_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM pet_memories", [], |row| row.get(0))
@@ -1277,6 +1716,67 @@ mod tests {
             .expect("query fts rows");
         assert_eq!(memory_count, 0);
         assert_eq!(index_count, 0);
+    }
+
+    #[test]
+    fn companion_memory_reads_and_clears_are_scoped() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        initialize_schema(&conn).expect("initialize schema");
+        conn.execute(
+            "INSERT INTO pet_memories
+             (id, companion_id, memory_type, content, importance, tags_json, tags, deleted, created_at, updated_at)
+             VALUES (1, 'default', 'preference', '默认角色记忆', 8, '[]', '', 0, '1', '1')",
+            [],
+        )
+        .expect("insert default memory");
+        conn.execute(
+            "INSERT INTO pet_memories
+             (id, companion_id, memory_type, content, importance, tags_json, tags, deleted, created_at, updated_at)
+             VALUES (2, 'companion_second', 'preference', '第二角色记忆', 8, '[]', '', 0, '1', '1')",
+            [],
+        )
+        .expect("insert second companion memory");
+        conn.execute(
+            "INSERT INTO pet_memory_messages (id, companion_id, role, content, created_at)
+             VALUES (3, 'default', 'user', '默认角色对话', '1')",
+            [],
+        )
+        .expect("insert default message");
+        conn.execute(
+            "INSERT INTO pet_memory_messages (id, companion_id, role, content, created_at)
+             VALUES (4, 'companion_second', 'user', '第二角色对话', '1')",
+            [],
+        )
+        .expect("insert second companion message");
+
+        let default_memories =
+            list_memories_from_conn(&conn, DEFAULT_COMPANION_ID).expect("read default memories");
+        let second_memories =
+            list_memories_from_conn(&conn, "companion_second").expect("read second memories");
+        assert_eq!(default_memories.len(), 1);
+        assert_eq!(default_memories[0].content, "默认角色记忆");
+        assert_eq!(second_memories.len(), 1);
+        assert_eq!(second_memories[0].content, "第二角色记忆");
+        assert_eq!(
+            read_all_messages(&conn, DEFAULT_COMPANION_ID).expect("read default messages")[0]
+                .content,
+            "默认角色对话"
+        );
+        assert_eq!(
+            read_all_messages(&conn, "companion_second").expect("read second messages")[0].content,
+            "第二角色对话"
+        );
+
+        clear_memories_from_conn(&conn, DEFAULT_COMPANION_ID).expect("clear default memories");
+        assert!(list_memories_from_conn(&conn, DEFAULT_COMPANION_ID)
+            .expect("read cleared default memories")
+            .is_empty());
+        assert_eq!(
+            list_memories_from_conn(&conn, "companion_second")
+                .expect("read remaining second memories")
+                .len(),
+            1
+        );
     }
 
     #[test]

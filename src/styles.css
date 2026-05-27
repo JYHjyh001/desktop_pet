@@ -276,6 +276,20 @@ button:disabled {
   background: #dfeafa;
 }
 
+.pet-chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pet-chat-header .pet-chat-manage-button {
+  width: auto;
+  padding: 0 10px;
+  color: #49617f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .pet-chat-notice {
   display: grid;
   gap: 7px;
@@ -309,6 +323,47 @@ button:disabled {
   font-weight: 800;
 }
 
+.pet-chat-selection-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(211, 222, 235, 0.8);
+  background: #f3f7fd;
+}
+
+.pet-chat-selection-toolbar span {
+  flex: 1 1 auto;
+  color: #566781;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pet-chat-selection-toolbar button {
+  min-height: 28px;
+  padding: 0 9px;
+  border-radius: 8px;
+  color: #49617f;
+  background: #e5edf8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pet-chat-selection-toolbar button:hover:not(:disabled) {
+  color: #17223a;
+  background: #d9e5f5;
+}
+
+.pet-chat-selection-toolbar .danger-button {
+  color: #ffffff;
+  background: #df3c46;
+}
+
+.pet-chat-selection-toolbar .danger-button:hover:not(:disabled) {
+  color: #ffffff;
+  background: #bd2834;
+}
+
 .pet-chat-messages {
   display: flex;
   flex-direction: column;
@@ -320,9 +375,46 @@ button:disabled {
 }
 
 .pet-chat-message {
+  position: relative;
   display: grid;
   gap: 4px;
   max-width: 86%;
+}
+
+.pet-chat-message.selecting {
+  cursor: pointer;
+}
+
+.pet-chat-message.selecting.assistant {
+  padding-left: 28px;
+}
+
+.pet-chat-message.selecting.user {
+  padding-right: 28px;
+}
+
+.pet-chat-message.selected p {
+  box-shadow:
+    0 0 0 2px rgba(33, 104, 232, 0.35),
+    0 8px 20px rgba(31, 50, 86, 0.08);
+}
+
+.pet-chat-message-selector {
+  position: absolute;
+  top: 27px;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: #2168e8;
+  cursor: pointer;
+}
+
+.pet-chat-message.assistant .pet-chat-message-selector {
+  left: 0;
+}
+
+.pet-chat-message.user .pet-chat-message-selector {
+  right: 0;
 }
 
 .pet-chat-message span {
@@ -376,6 +468,101 @@ button:disabled {
 
 .pet-chat-message.assistant {
   align-self: flex-start;
+}
+
+.pet-chat-context-menu {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  gap: 3px;
+  width: 128px;
+  margin: 0;
+  padding: 5px;
+  border: 1px solid rgba(93, 111, 142, 0.2);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(22, 37, 67, 0.2);
+  list-style: none;
+}
+
+.pet-chat-context-menu button {
+  min-height: 34px;
+  padding: 0 11px;
+  border-radius: 7px;
+  color: #263754;
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+}
+
+.pet-chat-context-menu button:hover {
+  color: #17223a;
+  background: #eef4fd;
+}
+
+.pet-chat-context-menu button:first-child {
+  color: #b62e38;
+}
+
+.pet-chat-delete-backdrop {
+  position: fixed;
+  z-index: 35;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(16, 25, 42, 0.28);
+}
+
+.pet-chat-delete-dialog {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 292px);
+  padding: 16px;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 20px 46px rgba(21, 34, 60, 0.24);
+}
+
+.pet-chat-delete-dialog h2,
+.pet-chat-delete-dialog p {
+  margin: 0;
+}
+
+.pet-chat-delete-dialog h2 {
+  color: #18243a;
+  font-size: 16px;
+}
+
+.pet-chat-delete-dialog p {
+  color: #5e6d86;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.pet-chat-delete-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pet-chat-delete-dialog button {
+  min-height: 34px;
+  padding: 0 13px;
+  border-radius: 8px;
+  color: #49617f;
+  background: #e9f0f8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pet-chat-delete-dialog .danger-button {
+  color: #ffffff;
+  background: #df3c46;
+}
+
+.pet-chat-delete-dialog .danger-button:hover:not(:disabled) {
+  background: #bd2834;
 }
 
 .pet-chat-error {
@@ -695,6 +882,16 @@ button:disabled {
   overflow: hidden;
   color: #657188;
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pet-preview-copy small {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: #8490a4;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1292,8 +1489,7 @@ button:disabled {
   grid-template-columns: 156px minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
-  overflow: auto;
-  padding-right: 2px;
+  overflow: hidden;
 }
 
 .settings-nav {
@@ -1301,6 +1497,9 @@ button:disabled {
   align-content: start;
   gap: 6px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .settings-nav button {
@@ -1343,6 +1542,9 @@ button:disabled {
 
 .settings-panels {
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .settings-section h3 {
@@ -1379,6 +1581,13 @@ button:disabled {
   color: #44506a;
   font-size: 13px;
   font-weight: 700;
+}
+
+.settings-field small {
+  color: #657188;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
 }
 
 .settings-field.wide {
@@ -1648,46 +1857,28 @@ button:disabled {
   box-shadow: 0 0 0 3px rgba(52, 124, 255, 0.14);
 }
 
-.settings-ai-profile-list {
+.settings-ai-profile-picker {
   display: grid;
   gap: 8px;
 }
 
-.settings-ai-profile {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+.settings-ai-profile-current {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 5px;
-  border: 1px solid #dbe6f3;
-  border-radius: 9px;
+  padding: 7px 9px;
+  border: 1px solid #e1e9f3;
+  border-radius: 8px;
   background: #ffffff;
 }
 
-.settings-ai-profile.active {
-  border-color: #8ab5ff;
-  background: #edf4ff;
-}
-
-.settings-ai-profile-select {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  padding: 6px 8px;
-  color: #243049;
-  text-align: left;
-}
-
-.settings-ai-profile-select strong,
-.settings-ai-profile-select small {
+.settings-ai-profile-current small {
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.settings-ai-profile-select small {
   color: #657188;
   font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-ai-profile-delete {
@@ -1702,6 +1893,68 @@ button:disabled {
 
 .settings-ai-profile-delete:hover {
   background: #ffd5db;
+}
+
+.settings-companion-heading,
+.settings-companion-actions {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.settings-companion-picker {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-companion-current {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  padding: 7px 9px;
+  border: 1px solid #dfe7f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.settings-companion-current-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+
+.settings-companion-current-actions button {
+  height: 32px;
+  padding: 0 9px;
+  border-radius: 7px;
+  color: #27344c;
+  background: #edf2f8;
+  font-weight: 700;
+}
+
+.settings-companion-current-actions .danger-button {
+  color: #a92733;
+  background: #ffe8eb;
+}
+
+.settings-companion-current-actions .danger-button:hover {
+  background: #ffd5db;
+}
+
+.settings-companion-current small {
+  min-width: 0;
+  overflow: hidden;
+  color: #657188;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-companion-actions {
+  justify-content: flex-end;
 }
 
 .settings-memory-panel,
@@ -1852,9 +2105,7 @@ button:disabled {
   display: grid;
   gap: 4px;
   min-width: 0;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: #f6f9fd;
+  padding: 2px 0;
 }
 
 .settings-runtime-row strong,
@@ -2292,6 +2543,12 @@ button:disabled {
   font-size: 13px;
 }
 
+.form-success {
+  margin: 0;
+  color: #197149;
+  font-size: 13px;
+}
+
 .theme-choice-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2384,6 +2641,21 @@ button:disabled {
 .drawer-window.theme-animal-island,
 .pet-chat-window.theme-animal-island,
 .pet-menu-window.theme-animal-island {
+  --island-ink: #5b402f;
+  --island-muted: #89684f;
+  --island-paper: #fffaf0;
+  --island-cream: #fff2d8;
+  --island-panel: #fffcf5;
+  --island-sand: #f6dfac;
+  --island-border: #dfbb78;
+  --island-border-soft: #ecd39f;
+  --island-mint: #43c6a9;
+  --island-mint-dark: #248f7c;
+  --island-gold: #f0a742;
+  --island-gold-dark: #cc7930;
+  --island-coral: #e87868;
+  --island-coral-dark: #bd564d;
+  --island-shadow: rgba(111, 73, 38, 0.18);
   color: #553b2b;
   border: 2px solid #d9ac67;
   background:
@@ -2452,7 +2724,6 @@ button:disabled {
 
 .theme-animal-island .pet-preview-panel,
 .theme-animal-island .app-card,
-.theme-animal-island .settings-update-panel,
 .theme-animal-island .settings-memory-panel,
 .theme-animal-island .settings-memory-editor,
 .theme-animal-island .settings-memory-results,
@@ -2604,6 +2875,40 @@ button:disabled {
   background: #43c6a9;
 }
 
+.theme-animal-island .pet-chat-selection-toolbar {
+  border-color: #e7c88c;
+  background: #fff6e4;
+}
+
+.theme-animal-island .pet-chat-selection-toolbar span {
+  color: #87654d;
+}
+
+.theme-animal-island .pet-chat-message-selector {
+  accent-color: #43c6a9;
+}
+
+.theme-animal-island .pet-chat-message.selected p {
+  box-shadow:
+    0 0 0 2px rgba(67, 198, 169, 0.46),
+    0 3px 0 rgba(206, 156, 85, 0.18);
+}
+
+.theme-animal-island .pet-chat-context-menu,
+.theme-animal-island .pet-chat-delete-dialog {
+  border-color: #ebd29c;
+  color: #553b2b;
+  background: #fffaf0;
+}
+
+.theme-animal-island .pet-chat-delete-dialog h2 {
+  color: #553b2b;
+}
+
+.theme-animal-island .pet-chat-delete-dialog p {
+  color: #87654d;
+}
+
 .pet-menu-window.theme-animal-island {
   border-radius: 16px;
   padding: 8px;
@@ -2616,6 +2921,723 @@ button:disabled {
 
 .pet-menu-window.theme-animal-island button:hover {
   background: #ffdda0;
+}
+
+/* Full Animal Island control layer: pill controls, warm panels and raised interactions. */
+.drawer-window.theme-animal-island,
+.pet-chat-window.theme-animal-island,
+.pet-menu-window.theme-animal-island {
+  font-family: "Microsoft YaHei", "PingFang SC", "Trebuchet MS", system-ui, sans-serif;
+  border: 3px solid var(--island-border);
+  background:
+    radial-gradient(circle at 9% 5%, rgba(255, 205, 111, 0.46), transparent 20%),
+    radial-gradient(circle at 92% 14%, rgba(107, 206, 174, 0.18), transparent 23%),
+    linear-gradient(165deg, var(--island-paper), var(--island-cream));
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.78),
+    0 6px 0 rgba(190, 133, 65, 0.34),
+    0 24px 54px var(--island-shadow);
+}
+
+.drawer-window.theme-animal-island {
+  position: relative;
+  overflow: hidden;
+  padding: 20px;
+  border-radius: 32px;
+}
+
+.drawer-window.theme-animal-island::before {
+  position: absolute;
+  right: -34px;
+  bottom: -38px;
+  width: 182px;
+  height: 118px;
+  border-radius: 58% 42% 0 0;
+  background:
+    radial-gradient(circle at 20% 25%, #a7dfc1 0 22%, transparent 23%),
+    radial-gradient(circle at 48% 4%, #7bcba9 0 24%, transparent 25%),
+    linear-gradient(145deg, #8ed5ad, #57be98);
+  content: "";
+  opacity: 0.44;
+  pointer-events: none;
+}
+
+.pet-chat-window.theme-animal-island {
+  border-radius: 26px;
+}
+
+.theme-animal-island button {
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+.theme-animal-island button:disabled {
+  opacity: 0.52;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.theme-animal-island button:focus-visible {
+  outline: 3px solid rgba(67, 198, 169, 0.48);
+  outline-offset: 2px;
+}
+
+.theme-animal-island .drawer-header {
+  min-height: 54px;
+  padding: 0 4px 8px;
+  border-bottom: 2px dashed rgba(213, 164, 92, 0.42);
+}
+
+.theme-animal-island .drawer-header h1 {
+  font-size: 25px;
+  letter-spacing: 0.02em;
+}
+
+.theme-animal-island .header-actions,
+.theme-animal-island .search-row,
+.theme-animal-island .drawer-layout {
+  position: relative;
+}
+
+.theme-animal-island .display-mode-switch,
+.theme-animal-island .kind-filter,
+.theme-animal-island .kind-editor {
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--island-border-soft);
+  border-radius: 999px;
+  background: #f4d99c;
+  box-shadow: inset 0 2px 3px rgba(133, 86, 39, 0.09);
+}
+
+.theme-animal-island .display-mode-switch button,
+.theme-animal-island .kind-filter button,
+.theme-animal-island .kind-editor button {
+  border-radius: 999px;
+}
+
+.theme-animal-island .display-mode-switch button:hover,
+.theme-animal-island .kind-filter button:hover,
+.theme-animal-island .kind-editor button:hover {
+  background: rgba(255, 249, 237, 0.62);
+}
+
+.theme-animal-island .display-mode-switch button.active,
+.theme-animal-island .kind-filter button.active,
+.theme-animal-island .kind-editor button.active {
+  background: #fffdf7;
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 2px 0 rgba(173, 113, 53, 0.19);
+}
+
+.theme-animal-island .search-input,
+.theme-animal-island .app-modal input,
+.theme-animal-island .app-modal select,
+.theme-animal-island .app-modal textarea,
+.theme-animal-island .settings-add-row input,
+.theme-animal-island .settings-ai-profile-add input,
+.theme-animal-island .settings-field input,
+.theme-animal-island .settings-field textarea,
+.theme-animal-island .settings-field select,
+.theme-animal-island .skin-import-panel input,
+.theme-animal-island .pet-chat-input textarea {
+  border: 2px solid var(--island-border-soft);
+  border-radius: 999px;
+  color: var(--island-ink);
+  background: #fffdf8;
+  box-shadow: inset 0 2px 5px rgba(149, 100, 44, 0.06);
+}
+
+.theme-animal-island .settings-field textarea,
+.theme-animal-island .app-modal textarea,
+.theme-animal-island .pet-chat-input textarea {
+  border-radius: 18px;
+}
+
+.theme-animal-island .search-input::placeholder,
+.theme-animal-island input::placeholder,
+.theme-animal-island textarea::placeholder {
+  color: #ad9274;
+}
+
+.theme-animal-island .search-input:focus,
+.theme-animal-island .app-modal input:focus,
+.theme-animal-island .app-modal select:focus,
+.theme-animal-island .app-modal textarea:focus,
+.theme-animal-island .settings-add-row input:focus,
+.theme-animal-island .settings-ai-profile-add input:focus,
+.theme-animal-island .settings-field input:focus,
+.theme-animal-island .settings-field textarea:focus,
+.theme-animal-island .settings-field select:focus,
+.theme-animal-island .skin-import-panel input:focus,
+.theme-animal-island .pet-chat-input textarea:focus {
+  border-color: var(--island-gold);
+  box-shadow:
+    0 0 0 4px rgba(240, 167, 66, 0.22),
+    inset 0 2px 5px rgba(149, 100, 44, 0.04);
+}
+
+.theme-animal-island input[type="checkbox"] {
+  accent-color: var(--island-mint);
+  filter: drop-shadow(0 1px 1px rgba(50, 105, 84, 0.16));
+}
+
+.theme-animal-island .primary-button,
+.theme-animal-island .add-actions .primary-button,
+.theme-animal-island .empty-actions .primary-button,
+.theme-animal-island .pet-chat-input button,
+.theme-animal-island .pet-chat-notice button,
+.theme-animal-island .settings-memory-editor-actions .primary-button,
+.theme-animal-island .skin-import-panel footer .primary-button,
+.theme-animal-island .settings-modal footer .primary-button,
+.theme-animal-island .app-modal footer .primary-button {
+  border: 1px solid #32ae92;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--island-mint);
+  box-shadow: 0 4px 0 var(--island-mint-dark);
+  transform: translateY(-2px);
+}
+
+.theme-animal-island .primary-button:hover:not(:disabled),
+.theme-animal-island .add-actions .primary-button:hover:not(:disabled),
+.theme-animal-island .empty-actions .primary-button:hover:not(:disabled),
+.theme-animal-island .pet-chat-input button:hover:not(:disabled),
+.theme-animal-island .pet-chat-notice button:hover:not(:disabled),
+.theme-animal-island .settings-memory-editor-actions .primary-button:hover:not(:disabled),
+.theme-animal-island .skin-import-panel footer .primary-button:hover:not(:disabled),
+.theme-animal-island .settings-modal footer .primary-button:hover:not(:disabled),
+.theme-animal-island .app-modal footer .primary-button:hover:not(:disabled) {
+  background: #35b99b;
+  transform: translateY(-3px);
+}
+
+.theme-animal-island .primary-button:active:not(:disabled),
+.theme-animal-island .pet-chat-input button:active:not(:disabled),
+.theme-animal-island .settings-memory-editor-actions .primary-button:active:not(:disabled),
+.theme-animal-island .skin-import-panel footer .primary-button:active:not(:disabled) {
+  box-shadow: 0 2px 0 var(--island-mint-dark);
+  transform: translateY(0);
+}
+
+.theme-animal-island .secondary-button,
+.theme-animal-island .window-close,
+.theme-animal-island .pet-chat-header button,
+.theme-animal-island .app-actions button:not(.danger-button),
+.theme-animal-island .path-row button,
+.theme-animal-island .icon-picker button,
+.theme-animal-island .app-modal footer button:not(.primary-button),
+.theme-animal-island .settings-modal footer button:not(.primary-button),
+.theme-animal-island .confirmation-modal footer button:not(.danger-button):not(.warning-button),
+.theme-animal-island .settings-update-actions button:not(.primary-button),
+.theme-animal-island .settings-ai-profile-update,
+.theme-animal-island .settings-companion-current-actions button:not(.danger-button),
+.theme-animal-island .settings-memory-refresh,
+.theme-animal-island .settings-memory-toolbar button:not(.danger-button):not(.caution-button),
+.theme-animal-island .settings-memory-editor-actions button:not(.primary-button),
+.theme-animal-island .settings-memory-row button:not(.danger-button),
+.theme-animal-island .animation-picker-actions button,
+.theme-animal-island .skin-import-panel footer button:not(.primary-button),
+.theme-animal-island .pet-chat-selection-toolbar button:not(.danger-button),
+.theme-animal-island .pet-chat-delete-dialog button:not(.danger-button) {
+  border: 1px solid #e5c37f;
+  border-radius: 999px;
+  color: #6d4832;
+  background: var(--island-sand);
+  box-shadow: 0 3px 0 rgba(189, 135, 62, 0.32);
+  transform: translateY(-1px);
+}
+
+.theme-animal-island .secondary-button:hover:not(:disabled),
+.theme-animal-island .window-close:hover:not(:disabled),
+.theme-animal-island .pet-chat-header button:hover:not(:disabled),
+.theme-animal-island .app-actions button:not(.danger-button):hover:not(:disabled),
+.theme-animal-island .path-row button:hover:not(:disabled),
+.theme-animal-island .icon-picker button:hover:not(:disabled),
+.theme-animal-island .app-modal footer button:not(.primary-button):hover:not(:disabled),
+.theme-animal-island .settings-modal footer button:not(.primary-button):hover:not(:disabled),
+.theme-animal-island .confirmation-modal footer button:not(.danger-button):not(.warning-button):hover:not(:disabled),
+.theme-animal-island .settings-update-actions button:not(.primary-button):hover:not(:disabled),
+.theme-animal-island .settings-ai-profile-update:hover:not(:disabled),
+.theme-animal-island .settings-companion-current-actions button:not(.danger-button):hover:not(:disabled),
+.theme-animal-island .settings-memory-refresh:hover:not(:disabled),
+.theme-animal-island .settings-memory-toolbar button:not(.danger-button):not(.caution-button):hover:not(:disabled),
+.theme-animal-island .settings-memory-editor-actions button:not(.primary-button):hover:not(:disabled),
+.theme-animal-island .settings-memory-row button:not(.danger-button):hover:not(:disabled),
+.theme-animal-island .animation-picker-actions button:hover:not(:disabled),
+.theme-animal-island .skin-import-panel footer button:not(.primary-button):hover:not(:disabled),
+.theme-animal-island .pet-chat-selection-toolbar button:not(.danger-button):hover:not(:disabled),
+.theme-animal-island .pet-chat-delete-dialog button:not(.danger-button):hover:not(:disabled) {
+  background: #fbe6b7;
+  transform: translateY(-2px);
+}
+
+.theme-animal-island .secondary-button:active:not(:disabled),
+.theme-animal-island .window-close:active:not(:disabled),
+.theme-animal-island .pet-chat-header button:active:not(:disabled),
+.theme-animal-island .app-actions button:not(.danger-button):active:not(:disabled),
+.theme-animal-island .path-row button:active:not(:disabled),
+.theme-animal-island .icon-picker button:active:not(:disabled),
+.theme-animal-island .app-modal footer button:not(.primary-button):active:not(:disabled),
+.theme-animal-island .settings-modal footer button:not(.primary-button):active:not(:disabled),
+.theme-animal-island .confirmation-modal footer button:not(.danger-button):not(.warning-button):active:not(:disabled),
+.theme-animal-island .settings-update-actions button:not(.primary-button):active:not(:disabled),
+.theme-animal-island .settings-ai-profile-update:active:not(:disabled),
+.theme-animal-island .settings-companion-current-actions button:not(.danger-button):active:not(:disabled),
+.theme-animal-island .settings-memory-refresh:active:not(:disabled),
+.theme-animal-island .settings-memory-toolbar button:not(.danger-button):not(.caution-button):active:not(:disabled),
+.theme-animal-island .settings-memory-editor-actions button:not(.primary-button):active:not(:disabled),
+.theme-animal-island .settings-memory-row button:not(.danger-button):active:not(:disabled),
+.theme-animal-island .animation-picker-actions button:active:not(:disabled),
+.theme-animal-island .skin-import-panel footer button:not(.primary-button):active:not(:disabled),
+.theme-animal-island .pet-chat-selection-toolbar button:not(.danger-button):active:not(:disabled),
+.theme-animal-island .pet-chat-delete-dialog button:not(.danger-button):active:not(:disabled) {
+  background: #f0ce8d;
+  box-shadow: 0 1px 0 rgba(189, 135, 62, 0.32);
+  transform: translateY(1px);
+}
+
+.theme-animal-island .app-actions .danger-button,
+.theme-animal-island .settings-ai-profile-delete,
+.theme-animal-island .settings-companion-current-actions .danger-button,
+.theme-animal-island .settings-memory-toolbar .danger-button,
+.theme-animal-island .settings-memory-row-actions .danger-button,
+.theme-animal-island .skin-delete-button,
+.theme-animal-island .confirmation-modal footer .danger-button,
+.theme-animal-island .pet-chat-selection-toolbar .danger-button,
+.theme-animal-island .pet-chat-delete-dialog .danger-button {
+  border: 1px solid #dc7569;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--island-coral);
+  box-shadow: 0 3px 0 var(--island-coral-dark);
+  transform: translateY(-1px);
+}
+
+.theme-animal-island .app-actions .danger-button:hover:not(:disabled),
+.theme-animal-island .settings-ai-profile-delete:hover:not(:disabled),
+.theme-animal-island .settings-companion-current-actions .danger-button:hover:not(:disabled),
+.theme-animal-island .settings-memory-toolbar .danger-button:hover:not(:disabled),
+.theme-animal-island .settings-memory-row-actions .danger-button:hover:not(:disabled),
+.theme-animal-island .skin-delete-button:hover:not(:disabled),
+.theme-animal-island .pet-chat-selection-toolbar .danger-button:hover:not(:disabled),
+.theme-animal-island .pet-chat-delete-dialog .danger-button:hover:not(:disabled) {
+  background: #dc675d;
+  transform: translateY(-2px);
+}
+
+.theme-animal-island .pet-chat-selection-toolbar .danger-button:active:not(:disabled),
+.theme-animal-island .pet-chat-delete-dialog .danger-button:active:not(:disabled) {
+  background: var(--island-coral-dark);
+  box-shadow: 0 1px 0 var(--island-coral-dark);
+  transform: translateY(1px);
+}
+
+.theme-animal-island .settings-memory-toolbar .caution-button,
+.theme-animal-island .confirmation-modal footer .warning-button {
+  border: 1px solid #d89230;
+  border-radius: 999px;
+  color: #ffffff;
+  background: var(--island-gold);
+  box-shadow: 0 3px 0 var(--island-gold-dark);
+  transform: translateY(-1px);
+}
+
+.theme-animal-island .settings-memory-toolbar .caution-button:hover:not(:disabled),
+.theme-animal-island .confirmation-modal footer .warning-button:hover:not(:disabled) {
+  background: #f6b354;
+  box-shadow: 0 4px 0 var(--island-gold-dark);
+  transform: translateY(-2px);
+}
+
+.theme-animal-island .settings-memory-toolbar .caution-button:active:not(:disabled),
+.theme-animal-island .confirmation-modal footer .warning-button:active:not(:disabled) {
+  background: var(--island-gold-dark);
+  box-shadow: 0 1px 0 var(--island-gold-dark);
+  transform: translateY(1px);
+}
+
+.theme-animal-island .pet-preview-panel,
+.theme-animal-island .settings-section,
+.theme-animal-island .settings-memory-panel,
+.theme-animal-island .settings-memory-editor,
+.theme-animal-island .settings-memory-results,
+.theme-animal-island .settings-ai-profiles,
+.theme-animal-island .skin-detail-panel,
+.theme-animal-island .skin-import-panel,
+.theme-animal-island .animation-picker {
+  border: 2px solid var(--island-border-soft);
+  border-radius: 20px;
+  background: var(--island-panel);
+  box-shadow: inset 0 1px 0 #ffffff;
+}
+
+.theme-animal-island .panel-status,
+.theme-animal-island .empty-state {
+  border: 2px dashed var(--island-border-soft);
+  border-radius: 24px;
+  color: var(--island-muted);
+  background: rgba(255, 251, 241, 0.78);
+}
+
+.theme-animal-island .empty-state h2 {
+  color: var(--island-ink);
+}
+
+.theme-animal-island .pet-preview-frame,
+.theme-animal-island .skin-thumb,
+.theme-animal-island .skin-detail-preview,
+.theme-animal-island .animation-status-thumb,
+.theme-animal-island .icon-preview {
+  border: 2px solid var(--island-border-soft);
+  border-radius: 16px;
+  background: #fff4dc;
+}
+
+.theme-animal-island .category-list {
+  padding: 7px;
+  border: 2px solid var(--island-border-soft);
+  border-radius: 19px;
+  background: rgba(255, 249, 236, 0.72);
+}
+
+.theme-animal-island .category-button {
+  min-height: 40px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.theme-animal-island .category-button:hover,
+.theme-animal-island .category-button.active {
+  background: #ffd980;
+  box-shadow: 0 3px 0 rgba(204, 121, 48, 0.27);
+  transform: translateY(-1px);
+}
+
+.theme-animal-island .app-card {
+  border: 2px solid var(--island-border-soft);
+  border-radius: 22px;
+  background: #fffdf6;
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 4px 0 rgba(207, 156, 84, 0.24);
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.theme-animal-island .app-card:hover {
+  border-color: #dcb368;
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 6px 0 rgba(207, 156, 84, 0.28);
+  transform: translateY(-2px);
+}
+
+.theme-animal-island .app-icon {
+  border: 2px solid rgba(255, 255, 255, 0.68);
+  border-radius: 17px;
+  box-shadow: 0 3px 0 rgba(45, 135, 111, 0.2);
+}
+
+.theme-animal-island .search-quick-tags button,
+.theme-animal-island .app-tags span,
+.theme-animal-island .settings-chip,
+.theme-animal-island .skin-state-tags span {
+  border: 1px solid #efcf88;
+  border-radius: 999px;
+  color: #694735;
+  background: #ffe7ad;
+}
+
+.theme-animal-island .search-quick-tags button:hover {
+  background: #ffda86;
+  transform: translateY(-1px);
+}
+
+.theme-animal-island .favorite-mark {
+  border: 1px solid #8bd4b5;
+  color: #286d58;
+  background: #d7f3df;
+}
+
+.theme-animal-island .app-admin-toggle,
+.theme-animal-island .checkbox-row,
+.theme-animal-island .app-modal label,
+.theme-animal-island .skin-import-panel label {
+  color: var(--island-ink);
+}
+
+.theme-animal-island .checkbox-row {
+  padding: 10px 12px;
+  border: 1px solid var(--island-border-soft);
+  border-radius: 14px;
+  background: #fff8e8;
+}
+
+.theme-animal-island .app-admin-toggle input,
+.theme-animal-island .checkbox-row input {
+  width: 18px;
+  height: 18px;
+}
+
+.theme-animal-island .settings-body {
+  gap: 14px;
+}
+
+.theme-animal-island .settings-nav {
+  gap: 7px;
+  padding: 7px;
+  border: 2px solid var(--island-border-soft);
+  border-radius: 20px;
+  background: #f5dcae;
+}
+
+.theme-animal-island .settings-nav button {
+  border-radius: 14px;
+  background: transparent;
+}
+
+.theme-animal-island .settings-nav button:hover {
+  background: rgba(255, 251, 242, 0.72);
+}
+
+.theme-animal-island .settings-nav button.active {
+  background: #fffdf7;
+  box-shadow:
+    inset 4px 0 0 var(--island-mint),
+    0 3px 0 rgba(189, 135, 62, 0.18);
+}
+
+.theme-animal-island .settings-nav span,
+.theme-animal-island .settings-field small,
+.theme-animal-island .settings-update-panel small,
+.theme-animal-island .settings-ai-profile-heading small,
+.theme-animal-island .settings-companion-current small,
+.theme-animal-island .settings-memory-copy small,
+.theme-animal-island .settings-memory-block-heading small {
+  color: var(--island-muted);
+}
+
+.theme-animal-island .settings-toggle-row {
+  padding: 12px 14px;
+  border: 2px solid var(--island-border-soft);
+  border-radius: 18px;
+  background: #fffaf0;
+}
+
+.theme-animal-island .settings-toggle-row strong,
+.theme-animal-island .settings-update-panel strong,
+.theme-animal-island .settings-ai-profile-heading strong,
+.theme-animal-island .settings-memory-copy strong,
+.theme-animal-island .settings-memory-block-heading strong,
+.theme-animal-island .settings-runtime-row code,
+.theme-animal-island .settings-memory-row strong {
+  color: var(--island-ink);
+}
+
+.theme-animal-island .skin-modal h2,
+.theme-animal-island .skin-import-panel h3,
+.theme-animal-island .skin-detail-panel h3,
+.theme-animal-island .animation-picker strong,
+.theme-animal-island .skin-animation-item strong {
+  color: var(--island-ink);
+}
+
+.theme-animal-island .skin-modal header p,
+.theme-animal-island .skin-detail-panel p,
+.theme-animal-island .skin-detail-actions small,
+.theme-animal-island .animation-picker span,
+.theme-animal-island .animation-picker p,
+.theme-animal-island .skin-animation-item small {
+  color: var(--island-muted);
+}
+
+.theme-animal-island .settings-toggle-row input {
+  width: 21px;
+  height: 21px;
+}
+
+.theme-animal-island .settings-ai-profile-current,
+.theme-animal-island .settings-companion-current,
+.theme-animal-island .settings-memory-row {
+  border: 1px solid var(--island-border-soft);
+  border-radius: 15px;
+  background: #fff8e9;
+}
+
+.theme-animal-island .settings-memory-toolbar {
+  border-top-color: var(--island-border-soft);
+}
+
+.theme-animal-island .settings-memory-toolbar-group + .settings-memory-toolbar-group {
+  border-left-color: var(--island-border-soft);
+}
+
+.theme-animal-island .theme-choice-card,
+.theme-animal-island .skin-card {
+  border: 2px solid var(--island-border-soft);
+  border-radius: 19px;
+  color: var(--island-ink);
+  background: #fff3d9;
+  box-shadow: 0 3px 0 rgba(207, 156, 84, 0.16);
+}
+
+.theme-animal-island .theme-choice-card:hover,
+.theme-animal-island .skin-card:hover {
+  border-color: #dcb368;
+  background: #ffedca;
+}
+
+.theme-animal-island .theme-choice-card.active,
+.theme-animal-island .skin-card.active,
+.theme-animal-island .skin-card.selected {
+  border-color: var(--island-mint);
+  background: #effaf3;
+  box-shadow:
+    inset 0 0 0 1px rgba(67, 198, 169, 0.28),
+    0 3px 0 rgba(36, 143, 124, 0.18);
+}
+
+.theme-animal-island .modal-backdrop {
+  background: rgba(91, 61, 31, 0.36);
+  backdrop-filter: blur(2px);
+}
+
+.theme-animal-island .app-modal,
+.theme-animal-island .settings-modal,
+.theme-animal-island .confirmation-modal,
+.theme-animal-island .skin-modal {
+  border: 3px solid var(--island-border);
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at top left, rgba(255, 212, 127, 0.24), transparent 24%),
+    var(--island-paper);
+  box-shadow:
+    inset 0 2px 0 #ffffff,
+    0 6px 0 rgba(190, 133, 65, 0.28),
+    0 22px 50px rgba(85, 57, 30, 0.22);
+}
+
+.theme-animal-island .settings-modal footer {
+  border-top: 2px dashed rgba(213, 164, 92, 0.44);
+  background: transparent;
+}
+
+.theme-animal-island .confirmation-badge {
+  border: 1px solid #efaa9e;
+  color: #a7463e;
+  background: #ffe0d9;
+}
+
+.theme-animal-island .confirmation-detail {
+  border: 1px solid #f0c099;
+  border-radius: 14px;
+  color: #875240;
+  background: #fff0de;
+}
+
+.theme-animal-island .form-error,
+.theme-animal-island .error {
+  color: #bb5045;
+}
+
+.theme-animal-island .form-success {
+  color: #267961;
+}
+
+.theme-animal-island .pet-chat-header,
+.theme-animal-island .pet-chat-input {
+  border-color: var(--island-border-soft);
+  background: rgba(255, 250, 239, 0.64);
+}
+
+.theme-animal-island .pet-chat-message p {
+  border: 1px solid var(--island-border-soft);
+  border-radius: 19px 19px 19px 7px;
+  background: #fffdf6;
+  box-shadow: 0 3px 0 rgba(206, 156, 85, 0.2);
+}
+
+.theme-animal-island .pet-chat-message.user p {
+  border-color: #35ae93;
+  border-radius: 19px 19px 7px 19px;
+  background: var(--island-mint);
+  box-shadow: 0 3px 0 var(--island-mint-dark);
+}
+
+.theme-animal-island .pet-chat-notice,
+.theme-animal-island .pet-chat-selection-toolbar,
+.theme-animal-island .pet-chat-context-menu,
+.theme-animal-island .pet-chat-delete-dialog {
+  border: 2px solid var(--island-border-soft);
+  border-radius: 18px;
+  background: var(--island-panel);
+  box-shadow: 0 4px 0 rgba(207, 156, 84, 0.2);
+}
+
+.theme-animal-island .pet-chat-context-menu button {
+  border-radius: 12px;
+  color: var(--island-ink);
+}
+
+.theme-animal-island .pet-chat-context-menu button:hover {
+  background: #ffe2a0;
+}
+
+.theme-animal-island .pet-chat-context-menu button:first-child {
+  color: #bd564d;
+}
+
+.theme-animal-island .pet-chat-error {
+  border: 1px solid #f0b2a6;
+  border-radius: 14px;
+  color: #ad5048;
+  background: #ffebe5;
+}
+
+.pet-menu-window.theme-animal-island {
+  border-radius: 20px;
+  padding: 9px;
+}
+
+.pet-menu-window.theme-animal-island button {
+  border-radius: 999px;
+  color: var(--island-ink);
+  font-weight: 700;
+}
+
+.pet-menu-window.theme-animal-island button:hover {
+  background: #ffdda0;
+  box-shadow: 0 3px 0 rgba(204, 121, 48, 0.24);
+  transform: translateY(-1px);
+}
+
+.theme-animal-island ::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.theme-animal-island ::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(226, 189, 126, 0.28);
+}
+
+.theme-animal-island ::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #ddb56c;
+  background-clip: padding-box;
+}
+
+.theme-animal-island ::-webkit-scrollbar-thumb:hover {
+  background: #ce9850;
+  background-clip: padding-box;
 }
 
 @media (max-width: 520px) {
@@ -2650,10 +3672,19 @@ button:disabled {
 
   .settings-body {
     grid-template-columns: 1fr;
+    overflow-y: auto;
+    padding-right: 2px;
   }
 
   .settings-nav {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-nav,
+  .settings-panels {
+    min-height: auto;
+    overflow: visible;
+    padding-right: 0;
   }
 
   .settings-form-grid {
@@ -2694,8 +3725,20 @@ button:disabled {
   }
 
   .settings-ai-profile-heading,
-  .settings-ai-profile-add {
+  .settings-ai-profile-add,
+  .settings-companion-heading,
+  .settings-companion-actions {
     display: grid;
+  }
+
+  .settings-companion-current {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .settings-companion-current-actions {
+    justify-content: flex-end;
+    width: 100%;
   }
 
   .pet-preview-panel {

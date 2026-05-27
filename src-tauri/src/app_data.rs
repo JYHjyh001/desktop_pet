@@ -187,6 +187,49 @@ pub struct AiSettings {
     pub profiles: Vec<AiConnectionProfile>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionRelationshipState {
+    pub favorability: i32,
+    pub intimacy: i32,
+    pub mood: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Companion {
+    pub id: String,
+    pub name: String,
+    pub avatar: Option<String>,
+    pub persona_prompt: String,
+    pub system_prompt: String,
+    pub model: String,
+    pub voice_id: String,
+    pub memory_scope: String,
+    pub skin_id: String,
+    pub relationship_state: CompanionRelationshipState,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionDraft {
+    pub id: Option<String>,
+    pub name: String,
+    pub avatar: Option<String>,
+    pub persona_prompt: String,
+    #[serde(default)]
+    pub system_prompt: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub voice_id: String,
+    #[serde(default = "default_current_skin")]
+    pub skin_id: String,
+    pub relationship_state: Option<CompanionRelationshipState>,
+}
+
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
@@ -215,6 +258,12 @@ pub struct PetDrawerConfig {
     pub system: SystemSettings,
     #[serde(default)]
     pub ai: AiSettings,
+    #[serde(default = "default_companions")]
+    pub companions: Vec<Companion>,
+    #[serde(default = "default_current_companion_id")]
+    pub current_companion_id: String,
+    #[serde(default)]
+    pub companions_initialized: bool,
 }
 
 impl Default for PetDrawerConfig {
@@ -242,6 +291,9 @@ impl Default for PetDrawerConfig {
             },
             system: SystemSettings::default(),
             ai: AiSettings::default(),
+            companions: default_companions(),
+            current_companion_id: default_current_companion_id(),
+            companions_initialized: true,
         }
     }
 }
@@ -300,7 +352,33 @@ fn default_ai_model() -> String {
 }
 
 fn default_ai_system_prompt() -> String {
-    "你是一个友好、简洁的桌面宠物助手。".to_string()
+    "请遵循当前伴侣档案中的身份与表达方式，尊重用户隐私，回复自然且清晰。".to_string()
+}
+
+fn default_current_companion_id() -> String {
+    "default".to_string()
+}
+
+fn default_companions() -> Vec<Companion> {
+    let now = now_seconds();
+    vec![Companion {
+        id: default_current_companion_id(),
+        name: "凯蒂".to_string(),
+        avatar: None,
+        persona_prompt: "你是温柔、活泼的桌面伴侣凯蒂，陪用户聊天并提供恰当帮助。".to_string(),
+        system_prompt: String::new(),
+        model: String::new(),
+        voice_id: String::new(),
+        memory_scope: default_current_companion_id(),
+        skin_id: default_current_skin(),
+        relationship_state: CompanionRelationshipState {
+            favorability: 0,
+            intimacy: 0,
+            mood: String::new(),
+        },
+        created_at: now.clone(),
+        updated_at: now,
+    }]
 }
 
 fn default_ai_temperature() -> f32 {

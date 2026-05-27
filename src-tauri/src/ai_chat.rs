@@ -6,7 +6,7 @@ use tauri::AppHandle;
 
 use crate::{
     ai_memory::{self, PetMemoryDraft, PetMemoryMessage},
-    app_data::{self, AiSettings},
+    app_data::{self, AiSettings, Companion},
 };
 
 const MEMORY_EXTRACTION_CONTEXT_MESSAGES: usize = 10;
@@ -76,17 +76,23 @@ pub fn send_pet_chat_message(
 ) -> Result<PetChatReply, String> {
     let config = app_data::read_config(app)?;
     let settings = config.ai;
+    let companion = ai_memory::current_companion(app)?;
+    let companion_id = companion.id.clone();
 
     if !settings.enabled {
         return Err("请先在抽屉设置的“AI 接口”中启用宠物聊天 API。".to_string());
     }
 
-    if settings.model.trim().is_empty() {
-        return Err("请先在“AI 接口”中填写模型名称。".to_string());
-    }
-
     let messages = normalize_messages(messages)?;
     let mut chat_settings = settings.clone();
+    if !companion.model.trim().is_empty() {
+        chat_settings.model = companion.model.clone();
+    }
+    if chat_settings.model.trim().is_empty() {
+        return Err("请先在“AI 接口”或当前伴侣档案中填写模型名称。".to_string());
+    }
+    let companion_prompt = append_companion_context(&settings.system_prompt, &companion);
+    chat_settings.system_prompt = companion_prompt.clone();
     let mut memory_warnings = Vec::new();
     let latest_user_input = messages
         .iter()
@@ -95,14 +101,12 @@ pub fn send_pet_chat_message(
         .map(|message| message.content.as_str());
 
     if let Some(user_input) = latest_user_input {
-        if settings.memory_enabled {
-            record_memory_error(
-                &mut memory_warnings,
-                ai_memory::save_message(app, "user", user_input),
-            );
-        }
+        record_memory_error(
+            &mut memory_warnings,
+            ai_memory::save_message(app, &companion_id, "user", user_input),
+        );
 
-        let forget_reply = match handle_forget_memory(app, user_input) {
+        let forget_reply = match handle_forget_memory(app, &companion_id, user_input) {
             Ok(reply) => reply,
             Err(err) => {
                 push_memory_warning(&mut memory_warnings, err);
@@ -110,34 +114,33 @@ pub fn send_pet_chat_message(
             }
         };
         if let Some(reply) = forget_reply {
-            if settings.memory_enabled {
-                record_memory_error(
-                    &mut memory_warnings,
-                    ai_memory::save_message(app, "assistant", &reply),
-                );
-            }
+            record_memory_error(
+                &mut memory_warnings,
+                ai_memory::save_message(app, &companion_id, "assistant", &reply),
+            );
             return Ok(PetChatReply {
                 message: reply,
                 provider: settings.provider,
-                model: settings.model,
+                model: chat_settings.model,
                 memory_warning: format_memory_warning(memory_warnings),
             });
         }
 
         if settings.memory_enabled {
-            let recent_messages = read_recent_messages(app, &mut memory_warnings);
+            let recent_messages = read_recent_messages(app, &companion_id, &mut memory_warnings);
             let memory_drafts = memory_drafts_with_fallback(
-                extract_memory_drafts(&settings, user_input, &recent_messages),
+                extract_memory_drafts(&chat_settings, user_input, &recent_messages),
                 user_input,
             );
             record_memory_error(
                 &mut memory_warnings,
-                ai_memory::save_memories(app, memory_drafts),
+                ai_memory::save_memories(app, &companion_id, memory_drafts),
             );
 
-            let related_memories = read_related_memories(app, user_input, &mut memory_warnings);
+            let related_memories =
+                read_related_memories(app, &companion_id, user_input, &mut memory_warnings);
             chat_settings.system_prompt =
-                append_memory_context(&settings.system_prompt, &related_memories, &recent_messages);
+                append_memory_context(&companion_prompt, &related_memories, &recent_messages);
         }
     }
 
@@ -145,17 +148,15 @@ pub fn send_pet_chat_message(
     let response_text = post_json(&request)?;
     let reply = parse_reply(&settings.provider, &response_text)?;
 
-    if settings.memory_enabled {
-        record_memory_error(
-            &mut memory_warnings,
-            ai_memory::save_message(app, "assistant", &reply),
-        );
-    }
+    record_memory_error(
+        &mut memory_warnings,
+        ai_memory::save_message(app, &companion_id, "assistant", &reply),
+    );
 
     Ok(PetChatReply {
         message: reply,
         provider: settings.provider,
-        model: settings.model,
+        model: chat_settings.model,
         memory_warning: format_memory_warning(memory_warnings),
     })
 }
@@ -345,8 +346,12 @@ fn memory_drafts_with_fallback(
     }
 }
 
-fn read_recent_messages(app: &AppHandle, warnings: &mut Vec<String>) -> Vec<PetMemoryMessage> {
-    match ai_memory::recent_messages(app, MEMORY_EXTRACTION_CONTEXT_MESSAGES) {
+fn read_recent_messages(
+    app: &AppHandle,
+    companion_id: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<PetMemoryMessage> {
+    match ai_memory::recent_messages(app, companion_id, MEMORY_EXTRACTION_CONTEXT_MESSAGES) {
         Ok(messages) => messages,
         Err(err) => {
             push_memory_warning(warnings, err);
@@ -357,10 +362,11 @@ fn read_recent_messages(app: &AppHandle, warnings: &mut Vec<String>) -> Vec<PetM
 
 fn read_related_memories(
     app: &AppHandle,
+    companion_id: &str,
     query: &str,
     warnings: &mut Vec<String>,
 ) -> Vec<ai_memory::PetMemory> {
-    match ai_memory::search_memories(app, query, 8) {
+    match ai_memory::search_memories(app, companion_id, query, 8) {
         Ok(memories) => memories,
         Err(err) => {
             push_memory_warning(warnings, err);
@@ -389,7 +395,11 @@ fn format_memory_warning(warnings: Vec<String>) -> Option<String> {
     }
 }
 
-fn handle_forget_memory(app: &AppHandle, user_input: &str) -> Result<Option<String>, String> {
+fn handle_forget_memory(
+    app: &AppHandle,
+    companion_id: &str,
+    user_input: &str,
+) -> Result<Option<String>, String> {
     let Some(intent) = forget_intent(user_input) else {
         return Ok(None);
     };
@@ -399,8 +409,10 @@ fn handle_forget_memory(app: &AppHandle, user_input: &str) -> Result<Option<Stri
             ai_memory::clear_memories(app)?;
             usize::MAX
         }
-        ForgetIntent::Latest => ai_memory::delete_latest_memory(app)?,
-        ForgetIntent::Related(query) => ai_memory::delete_related_memories(app, &query, 12)?,
+        ForgetIntent::Latest => ai_memory::delete_latest_memory(app, companion_id)?,
+        ForgetIntent::Related(query) => {
+            ai_memory::delete_related_memories(app, companion_id, &query, 12)?
+        }
     };
 
     let reply = if deleted == 0 {
@@ -827,6 +839,35 @@ fn cleanup_short_phrase(value: &str) -> String {
 
 fn cleanup_sentence(value: &str) -> String {
     value.trim().chars().take(120).collect()
+}
+
+fn append_companion_context(system_prompt: &str, companion: &Companion) -> String {
+    let mut sections = Vec::new();
+    if !system_prompt.trim().is_empty() {
+        sections.push(system_prompt.trim().to_string());
+    }
+
+    let mood = if companion.relationship_state.mood.trim().is_empty() {
+        "平静"
+    } else {
+        companion.relationship_state.mood.trim()
+    };
+    sections.push(format!(
+        "[当前伴侣档案]\n当前伴侣名称：{}\n角色设定：\n{}\n关系状态：好感度 {}，亲密度 {}，当前情绪 {}\n请始终以当前伴侣身份回复，不要混用其他伴侣的设定、记忆或对话。",
+        companion.name.trim(),
+        companion.persona_prompt.trim(),
+        companion.relationship_state.favorability,
+        companion.relationship_state.intimacy,
+        mood
+    ));
+    if !companion.system_prompt.trim().is_empty() {
+        sections.push(format!(
+            "[伴侣附加规则]\n{}",
+            companion.system_prompt.trim()
+        ));
+    }
+
+    sections.join("\n\n")
 }
 
 fn append_memory_context(
@@ -1396,12 +1437,14 @@ mod tests {
         let messages = vec![
             PetMemoryMessage {
                 id: 1,
+                companion_id: "default".to_string(),
                 role: "assistant".to_string(),
                 content: "你平时结束工作后会怎么放松？".to_string(),
                 created_at: "1".to_string(),
             },
             PetMemoryMessage {
                 id: 2,
+                companion_id: "default".to_string(),
                 role: "user".to_string(),
                 content: "我通常先泡杯茶，再来和你聊天。".to_string(),
                 created_at: "2".to_string(),
