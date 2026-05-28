@@ -165,7 +165,22 @@ fn open_website(url: &str) -> Result<(), String> {
         .map_err(|err| format!("打开网站失败：{err}"))
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+fn launch_process_as_admin(app_path: &Path) -> Result<(), String> {
+    Command::new("/usr/bin/osascript")
+        .args([
+            "-e",
+            &format!(
+                "do shell script \"open -a '{}'\" with administrator privileges",
+                app_path.to_string_lossy().replace('"', "\\\"")
+            ),
+        ])
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("管理员启动失败：{err}"))
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn launch_process_as_admin(app_path: &Path) -> Result<(), String> {
     Command::new(app_path)
         .spawn()
