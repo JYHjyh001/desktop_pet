@@ -398,9 +398,9 @@ async function openSettings() {
     loadDrawerSettings(),
     loadCompanions(),
     loadPetMemories(),
-    checkForUpdate(),
     loadRuntimeInfo(),
   ])
+  checkForUpdate()
 }
 
 function applyDrawerConfig(config: PetDrawerConfig) {

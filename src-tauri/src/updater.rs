@@ -219,7 +219,7 @@ try {
 #[cfg(not(target_os = "windows"))]
 fn fetch_latest_release_url(url: &str) -> Result<String, String> {
     let output = std::process::Command::new("curl")
-        .args(["-sIL", "-o", "/dev/null", "-w", "%{url_effective}", url])
+        .args(["-sIL", "--connect-timeout", "5", "--max-time", "10", "-o", "/dev/null", "-w", "%{url_effective}", url])
         .output()
         .map_err(|err| format!("无法启动 curl 检查更新：{err}"))?;
 

@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "withGlobalTauri": false,
     "security": {
       "csp": null
@@ -72,6 +73,7 @@
     "active": true,
     "targets": "all",
     "icon": [
+      "icons/icon.png",
       "icons/icon.ico",
       "icons/icon.icns"
     ],
