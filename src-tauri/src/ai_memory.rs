@@ -17,6 +17,8 @@ use crate::app_data::{
 const MEMORY_DB_FILE_NAME: &str = "pet-memory.db";
 const LEGACY_MEMORY_JSON_FILE_NAME: &str = "pet-memory.json";
 pub const DEFAULT_COMPANION_ID: &str = "default";
+pub const SHORT_TERM_SUMMARY_MEMORY_TYPE: &str = "short_term_summary";
+pub const MAX_SHORT_TERM_SUMMARY_LEN: usize = 2400;
 const MAX_MESSAGES: usize = 200;
 const MAX_MESSAGE_CONTENT_LEN: usize = 1200;
 const MAX_MEMORY_CONTENT_LEN: usize = 300;
@@ -239,7 +241,7 @@ pub fn upsert_companion(app: &AppHandle, draft: CompanionDraft) -> Result<Compan
         memory_scope: id.clone(),
         skin_id: normalize_skin_id(&draft.skin_id),
         relationship_state: CompanionRelationshipState {
-            favorability: state.favorability.clamp(-100, 100),
+            favorability: state.favorability.clamp(-9999, 9999),
             intimacy: state.intimacy.clamp(-100, 100),
             mood: truncate_text(state.mood.trim(), 40),
         },
@@ -392,10 +394,109 @@ pub fn recent_messages(
     collect_rows(rows, "读取最近聊天记忆失败")
 }
 
+pub fn unsummarized_messages_for_short_summary(
+    app: &AppHandle,
+    companion_id: &str,
+    keep_recent_messages: usize,
+    last_summarized_message_id: u64,
+) -> Result<Vec<PetMemoryMessage>, String> {
+    let companion_id = safe_companion_id(companion_id)?;
+    let conn = open_connection(app)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, companion_id, role, content, created_at
+             FROM pet_memory_messages
+             WHERE companion_id = ?1
+               AND id > ?2
+               AND id NOT IN (
+                    SELECT id FROM pet_memory_messages
+                    WHERE companion_id = ?1 ORDER BY id DESC LIMIT ?3
+               )
+             ORDER BY id ASC",
+        )
+        .map_err(|err| format!("读取待压缩短期记忆失败：{err}"))?;
+    let rows = stmt
+        .query_map(
+            params![
+                companion_id,
+                last_summarized_message_id.min(i64::MAX as u64) as i64,
+                keep_recent_messages as i64
+            ],
+            row_to_message,
+        )
+        .map_err(|err| format!("读取待压缩短期记忆失败：{err}"))?;
+
+    collect_rows(rows, "读取待压缩短期记忆失败")
+}
+
 pub fn list_memories(app: &AppHandle) -> Result<Vec<PetMemory>, String> {
     let companion_id = current_companion_id(app)?;
     let conn = open_connection(app)?;
     list_memories_from_conn(&conn, &companion_id)
+}
+
+pub fn short_term_summary(
+    app: &AppHandle,
+    companion_id: &str,
+) -> Result<Option<PetMemory>, String> {
+    let companion_id = safe_companion_id(companion_id)?;
+    let conn = open_connection(app)?;
+    short_term_summary_from_conn(&conn, companion_id)
+}
+
+pub fn upsert_short_term_summary(
+    app: &AppHandle,
+    companion_id: &str,
+    content: &str,
+    last_summarized_message_id: u64,
+) -> Result<Option<PetMemory>, String> {
+    let companion_id = safe_companion_id(companion_id)?;
+    let content = truncate_text(content.trim(), MAX_SHORT_TERM_SUMMARY_LEN);
+    if content.is_empty() {
+        return short_term_summary(app, companion_id);
+    }
+
+    let conn = open_connection(app)?;
+    let now = app_data::now_seconds();
+    let source_message = short_term_summary_source(last_summarized_message_id);
+    let tags = vec!["短期摘要".to_string(), "上下文".to_string()];
+    let memory = if let Some(mut memory) = short_term_summary_from_conn(&conn, companion_id)? {
+        memory.content = content;
+        memory.importance = 10;
+        memory.tags = tags;
+        memory.source_message = source_message;
+        memory.confidence = 1.0;
+        memory.deleted = false;
+        memory.updated_at = now;
+        update_memory(&conn, &memory)?;
+        memory
+    } else {
+        let memory = PetMemory {
+            id: next_unique_id(&conn, "pet_memories")?,
+            companion_id: companion_id.to_string(),
+            memory_type: SHORT_TERM_SUMMARY_MEMORY_TYPE.to_string(),
+            content,
+            importance: 10,
+            tags,
+            source_message,
+            confidence: 1.0,
+            deleted: false,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        insert_memory(&conn, &memory)?;
+        memory
+    };
+
+    remove_extra_short_term_summaries(&conn, companion_id, memory.id)?;
+    Ok(Some(memory))
+}
+
+pub fn short_term_summary_last_message_id(memory: Option<&PetMemory>) -> u64 {
+    memory
+        .and_then(|memory| memory.source_message.strip_prefix("last_message_id:"))
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 pub fn save_memories(
@@ -545,6 +646,11 @@ pub fn clear_messages(app: &AppHandle) -> Result<(), String> {
         params![companion_id],
     )
     .map_err(|err| format!("清空宠物短期聊天记录失败：{err}"))?;
+    conn.execute(
+        "DELETE FROM pet_memories WHERE companion_id = ?1 AND memory_type = ?2",
+        params![companion_id, SHORT_TERM_SUMMARY_MEMORY_TYPE],
+    )
+    .map_err(|err| format!("清空短期摘要记忆失败：{err}"))?;
     Ok(())
 }
 
@@ -951,6 +1057,46 @@ fn latest_memory(conn: &Connection, companion_id: &str) -> Result<Option<PetMemo
     .map_err(|err| format!("读取最近宠物记忆失败：{err}"))
 }
 
+fn short_term_summary_from_conn(
+    conn: &Connection,
+    companion_id: &str,
+) -> Result<Option<PetMemory>, String> {
+    conn.query_row(
+        "SELECT id, companion_id, memory_type, content, importance, tags_json, source_message,
+                confidence, deleted, created_at, updated_at
+         FROM pet_memories
+         WHERE companion_id = ?1 AND deleted = 0 AND memory_type = ?2
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 1",
+        params![companion_id, SHORT_TERM_SUMMARY_MEMORY_TYPE],
+        row_to_memory,
+    )
+    .optional()
+    .map_err(|err| format!("读取短期摘要记忆失败：{err}"))
+}
+
+fn short_term_summary_source(last_summarized_message_id: u64) -> String {
+    format!("last_message_id:{last_summarized_message_id}")
+}
+
+fn remove_extra_short_term_summaries(
+    conn: &Connection,
+    companion_id: &str,
+    keep_id: u64,
+) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM pet_memories
+         WHERE companion_id = ?1 AND memory_type = ?2 AND id <> ?3",
+        params![
+            companion_id,
+            SHORT_TERM_SUMMARY_MEMORY_TYPE,
+            to_sql_id(keep_id)?
+        ],
+    )
+    .map_err(|err| format!("清理重复短期摘要记忆失败：{err}"))?;
+    Ok(())
+}
+
 fn search_memories_fts(
     conn: &Connection,
     companion_id: &str,
@@ -1308,11 +1454,17 @@ fn normalize_memory_draft(draft: PetMemoryDraft) -> Option<PetMemoryDraft> {
         return None;
     }
 
-    let content = truncate_text(content, MAX_MEMORY_CONTENT_LEN);
+    let memory_type = normalize_memory_type(&draft.memory_type);
+    let max_content_len = if memory_type == SHORT_TERM_SUMMARY_MEMORY_TYPE {
+        MAX_SHORT_TERM_SUMMARY_LEN
+    } else {
+        MAX_MEMORY_CONTENT_LEN
+    };
+    let content = truncate_text(content, max_content_len);
     let source_message = truncate_text(draft.source_message.trim(), MAX_MESSAGE_CONTENT_LEN);
 
     Some(PetMemoryDraft {
-        memory_type: normalize_memory_type(&draft.memory_type),
+        memory_type,
         content,
         importance: draft.importance.clamp(1, 10),
         tags: normalize_tags(draft.tags),
@@ -1325,7 +1477,7 @@ fn normalize_memory_type(value: &str) -> String {
     match value.trim().to_lowercase().as_str() {
         "nickname" | "preference" | "dislike" | "relationship" | "emotion" | "habit"
         | "life_event" | "important_person" | "interest" | "goal" | "boundary" | "instruction"
-        | "other" => value.trim().to_lowercase(),
+        | "short_term_summary" | "other" => value.trim().to_lowercase(),
         "project" => "goal".to_string(),
         "event" => "life_event".to_string(),
         "profile" => "other".to_string(),
@@ -1416,7 +1568,12 @@ fn normalize_imported_store(store: &mut PetMemoryStore) {
             .to_string();
         memory.memory_type = normalize_memory_type(&memory.memory_type);
         let content = memory.content.trim().to_string();
-        memory.content = truncate_text(&content, MAX_MEMORY_CONTENT_LEN);
+        let max_content_len = if memory.memory_type == SHORT_TERM_SUMMARY_MEMORY_TYPE {
+            MAX_SHORT_TERM_SUMMARY_LEN
+        } else {
+            MAX_MEMORY_CONTENT_LEN
+        };
+        memory.content = truncate_text(&content, max_content_len);
         memory.importance = memory.importance.clamp(1, 10);
         memory.tags = normalize_tags(memory.tags.clone());
         let source_message = memory.source_message.trim().to_string();

@@ -14,6 +14,7 @@ import type {
   AiConnectionTestResult,
   AppDraft,
   AppItemKind,
+  ChatEmojiFrequency,
   Companion,
   CompanionDraft,
   DrawerTheme,
@@ -155,6 +156,7 @@ type SettingsSectionId =
   | 'window'
   | 'update'
   | 'diagnostics'
+  | 'about'
 
 const settingsSections: Array<{ id: SettingsSectionId; label: string; description: string }> = [
   { id: 'entries', label: '入口管理', description: '分类和快捷搜索' },
@@ -166,6 +168,7 @@ const settingsSections: Array<{ id: SettingsSectionId; label: string; descriptio
   { id: 'window', label: '窗口', description: '置顶行为' },
   { id: 'update', label: '更新', description: '版本检查' },
   { id: 'diagnostics', label: '诊断', description: '运行路径和数据' },
+  { id: 'about', label: '关于', description: '开源许可' },
 ]
 
 const activeSettingsSection = ref<SettingsSectionId>('entries')
@@ -316,6 +319,17 @@ const themeOptions: Array<{
   },
 ]
 
+const chatEmojiFrequencyOptions: Array<{
+  value: ChatEmojiFrequency
+  label: string
+  description: string
+}> = [
+  { value: 'none', label: '不主动使用', description: '回复里不主动加入 emoji，除非用户明确要求。' },
+  { value: 'low', label: '少量', description: '偶尔使用，适合更克制的陪伴语气。' },
+  { value: 'normal', label: '自然', description: '只在能增强语气时使用，默认每条 0 到 1 个。' },
+  { value: 'high', label: '较多', description: '更活泼亲近，但仍避免堆叠刷屏。' },
+]
+
 const settingsDraft = reactive({
   categories: [] as string[],
   quickSearchTags: [] as string[],
@@ -328,8 +342,12 @@ const settingsDraft = reactive({
   autoFavoriteEnabled: true,
   drawerTheme: 'light' as DrawerTheme,
   chatTypewriterEnabled: true,
+  chatNarrationEnabled: false,
   aiEnabled: false,
   aiMemoryEnabled: true,
+  aiShortMemorySummaryEnabled: true,
+  aiShortMemoryRecentTurns: 10,
+  aiShortMemoryCompressionTriggerTurns: 12,
   aiProvider: 'openai' as AiProvider,
   aiApiKey: '',
   aiBaseUrl: 'https://api.openai.com/v1',
@@ -337,6 +355,7 @@ const settingsDraft = reactive({
   aiSystemPrompt: '请遵循当前伴侣档案中的身份与表达方式，尊重用户隐私，回复自然且清晰。',
   aiTemperature: 0.7,
   aiMaxTokens: 800,
+  aiEmojiFrequency: 'normal' as ChatEmojiFrequency,
   aiActiveProfileId: '',
   aiProfiles: [] as AiConnectionProfile[],
   newAiProfileLabel: '',
@@ -421,12 +440,20 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.tagDisplayMode = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
   settingsDraft.drawerTheme = normalizeDrawerTheme(config.drawer.theme)
   settingsDraft.chatTypewriterEnabled = config.drawer.chatTypewriterEnabled ?? true
+  settingsDraft.chatNarrationEnabled = config.drawer.chatNarrationEnabled ?? false
   settingsDraft.petAlwaysOnTop = config.pet.alwaysOnTop
   settingsDraft.drawerAlwaysOnTop = config.drawer.alwaysOnTop
   settingsDraft.startOnBoot = Boolean(config.system?.startOnBoot)
   settingsDraft.autoFavoriteEnabled = config.system?.autoFavoriteEnabled ?? true
   settingsDraft.aiEnabled = Boolean(config.ai?.enabled)
   settingsDraft.aiMemoryEnabled = config.ai?.memoryEnabled ?? true
+  settingsDraft.aiShortMemorySummaryEnabled = config.ai?.shortMemorySummaryEnabled ?? true
+  settingsDraft.aiShortMemoryRecentTurns = clampInteger(config.ai?.shortMemoryRecentTurns ?? 10, 2, 40)
+  settingsDraft.aiShortMemoryCompressionTriggerTurns = clampInteger(
+    config.ai?.shortMemoryCompressionTriggerTurns ?? 12,
+    4,
+    80,
+  )
   settingsDraft.aiProvider = normalizeAiProvider(config.ai?.provider)
   settingsDraft.aiApiKey = config.ai?.apiKey ?? ''
   settingsDraft.aiBaseUrl = config.ai?.baseUrl ?? selectedAiProviderPreset().baseUrl
@@ -436,6 +463,7 @@ function syncSettingsDraft(config: PetDrawerConfig) {
     '请遵循当前伴侣档案中的身份与表达方式，尊重用户隐私，回复自然且清晰。'
   settingsDraft.aiTemperature = config.ai?.temperature ?? 0.7
   settingsDraft.aiMaxTokens = config.ai?.maxTokens ?? 800
+  settingsDraft.aiEmojiFrequency = normalizeChatEmojiFrequency(config.ai?.emojiFrequency)
   settingsDraft.aiProfiles = (config.ai?.profiles ?? []).map((profile) => ({
     id: profile.id,
     label: profile.label,
@@ -458,6 +486,12 @@ function normalizeTagDisplayMode(value?: string | null): 'compact' | 'detailed' 
 
 function normalizeDrawerTheme(value?: string | null): DrawerTheme {
   return value === 'animal-island' ? 'animal-island' : 'light'
+}
+
+function normalizeChatEmojiFrequency(value?: string | null): ChatEmojiFrequency {
+  return chatEmojiFrequencyOptions.some((option) => option.value === value)
+    ? (value as ChatEmojiFrequency)
+    : 'normal'
 }
 
 function normalizeAiProvider(value?: string | null): AiProvider {
@@ -652,6 +686,7 @@ async function saveSettings() {
     applyDrawerConfig(config)
     void emitEvent('ui-theme-changed', config.drawer.theme)
     void emitEvent('ui-chat-display-changed', config.drawer.chatTypewriterEnabled ?? true)
+    void emitEvent('ui-chat-narration-changed', config.drawer.chatNarrationEnabled ?? false)
     settingsModalVisible.value = false
   } catch (err) {
     settingsError.value = String(err)
@@ -673,6 +708,7 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
     tagDisplayMode: tagMode,
     theme: settingsDraft.drawerTheme,
     chatTypewriterEnabled: settingsDraft.chatTypewriterEnabled,
+    chatNarrationEnabled: settingsDraft.chatNarrationEnabled,
     petAlwaysOnTop: settingsDraft.petAlwaysOnTop,
     drawerAlwaysOnTop: settingsDraft.drawerAlwaysOnTop,
     startOnBoot: settingsDraft.startOnBoot,
@@ -680,6 +716,13 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
     ai: {
       enabled: settingsDraft.aiEnabled,
       memoryEnabled: settingsDraft.aiMemoryEnabled,
+      shortMemorySummaryEnabled: settingsDraft.aiShortMemorySummaryEnabled,
+      shortMemoryRecentTurns: clampInteger(settingsDraft.aiShortMemoryRecentTurns, 2, 40),
+      shortMemoryCompressionTriggerTurns: clampInteger(
+        settingsDraft.aiShortMemoryCompressionTriggerTurns,
+        4,
+        80,
+      ),
       provider: settingsDraft.aiProvider,
       apiKey: settingsDraft.aiApiKey,
       baseUrl: settingsDraft.aiBaseUrl,
@@ -687,6 +730,7 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
       systemPrompt: settingsDraft.aiSystemPrompt,
       temperature: safeNumber(settingsDraft.aiTemperature, 0.7),
       maxTokens: safeInteger(settingsDraft.aiMaxTokens, 800),
+      emojiFrequency: settingsDraft.aiEmojiFrequency,
       activeProfileId: settingsDraft.aiActiveProfileId,
       profiles,
     },
@@ -699,6 +743,10 @@ function safeNumber(value: number, fallback: number) {
 
 function safeInteger(value: number, fallback: number) {
   return Number.isFinite(value) ? Math.round(value) : fallback
+}
+
+function clampInteger(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, safeInteger(value, min)))
 }
 
 function requestImportantConfirmation(confirmation: ImportantConfirmation) {
@@ -996,6 +1044,7 @@ function memoryTypeLabel(type: string) {
     goal: '目标',
     boundary: '边界',
     instruction: '回复要求',
+    short_term_summary: '短期摘要',
     other: '其他',
     project: '项目',
     event: '事件',
@@ -2089,7 +2138,7 @@ async function hideDrawer() {
         <header>
           <div>
             <h2>设置</h2>
-            <p>管理入口、伴侣档案、AI 接口、宠物记忆、软件更新和运行诊断。</p>
+            <p>管理入口、伴侣档案、AI 接口、宠物记忆、软件更新、运行诊断和开源许可。</p>
           </div>
           <button type="button" class="window-close" @click="settingsModalVisible = false">
             ×
@@ -2206,9 +2255,28 @@ async function hideDrawer() {
                 </span>
                 <input v-model="settingsDraft.chatTypewriterEnabled" type="checkbox" />
               </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>开启旁白功能</strong>
+                  <small>开启后，括号、【】或 *动作* 中的内容会作为旁白显示；关闭后聊天只显示双方对话。</small>
+                </span>
+                <input v-model="settingsDraft.chatNarrationEnabled" type="checkbox" />
+              </label>
             </section>
 
             <section v-show="activeSettingsSection === 'companion'" class="settings-section">
+              <label class="settings-field wide">
+                表情使用频率
+                <select v-model="settingsDraft.aiEmojiFrequency">
+                  <option
+                    v-for="option in chatEmojiFrequencyOptions"
+                    :key="option.value"
+                    :value="option.value"
+                  >
+                    {{ option.label }} - {{ option.description }}
+                  </option>
+                </select>
+              </label>
               <div class="settings-companion-heading">
                 <div>
                   <h3>伴侣切换</h3>
@@ -2302,7 +2370,9 @@ async function hideDrawer() {
                 <button class="primary-button" type="button" :disabled="companionLoading" @click="saveCompanion">
                   {{ companionLoading ? '保存中...' : '保存档案' }}
                 </button>
-                <button type="button" @click="startNewCompanion">清空并新建</button>
+                <button class="settings-companion-reset-button" type="button" @click="startNewCompanion">
+                  清空并新建
+                </button>
               </div>
               <p v-if="companionStatus" class="form-success">{{ companionStatus }}</p>
               <p v-if="companionError" class="form-error">{{ companionError }}</p>
@@ -2468,6 +2538,42 @@ async function hideDrawer() {
                 </span>
                 <input v-model="settingsDraft.aiMemoryEnabled" type="checkbox" />
               </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>启用短期记忆压缩摘要</strong>
+                  <small>保留最近原文对话，同时把更早短期对话滚动压缩成一条特殊记忆参与回复。</small>
+                </span>
+                <input
+                  v-model="settingsDraft.aiShortMemorySummaryEnabled"
+                  type="checkbox"
+                  :disabled="!settingsDraft.aiMemoryEnabled"
+                />
+              </label>
+              <div class="settings-form-grid settings-memory-form">
+                <label class="settings-field">
+                  最近原文轮数
+                  <input
+                    v-model.number="settingsDraft.aiShortMemoryRecentTurns"
+                    type="number"
+                    min="2"
+                    max="40"
+                    :disabled="!settingsDraft.aiMemoryEnabled || !settingsDraft.aiShortMemorySummaryEnabled"
+                  />
+                </label>
+                <label class="settings-field">
+                  压缩触发轮数
+                  <input
+                    v-model.number="settingsDraft.aiShortMemoryCompressionTriggerTurns"
+                    type="number"
+                    min="4"
+                    max="80"
+                    :disabled="!settingsDraft.aiMemoryEnabled || !settingsDraft.aiShortMemorySummaryEnabled"
+                  />
+                </label>
+                <p class="settings-empty wide">
+                  默认保留最近 10 轮原文；更早聊天累计达到触发轮数后，会更新短期摘要特殊记忆。
+                </p>
+              </div>
               <div class="settings-memory-panel">
                 <div class="settings-memory-toolbar-header">
                   <div class="settings-memory-copy">
@@ -2693,6 +2799,18 @@ async function hideDrawer() {
                 </div>
               </div>
               <p v-if="runtimeInfoError" class="form-error">{{ runtimeInfoError }}</p>
+            </section>
+
+            <section v-show="activeSettingsSection === 'about'" class="settings-section">
+              <h3>开源许可</h3>
+              <div class="settings-license-list">
+                <article class="settings-license-card">
+                  <strong>Twemoji</strong>
+                  <p>Emoji graphics provided by Twemoji.</p>
+                  <p>Licensed under CC-BY 4.0.</p>
+                  <small>默认表情包文件位于项目内 src/assets/emoji/twemoji/svg。</small>
+                </article>
+              </div>
             </section>
           </div>
         </div>

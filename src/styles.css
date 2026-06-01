@@ -381,6 +381,48 @@ button:disabled {
   max-width: 86%;
 }
 
+.pet-chat-message-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pet-chat-message.user .pet-chat-message-row {
+  justify-content: flex-end;
+}
+
+.pet-chat-message-content {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pet-chat-avatar-button {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(110, 130, 162, 0.22);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgba(31, 50, 86, 0.12);
+  cursor: pointer;
+}
+
+.pet-chat-avatar-button img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.pet-chat-avatar-button:hover {
+  border-color: rgba(33, 104, 232, 0.38);
+  transform: translateY(-1px);
+}
+
 .pet-chat-message.selecting {
   cursor: pointer;
 }
@@ -417,7 +459,7 @@ button:disabled {
   right: 0;
 }
 
-.pet-chat-message span {
+.pet-chat-message-author {
   color: #6d778c;
   font-size: 11px;
   font-weight: 800;
@@ -436,7 +478,33 @@ button:disabled {
   box-shadow: 0 8px 20px rgba(31, 50, 86, 0.08);
 }
 
-.pet-chat-message p.typing::after {
+.pet-chat-message-text {
+  display: block;
+}
+
+.twemoji-inline {
+  display: inline-block;
+  width: 1.18em;
+  height: 1.18em;
+  margin: 0 0.06em;
+  vertical-align: -0.18em;
+}
+
+.pet-chat-message-narration {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #647189;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.pet-chat-message-narration-text {
+  display: block;
+}
+
+.pet-chat-message-text.typing::after,
+.pet-chat-message-narration-text.typing::after {
   display: inline-block;
   width: 2px;
   height: 1em;
@@ -445,6 +513,16 @@ button:disabled {
   background: #2168e8;
   content: "";
   animation: pet-chat-caret 0.85s steps(1, end) infinite;
+}
+
+.pet-chat-message-time {
+  display: block;
+  margin-top: 5px;
+  color: #8a94a6;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: right;
 }
 
 @keyframes pet-chat-caret {
@@ -457,13 +535,21 @@ button:disabled {
   align-self: flex-end;
 }
 
-.pet-chat-message.user span {
+.pet-chat-message.user .pet-chat-message-author {
   text-align: right;
 }
 
 .pet-chat-message.user p {
   color: #ffffff;
   background: #2168e8;
+}
+
+.pet-chat-message.user .pet-chat-message-narration {
+  text-align: left;
+}
+
+.pet-chat-message.user p .pet-chat-message-time {
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .pet-chat-message.assistant {
@@ -504,6 +590,22 @@ button:disabled {
   color: #b62e38;
 }
 
+.pet-chat-character-menu {
+  width: 188px;
+}
+
+.pet-chat-character-menu-status {
+  padding: 6px 11px 8px;
+  border-bottom: 1px solid rgba(93, 111, 142, 0.14);
+  color: #667894;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.pet-chat-character-menu button:first-child {
+  color: #263754;
+}
+
 .pet-chat-delete-backdrop {
   position: fixed;
   z-index: 35;
@@ -514,7 +616,18 @@ button:disabled {
   background: rgba(16, 25, 42, 0.28);
 }
 
-.pet-chat-delete-dialog {
+.pet-chat-settings-backdrop {
+  position: fixed;
+  z-index: 36;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(16, 25, 42, 0.28);
+}
+
+.pet-chat-delete-dialog,
+.pet-chat-settings-dialog {
   display: grid;
   gap: 12px;
   width: min(100%, 292px);
@@ -524,29 +637,260 @@ button:disabled {
   box-shadow: 0 20px 46px rgba(21, 34, 60, 0.24);
 }
 
-.pet-chat-delete-dialog h2,
-.pet-chat-delete-dialog p {
+.pet-chat-settings-dialog {
+  width: min(100%, 340px);
+}
+
+.pet-chat-character-dialog {
+  display: grid;
+  gap: 12px;
+  width: min(100%, 430px);
+  max-height: min(82vh, 560px);
+  overflow: auto;
+  padding: 16px;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 20px 46px rgba(21, 34, 60, 0.24);
+}
+
+.pet-chat-log-dialog {
+  width: min(100%, 500px);
+}
+
+.pet-chat-character-dialog header,
+.pet-chat-character-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pet-chat-character-dialog footer {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.pet-chat-character-dialog h2,
+.pet-chat-character-dialog p {
   margin: 0;
 }
 
-.pet-chat-delete-dialog h2 {
+.pet-chat-character-dialog h2 {
   color: #18243a;
   font-size: 16px;
 }
 
-.pet-chat-delete-dialog p {
+.pet-chat-character-dialog header p,
+.pet-chat-character-note {
+  color: #5e6d86;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pet-chat-character-dialog header button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.pet-chat-character-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pet-chat-character-heading img {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  border: 1px solid #dfe7f0;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.pet-chat-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pet-chat-status-grid div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid #dfe7f0;
+  border-radius: 9px;
+  background: #f8fbff;
+}
+
+.pet-chat-status-grid span,
+.pet-chat-status-grid strong {
+  display: block;
+}
+
+.pet-chat-status-grid span {
+  color: #657188;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.pet-chat-status-grid strong {
+  margin-top: 3px;
+  color: #243049;
+  font-size: 14px;
+}
+
+.pet-chat-manual-favorability {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #dfe7f0;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.pet-chat-manual-favorability label {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 5px;
+  color: #657188;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.pet-chat-manual-favorability input {
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid #ccd8e8;
+  border-radius: 8px;
+  color: #18243a;
+  background: #ffffff;
+}
+
+.pet-chat-log-empty {
+  padding: 16px;
+  border: 1px dashed #cbd8e8;
+  border-radius: 10px;
+  color: #657188;
+  background: #f8fbff;
+  font-size: 13px;
+  text-align: center;
+}
+
+.pet-chat-log-list {
+  display: grid;
+  gap: 8px;
+}
+
+.pet-chat-log-row {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid #dfe7f0;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.pet-chat-log-row div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pet-chat-log-row strong {
+  color: #243049;
+  font-size: 13px;
+}
+
+.pet-chat-log-row p,
+.pet-chat-log-row small {
+  margin: 0;
+  color: #657188;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pet-chat-delete-dialog h2,
+.pet-chat-delete-dialog p,
+.pet-chat-settings-dialog h2,
+.pet-chat-settings-dialog p {
+  margin: 0;
+}
+
+.pet-chat-delete-dialog h2,
+.pet-chat-settings-dialog h2 {
+  color: #18243a;
+  font-size: 16px;
+}
+
+.pet-chat-delete-dialog p,
+.pet-chat-settings-dialog p {
   color: #5e6d86;
   font-size: 13px;
   line-height: 1.5;
 }
 
-.pet-chat-delete-dialog footer {
+.pet-chat-settings-dialog header,
+.pet-chat-delete-dialog footer,
+.pet-chat-settings-dialog footer {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
 }
 
-.pet-chat-delete-dialog button {
+.pet-chat-settings-dialog header {
+  justify-content: space-between;
+}
+
+.pet-chat-settings-dialog header button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.pet-chat-settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 11px;
+  border: 1px solid #dfe7f0;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.pet-chat-settings-toggle strong,
+.pet-chat-settings-toggle small {
+  display: block;
+}
+
+.pet-chat-settings-toggle strong {
+  color: #243049;
+  font-size: 13px;
+}
+
+.pet-chat-settings-toggle small {
+  margin-top: 3px;
+  color: #657188;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.pet-chat-settings-toggle input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.pet-chat-delete-dialog button,
+.pet-chat-settings-dialog button,
+.pet-chat-character-dialog button {
   min-height: 34px;
   padding: 0 13px;
   border-radius: 8px;
@@ -554,6 +898,15 @@ button:disabled {
   background: #e9f0f8;
   font-size: 13px;
   font-weight: 700;
+}
+
+.pet-chat-settings-dialog .primary-button {
+  color: #ffffff;
+  background: #2168e8;
+}
+
+.pet-chat-settings-dialog .primary-button:hover:not(:disabled) {
+  background: #1757c7;
 }
 
 .pet-chat-delete-dialog .danger-button {
@@ -575,9 +928,14 @@ button:disabled {
   line-height: 1.45;
 }
 
+.pet-chat-error.in-dialog {
+  margin: 0;
+}
+
 .pet-chat-input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  position: relative;
   gap: 8px;
   padding: 10px 12px 12px;
   border-top: 1px solid rgba(211, 222, 235, 0.8);
@@ -604,6 +962,12 @@ button:disabled {
   box-shadow: 0 0 0 3px rgba(52, 124, 255, 0.14);
 }
 
+.pet-chat-input-actions {
+  display: flex;
+  align-self: end;
+  gap: 8px;
+}
+
 .pet-chat-input button {
   align-self: end;
   height: 42px;
@@ -617,6 +981,56 @@ button:disabled {
 
 .pet-chat-input button:hover:not(:disabled) {
   background: #174fc0;
+}
+
+.pet-chat-input .pet-chat-emoji-toggle {
+  width: 42px;
+  padding: 0;
+  color: #2d3b55;
+  background: #eef3fb;
+}
+
+.pet-chat-input .pet-chat-emoji-toggle:hover:not(:disabled),
+.pet-chat-input .pet-chat-emoji-toggle[aria-expanded='true'] {
+  color: #174fc0;
+  background: #dce8fb;
+}
+
+.pet-chat-emoji-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(10, 30px);
+  gap: 6px;
+  justify-content: start;
+  max-height: 122px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid #d8e0ef;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 16px 34px rgba(24, 40, 72, 0.14);
+}
+
+.pet-chat-emoji-panel button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pet-chat-emoji-panel button:hover:not(:disabled) {
+  border-color: #c7d6f0;
+  background: #eef4ff;
+}
+
+.twemoji-picker-icon {
+  width: 21px;
+  height: 21px;
 }
 
 .drawer-window {
@@ -1750,6 +2164,38 @@ button:disabled {
   font-size: 12px;
 }
 
+.settings-license-list {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-license-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #dde5f2;
+  border-radius: 12px;
+  background: #f8fbff;
+}
+
+.settings-license-card strong,
+.settings-license-card p,
+.settings-license-card small {
+  margin: 0;
+}
+
+.settings-license-card strong {
+  color: #243049;
+  font-size: 13px;
+}
+
+.settings-license-card p,
+.settings-license-card small {
+  color: #657188;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .settings-update-actions {
   display: flex;
   align-items: center;
@@ -1955,6 +2401,21 @@ button:disabled {
 
 .settings-companion-actions {
   justify-content: flex-end;
+}
+
+.settings-companion-reset-button {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid #ccd8e7;
+  border-radius: 8px;
+  color: #42516d;
+  background: #f3f7fc;
+  font-weight: 800;
+}
+
+.settings-companion-reset-button:hover:not(:disabled) {
+  color: #243049;
+  background: #e8f0fb;
 }
 
 .settings-memory-panel,
@@ -2871,8 +3332,13 @@ button:disabled {
   background: #43c6a9;
 }
 
-.theme-animal-island .pet-chat-message p.typing::after {
+.theme-animal-island .pet-chat-message-text.typing::after,
+.theme-animal-island .pet-chat-message-narration-text.typing::after {
   background: #43c6a9;
+}
+
+.theme-animal-island .pet-chat-message-narration {
+  color: #87654d;
 }
 
 .theme-animal-island .pet-chat-selection-toolbar {
@@ -2892,6 +3358,14 @@ button:disabled {
   box-shadow:
     0 0 0 2px rgba(67, 198, 169, 0.46),
     0 3px 0 rgba(206, 156, 85, 0.18);
+}
+
+.theme-animal-island .pet-chat-message-time {
+  color: #9a765a;
+}
+
+.theme-animal-island .pet-chat-message.user p .pet-chat-message-time {
+  color: rgba(255, 255, 255, 0.76);
 }
 
 .theme-animal-island .pet-chat-context-menu,
@@ -3094,6 +3568,8 @@ button:disabled {
 .theme-animal-island .settings-memory-editor-actions .primary-button,
 .theme-animal-island .skin-import-panel footer .primary-button,
 .theme-animal-island .settings-modal footer .primary-button,
+.theme-animal-island .pet-chat-settings-dialog .primary-button,
+.theme-animal-island .pet-chat-character-dialog .primary-button,
 .theme-animal-island .app-modal footer .primary-button {
   border: 1px solid #32ae92;
   border-radius: 999px;
@@ -3111,6 +3587,7 @@ button:disabled {
 .theme-animal-island .settings-memory-editor-actions .primary-button:hover:not(:disabled),
 .theme-animal-island .skin-import-panel footer .primary-button:hover:not(:disabled),
 .theme-animal-island .settings-modal footer .primary-button:hover:not(:disabled),
+.theme-animal-island .pet-chat-settings-dialog .primary-button:hover:not(:disabled),
 .theme-animal-island .app-modal footer .primary-button:hover:not(:disabled) {
   background: #35b99b;
   transform: translateY(-3px);
@@ -3119,7 +3596,8 @@ button:disabled {
 .theme-animal-island .primary-button:active:not(:disabled),
 .theme-animal-island .pet-chat-input button:active:not(:disabled),
 .theme-animal-island .settings-memory-editor-actions .primary-button:active:not(:disabled),
-.theme-animal-island .skin-import-panel footer .primary-button:active:not(:disabled) {
+.theme-animal-island .skin-import-panel footer .primary-button:active:not(:disabled),
+.theme-animal-island .pet-chat-settings-dialog .primary-button:active:not(:disabled) {
   box-shadow: 0 2px 0 var(--island-mint-dark);
   transform: translateY(0);
 }
@@ -3140,10 +3618,13 @@ button:disabled {
 .theme-animal-island .settings-memory-toolbar button:not(.danger-button):not(.caution-button),
 .theme-animal-island .settings-memory-editor-actions button:not(.primary-button),
 .theme-animal-island .settings-memory-row button:not(.danger-button),
+.theme-animal-island .settings-companion-reset-button,
 .theme-animal-island .animation-picker-actions button,
 .theme-animal-island .skin-import-panel footer button:not(.primary-button),
 .theme-animal-island .pet-chat-selection-toolbar button:not(.danger-button),
-.theme-animal-island .pet-chat-delete-dialog button:not(.danger-button) {
+.theme-animal-island .pet-chat-delete-dialog button:not(.danger-button),
+.theme-animal-island .pet-chat-settings-dialog button:not(.primary-button),
+.theme-animal-island .pet-chat-character-dialog button:not(.primary-button) {
   border: 1px solid #e5c37f;
   border-radius: 999px;
   color: #6d4832;
@@ -3168,10 +3649,13 @@ button:disabled {
 .theme-animal-island .settings-memory-toolbar button:not(.danger-button):not(.caution-button):hover:not(:disabled),
 .theme-animal-island .settings-memory-editor-actions button:not(.primary-button):hover:not(:disabled),
 .theme-animal-island .settings-memory-row button:not(.danger-button):hover:not(:disabled),
+.theme-animal-island .settings-companion-reset-button:hover:not(:disabled),
 .theme-animal-island .animation-picker-actions button:hover:not(:disabled),
 .theme-animal-island .skin-import-panel footer button:not(.primary-button):hover:not(:disabled),
 .theme-animal-island .pet-chat-selection-toolbar button:not(.danger-button):hover:not(:disabled),
-.theme-animal-island .pet-chat-delete-dialog button:not(.danger-button):hover:not(:disabled) {
+.theme-animal-island .pet-chat-delete-dialog button:not(.danger-button):hover:not(:disabled),
+.theme-animal-island .pet-chat-settings-dialog button:not(.primary-button):hover:not(:disabled),
+.theme-animal-island .pet-chat-character-dialog button:not(.primary-button):hover:not(:disabled) {
   background: #fbe6b7;
   transform: translateY(-2px);
 }
@@ -3192,10 +3676,13 @@ button:disabled {
 .theme-animal-island .settings-memory-toolbar button:not(.danger-button):not(.caution-button):active:not(:disabled),
 .theme-animal-island .settings-memory-editor-actions button:not(.primary-button):active:not(:disabled),
 .theme-animal-island .settings-memory-row button:not(.danger-button):active:not(:disabled),
+.theme-animal-island .settings-companion-reset-button:active:not(:disabled),
 .theme-animal-island .animation-picker-actions button:active:not(:disabled),
 .theme-animal-island .skin-import-panel footer button:not(.primary-button):active:not(:disabled),
 .theme-animal-island .pet-chat-selection-toolbar button:not(.danger-button):active:not(:disabled),
-.theme-animal-island .pet-chat-delete-dialog button:not(.danger-button):active:not(:disabled) {
+.theme-animal-island .pet-chat-delete-dialog button:not(.danger-button):active:not(:disabled),
+.theme-animal-island .pet-chat-settings-dialog button:not(.primary-button):active:not(:disabled),
+.theme-animal-island .pet-chat-character-dialog button:not(.primary-button):active:not(:disabled) {
   background: #f0ce8d;
   box-shadow: 0 1px 0 rgba(189, 135, 62, 0.32);
   transform: translateY(1px);
@@ -3417,6 +3904,8 @@ button:disabled {
 .theme-animal-island .settings-nav span,
 .theme-animal-island .settings-field small,
 .theme-animal-island .settings-update-panel small,
+.theme-animal-island .settings-license-card p,
+.theme-animal-island .settings-license-card small,
 .theme-animal-island .settings-ai-profile-heading small,
 .theme-animal-island .settings-companion-current small,
 .theme-animal-island .settings-memory-copy small,
@@ -3433,6 +3922,7 @@ button:disabled {
 
 .theme-animal-island .settings-toggle-row strong,
 .theme-animal-island .settings-update-panel strong,
+.theme-animal-island .settings-license-card strong,
 .theme-animal-island .settings-ai-profile-heading strong,
 .theme-animal-island .settings-memory-copy strong,
 .theme-animal-island .settings-memory-block-heading strong,
@@ -3465,6 +3955,7 @@ button:disabled {
 
 .theme-animal-island .settings-ai-profile-current,
 .theme-animal-island .settings-companion-current,
+.theme-animal-island .settings-license-card,
 .theme-animal-island .settings-memory-row {
   border: 1px solid var(--island-border-soft);
   border-radius: 15px;
@@ -3571,14 +4062,64 @@ button:disabled {
   box-shadow: 0 3px 0 var(--island-mint-dark);
 }
 
+.theme-animal-island .pet-chat-message-narration {
+  color: #87654d;
+}
+
+.theme-animal-island .pet-chat-message-time {
+  color: #9a765a;
+}
+
+.theme-animal-island .pet-chat-message.user p .pet-chat-message-time {
+  color: rgba(255, 255, 255, 0.76);
+}
+
+.theme-animal-island .pet-chat-input .pet-chat-emoji-toggle {
+  color: var(--island-ink-soft);
+  background: #fff6e6;
+  box-shadow: 0 3px 0 rgba(206, 156, 85, 0.22);
+}
+
+.theme-animal-island .pet-chat-input .pet-chat-emoji-toggle:hover:not(:disabled),
+.theme-animal-island .pet-chat-input .pet-chat-emoji-toggle[aria-expanded='true'] {
+  color: var(--island-ink);
+  background: #fffdf7;
+}
+
+.theme-animal-island .pet-chat-emoji-panel {
+  border: 2px solid var(--island-border-soft);
+  background: #fffaf0;
+  box-shadow: 0 16px 34px rgba(121, 78, 37, 0.16);
+}
+
+.theme-animal-island .pet-chat-emoji-panel button:hover:not(:disabled) {
+  border-color: #e7c88c;
+  background: #fff6e6;
+}
+
 .theme-animal-island .pet-chat-notice,
 .theme-animal-island .pet-chat-selection-toolbar,
 .theme-animal-island .pet-chat-context-menu,
-.theme-animal-island .pet-chat-delete-dialog {
+.theme-animal-island .pet-chat-delete-dialog,
+.theme-animal-island .pet-chat-settings-dialog,
+.theme-animal-island .pet-chat-character-dialog,
+.theme-animal-island .pet-chat-settings-toggle {
   border: 2px solid var(--island-border-soft);
   border-radius: 18px;
   background: var(--island-panel);
   box-shadow: 0 4px 0 rgba(207, 156, 84, 0.2);
+}
+
+.theme-animal-island .pet-chat-settings-dialog h2,
+.theme-animal-island .pet-chat-character-dialog h2,
+.theme-animal-island .pet-chat-settings-toggle strong {
+  color: var(--island-ink);
+}
+
+.theme-animal-island .pet-chat-settings-dialog p,
+.theme-animal-island .pet-chat-character-dialog p,
+.theme-animal-island .pet-chat-settings-toggle small {
+  color: var(--island-muted);
 }
 
 .theme-animal-island .pet-chat-context-menu button {
@@ -3588,6 +4129,11 @@ button:disabled {
 
 .theme-animal-island .pet-chat-context-menu button:hover {
   background: #ffe2a0;
+}
+
+.theme-animal-island .pet-chat-character-menu-status {
+  border-bottom-color: #ebd29c;
+  color: var(--island-muted);
 }
 
 .theme-animal-island .pet-chat-context-menu button:first-child {

@@ -8,6 +8,7 @@ use crate::{
         self, AiConnectionProfile, AiSettings, AppDraft, Companion, CompanionDraft,
         PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinSummary,
     },
+    favorability::{self, CompanionStatus, FavorabilityLog},
     launcher, startup, updater, windowing,
 };
 
@@ -21,6 +22,8 @@ pub struct DrawerPreferencesDraft {
     pub theme: String,
     #[serde(default = "default_true")]
     pub chat_typewriter_enabled: bool,
+    #[serde(default)]
+    pub chat_narration_enabled: bool,
     pub pet_always_on_top: bool,
     pub drawer_always_on_top: bool,
     #[serde(default)]
@@ -37,6 +40,12 @@ pub struct AiSettingsDraft {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub memory_enabled: bool,
+    #[serde(default = "default_true")]
+    pub short_memory_summary_enabled: bool,
+    #[serde(default = "default_short_memory_recent_turns")]
+    pub short_memory_recent_turns: usize,
+    #[serde(default = "default_short_memory_compression_trigger_turns")]
+    pub short_memory_compression_trigger_turns: usize,
     pub provider: String,
     pub api_key: String,
     pub base_url: String,
@@ -44,6 +53,8 @@ pub struct AiSettingsDraft {
     pub system_prompt: String,
     pub temperature: f32,
     pub max_tokens: u32,
+    #[serde(default = "default_emoji_frequency")]
+    pub emoji_frequency: String,
     #[serde(default)]
     pub active_profile_id: String,
     #[serde(default)]
@@ -67,6 +78,9 @@ impl Default for AiSettingsDraft {
         Self {
             enabled: settings.enabled,
             memory_enabled: settings.memory_enabled,
+            short_memory_summary_enabled: settings.short_memory_summary_enabled,
+            short_memory_recent_turns: settings.short_memory_recent_turns,
+            short_memory_compression_trigger_turns: settings.short_memory_compression_trigger_turns,
             provider: settings.provider,
             api_key: settings.api_key,
             base_url: settings.base_url,
@@ -74,6 +88,7 @@ impl Default for AiSettingsDraft {
             system_prompt: settings.system_prompt,
             temperature: settings.temperature,
             max_tokens: settings.max_tokens,
+            emoji_frequency: settings.emoji_frequency,
             active_profile_id: settings.active_profile_id,
             profiles: Vec::new(),
         }
@@ -236,12 +251,46 @@ pub fn switch_companion(app: AppHandle, companion_id: String) -> Result<Companio
 #[tauri::command]
 pub fn delete_companion(app: AppHandle, companion_id: String) -> Result<Companion, String> {
     let mut companion = ai_memory::delete_companion(&app, &companion_id)?;
+    let _ = favorability::delete_companion_data(&app, &companion_id);
     if app_data::set_current_pet_skin(&app, &companion.skin_id).is_err() {
         app_data::set_current_pet_skin(&app, "default")?;
         ai_memory::set_current_companion_skin(&app, "default")?;
         companion.skin_id = "default".to_string();
     }
     Ok(companion)
+}
+
+#[tauri::command]
+pub fn get_current_companion_status(app: AppHandle) -> Result<CompanionStatus, String> {
+    favorability::get_current_companion_status(&app)
+}
+
+#[tauri::command]
+pub fn set_current_companion_favorability_enabled(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<CompanionStatus, String> {
+    favorability::set_current_enabled(&app, enabled)
+}
+
+#[tauri::command]
+pub fn set_current_companion_favorability(
+    app: AppHandle,
+    value: i32,
+) -> Result<CompanionStatus, String> {
+    favorability::set_current_favorability(&app, value)
+}
+
+#[tauri::command]
+pub fn reset_current_companion_favorability(app: AppHandle) -> Result<CompanionStatus, String> {
+    favorability::reset_current_favorability(&app)
+}
+
+#[tauri::command]
+pub fn list_current_companion_favorability_logs(
+    app: AppHandle,
+) -> Result<Vec<FavorabilityLog>, String> {
+    favorability::list_current_logs(&app, 100)
 }
 
 #[tauri::command]
@@ -315,6 +364,7 @@ pub fn save_drawer_preferences(
     config.drawer.tag_display_mode = tag_display_mode;
     config.drawer.theme = theme;
     config.drawer.chat_typewriter_enabled = preferences.chat_typewriter_enabled;
+    config.drawer.chat_narration_enabled = preferences.chat_narration_enabled;
     config.drawer.always_on_top = preferences.drawer_always_on_top;
     config.pet.always_on_top = preferences.pet_always_on_top;
     config.system.start_on_boot = preferences.start_on_boot;
@@ -325,6 +375,19 @@ pub fn save_drawer_preferences(
     windowing::set_pet_always_on_top(&app, preferences.pet_always_on_top)?;
     windowing::set_drawer_always_on_top(&app, preferences.drawer_always_on_top)?;
 
+    Ok(config)
+}
+
+#[tauri::command]
+pub fn save_chat_display_preferences(
+    app: AppHandle,
+    chat_typewriter_enabled: bool,
+    chat_narration_enabled: bool,
+) -> Result<PetDrawerConfig, String> {
+    let mut config = app_data::read_config(&app)?;
+    config.drawer.chat_typewriter_enabled = chat_typewriter_enabled;
+    config.drawer.chat_narration_enabled = chat_narration_enabled;
+    app_data::write_config(&app, &config)?;
     Ok(config)
 }
 
@@ -341,6 +404,14 @@ fn normalize_unique_list(items: Vec<String>, max_items: usize) -> Vec<String> {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_short_memory_recent_turns() -> usize {
+    10
+}
+
+fn default_short_memory_compression_trigger_turns() -> usize {
+    12
 }
 
 fn default_drawer_theme() -> String {
@@ -388,6 +459,11 @@ fn normalize_ai_settings(settings: AiSettingsDraft) -> AiSettings {
     AiSettings {
         enabled: settings.enabled,
         memory_enabled: settings.memory_enabled,
+        short_memory_summary_enabled: settings.short_memory_summary_enabled,
+        short_memory_recent_turns: settings.short_memory_recent_turns.clamp(2, 40),
+        short_memory_compression_trigger_turns: settings
+            .short_memory_compression_trigger_turns
+            .clamp(4, 80),
         provider: normalize_ai_provider(settings.provider),
         api_key: settings.api_key.trim().to_string(),
         base_url: normalize_ai_base_url(settings.base_url),
@@ -395,6 +471,7 @@ fn normalize_ai_settings(settings: AiSettingsDraft) -> AiSettings {
         system_prompt: settings.system_prompt.trim().to_string(),
         temperature: settings.temperature.clamp(0.0, 2.0),
         max_tokens: settings.max_tokens.clamp(64, 32768),
+        emoji_frequency: normalize_emoji_frequency(settings.emoji_frequency),
         active_profile_id,
         profiles,
     }
@@ -444,6 +521,17 @@ fn normalize_ai_base_url(base_url: String) -> String {
         trimmed.trim_end_matches('/').to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+fn default_emoji_frequency() -> String {
+    "normal".to_string()
+}
+
+fn normalize_emoji_frequency(value: String) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "none" | "low" | "normal" | "high" => value.trim().to_lowercase(),
+        _ => default_emoji_frequency(),
     }
 }
 

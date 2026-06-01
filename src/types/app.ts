@@ -69,6 +69,7 @@ export interface RuntimeInfo {
 
 export type AiProvider = 'openai' | 'deepseek' | 'anthropic' | 'gemini' | 'ollama' | 'custom'
 export type DrawerTheme = 'light' | 'animal-island'
+export type ChatEmojiFrequency = 'none' | 'low' | 'normal' | 'high'
 
 export interface AiConnectionProfile {
   id: string
@@ -82,6 +83,9 @@ export interface AiConnectionProfile {
 export interface AiSettings {
   enabled: boolean
   memoryEnabled?: boolean
+  shortMemorySummaryEnabled?: boolean
+  shortMemoryRecentTurns?: number
+  shortMemoryCompressionTriggerTurns?: number
   provider: AiProvider | string
   apiKey: string
   baseUrl: string
@@ -89,6 +93,7 @@ export interface AiSettings {
   systemPrompt: string
   temperature: number
   maxTokens: number
+  emojiFrequency?: ChatEmojiFrequency | string
   activeProfileId?: string
   profiles?: AiConnectionProfile[]
 }
@@ -104,6 +109,50 @@ export interface CompanionRelationshipState {
   favorability: number
   intimacy: number
   mood: string
+}
+
+export interface CompanionStatus {
+  characterId: string
+  favorabilityEnabled: boolean
+  favorability: number
+  relationshipStage: string
+  relationshipStageName: string
+  mood: number
+  trust: number
+  intimacy: number
+  dailyGain: number
+  lastInteractionTime?: string | null
+  lastChangeReason?: string | null
+  updatedAt: string
+}
+
+export interface FavorabilityLog {
+  id: number
+  characterId: string
+  messageId?: number | null
+  oldFavorability: number
+  changeValue: number
+  newFavorability: number
+  oldStage: string
+  newStage: string
+  oldMood: number
+  moodChange: number
+  newMood: number
+  oldTrust: number
+  trustChange: number
+  newTrust: number
+  oldIntimacy: number
+  intimacyChange: number
+  newIntimacy: number
+  reason: string
+  source: 'dialogue' | 'manual' | 'reset' | 'system' | string
+  createdAt: string
+}
+
+export interface FavorabilityChangeResult {
+  changed: boolean
+  status: CompanionStatus
+  log?: FavorabilityLog | null
 }
 
 export interface Companion {
@@ -146,6 +195,7 @@ export type MemoryType =
   | 'goal'
   | 'boundary'
   | 'instruction'
+  | 'short_term_summary'
   | 'other'
   | string
 
@@ -191,6 +241,8 @@ export interface MemoryExtractionResult {
 export interface PetChatMessage {
   role: 'user' | 'assistant'
   content: string
+  createdAt?: string
+  timeContext?: string
 }
 
 export interface PetMemoryMessage extends PetChatMessage {
@@ -204,6 +256,7 @@ export interface PetChatReply {
   provider: string
   model: string
   memoryWarning?: string
+  favorabilityChange?: FavorabilityChangeResult | null
 }
 
 export interface PetDrawerConfig {
@@ -219,6 +272,7 @@ export interface PetDrawerConfig {
     height: number
     theme: DrawerTheme | string
     chatTypewriterEnabled?: boolean
+    chatNarrationEnabled?: boolean
     alwaysOnTop: boolean
     categories?: string[]
     quickSearchTags?: string[]

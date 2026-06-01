@@ -213,8 +213,8 @@ pub fn is_start_on_boot_enabled() -> Result<bool, String> {
 pub fn set_start_on_boot(enabled: bool) -> Result<(), String> {
     let plist_path = launch_agent_plist_path()?;
     if enabled {
-        let current_path = std::env::current_exe()
-            .map_err(|err| format!("无法获取程序路径：{err}"))?;
+        let current_path =
+            std::env::current_exe().map_err(|err| format!("无法获取程序路径：{err}"))?;
         let label = "com.petdrawer.app";
         let plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -237,12 +237,10 @@ pub fn set_start_on_boot(enabled: bool) -> Result<(), String> {
             std::fs::create_dir_all(parent)
                 .map_err(|err| format!("创建 LaunchAgents 目录失败：{err}"))?;
         }
-        std::fs::write(&plist_path, plist)
-            .map_err(|err| format!("写入 plist 失败：{err}"))?;
+        std::fs::write(&plist_path, plist).map_err(|err| format!("写入 plist 失败：{err}"))?;
     } else {
         if plist_path.exists() {
-            std::fs::remove_file(&plist_path)
-                .map_err(|err| format!("移除 plist 失败：{err}"))?;
+            std::fs::remove_file(&plist_path).map_err(|err| format!("移除 plist 失败：{err}"))?;
         }
     }
     Ok(())
@@ -250,8 +248,7 @@ pub fn set_start_on_boot(enabled: bool) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn launch_agent_plist_path() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "无法获取用户目录".to_string())?;
+    let home = std::env::var("HOME").map_err(|_| "无法获取用户目录".to_string())?;
     Ok(std::path::PathBuf::from(home)
         .join("Library")
         .join("LaunchAgents")

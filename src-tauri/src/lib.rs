@@ -2,6 +2,7 @@ mod ai_chat;
 mod ai_memory;
 mod app_data;
 mod commands;
+mod favorability;
 mod launcher;
 mod startup;
 mod tray;
@@ -24,11 +25,17 @@ pub fn run() {
             commands::upsert_companion,
             commands::switch_companion,
             commands::delete_companion,
+            commands::get_current_companion_status,
+            commands::set_current_companion_favorability_enabled,
+            commands::set_current_companion_favorability,
+            commands::reset_current_companion_favorability,
+            commands::list_current_companion_favorability_logs,
             commands::get_companion_messages,
             commands::delete_companion_messages,
             commands::get_runtime_info,
             commands::set_quick_search_tags,
             commands::save_drawer_preferences,
+            commands::save_chat_display_preferences,
             commands::list_pet_skins,
             commands::get_current_pet_skin,
             commands::set_pet_skin,

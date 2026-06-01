@@ -109,6 +109,8 @@ pub struct DrawerSettings {
     pub theme: String,
     #[serde(default = "default_true")]
     pub chat_typewriter_enabled: bool,
+    #[serde(default)]
+    pub chat_narration_enabled: bool,
     #[serde(default = "default_true")]
     pub always_on_top: bool,
     #[serde(default = "default_categories")]
@@ -167,6 +169,12 @@ pub struct AiSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub memory_enabled: bool,
+    #[serde(default = "default_true")]
+    pub short_memory_summary_enabled: bool,
+    #[serde(default = "default_short_memory_recent_turns")]
+    pub short_memory_recent_turns: usize,
+    #[serde(default = "default_short_memory_compression_trigger_turns")]
+    pub short_memory_compression_trigger_turns: usize,
     #[serde(default = "default_ai_provider")]
     pub provider: String,
     #[serde(default)]
@@ -181,6 +189,8 @@ pub struct AiSettings {
     pub temperature: f32,
     #[serde(default = "default_ai_max_tokens")]
     pub max_tokens: u32,
+    #[serde(default = "default_emoji_frequency")]
+    pub emoji_frequency: String,
     #[serde(default)]
     pub active_profile_id: String,
     #[serde(default)]
@@ -235,6 +245,10 @@ impl Default for AiSettings {
         Self {
             enabled: false,
             memory_enabled: true,
+            short_memory_summary_enabled: true,
+            short_memory_recent_turns: default_short_memory_recent_turns(),
+            short_memory_compression_trigger_turns: default_short_memory_compression_trigger_turns(
+            ),
             provider: default_ai_provider(),
             api_key: String::new(),
             base_url: default_ai_base_url(),
@@ -242,6 +256,7 @@ impl Default for AiSettings {
             system_prompt: default_ai_system_prompt(),
             temperature: default_ai_temperature(),
             max_tokens: default_ai_max_tokens(),
+            emoji_frequency: default_emoji_frequency(),
             active_profile_id: String::new(),
             profiles: Vec::new(),
         }
@@ -281,6 +296,7 @@ impl Default for PetDrawerConfig {
                 height: 540,
                 theme: default_drawer_theme(),
                 chat_typewriter_enabled: true,
+                chat_narration_enabled: false,
                 always_on_top: true,
                 categories: default_categories(),
                 quick_search_tags: default_quick_search_tags(),
@@ -387,6 +403,18 @@ fn default_ai_temperature() -> f32 {
 
 fn default_ai_max_tokens() -> u32 {
     800
+}
+
+fn default_short_memory_recent_turns() -> usize {
+    10
+}
+
+fn default_short_memory_compression_trigger_turns() -> usize {
+    12
+}
+
+fn default_emoji_frequency() -> String {
+    "normal".to_string()
 }
 
 pub fn ensure_data_files(app: &AppHandle) -> Result<(), String> {
