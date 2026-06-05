@@ -1,19 +1,35 @@
 <script setup lang="ts">
-import type { AppItemKindFilter } from '../types/app'
+import type { AppItemKind, AppItemKindFilter } from '../types/app'
 
-defineProps<{
+const props = defineProps<{
   modelValue: string
   quickTags: string[]
-  activeKind: AppItemKindFilter
+  activeKinds: AppItemKind[]
   kindOptions: { value: AppItemKindFilter; label: string }[]
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
-  'update:activeKind': [value: AppItemKindFilter]
+  'update:activeKinds': [value: AppItemKind[]]
   add: []
   quickTag: [tag: string]
 }>()
+
+function kindButtonActive(value: AppItemKindFilter) {
+  return value === 'all' ? props.activeKinds.length === 0 : props.activeKinds.includes(value)
+}
+
+function toggleKind(value: AppItemKindFilter) {
+  if (value === 'all') {
+    emit('update:activeKinds', [])
+    return
+  }
+
+  const next = props.activeKinds.includes(value)
+    ? props.activeKinds.filter((item) => item !== value)
+    : [...props.activeKinds, value]
+  emit('update:activeKinds', next)
+}
 </script>
 
 <template>
@@ -42,8 +58,9 @@ const emit = defineEmits<{
         v-for="option in kindOptions"
         :key="option.value"
         type="button"
-        :class="{ active: activeKind === option.value }"
-        @click="emit('update:activeKind', option.value)"
+        :class="{ active: kindButtonActive(option.value) }"
+        :aria-pressed="kindButtonActive(option.value)"
+        @click="toggleKind(option.value)"
       >
         {{ option.label }}
       </button>

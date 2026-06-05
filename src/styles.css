@@ -2017,6 +2017,11 @@ button:disabled {
   background: linear-gradient(145deg, #dff2ff, #dde8ff);
 }
 
+.app-card.kind-file .app-icon {
+  color: #27415f;
+  background: linear-gradient(145deg, #f5fbff, #cfe1f7);
+}
+
 .app-icon img {
   width: 100%;
   height: 100%;
@@ -2745,6 +2750,17 @@ button:disabled {
 
 .settings-update-actions.wide {
   grid-column: 1 / -1;
+}
+
+.settings-update-actions input {
+  width: min(240px, 100%);
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #d7e2ee;
+  border-radius: 8px;
+  color: #26344f;
+  background: #ffffff;
+  font-size: 13px;
 }
 
 .settings-update-actions button {
@@ -3785,6 +3801,11 @@ button:disabled {
   background: linear-gradient(145deg, #a9ebd6, #66c9bc);
 }
 
+.theme-animal-island .app-card.kind-file .app-icon {
+  color: #465064;
+  background: linear-gradient(145deg, #fff4cf, #cfd9ff);
+}
+
 .theme-animal-island .app-compact-name,
 .theme-animal-island .app-title {
   color: #533728;
@@ -4086,6 +4107,7 @@ button:disabled {
 .theme-animal-island .app-modal select,
 .theme-animal-island .app-modal textarea,
 .theme-animal-island .settings-add-row input,
+.theme-animal-island .settings-update-actions input,
 .theme-animal-island .settings-ai-profile-add input,
 .theme-animal-island .settings-field input,
 .theme-animal-island .settings-field textarea,
@@ -4121,6 +4143,7 @@ button:disabled {
 .theme-animal-island .app-modal select:focus,
 .theme-animal-island .app-modal textarea:focus,
 .theme-animal-island .settings-add-row input:focus,
+.theme-animal-island .settings-update-actions input:focus,
 .theme-animal-island .settings-ai-profile-add input:focus,
 .theme-animal-island .settings-field input:focus,
 .theme-animal-island .settings-field textarea:focus,

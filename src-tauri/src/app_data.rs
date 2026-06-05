@@ -243,6 +243,25 @@ pub struct AiSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WechatClawbotSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_openclaw_command")]
+    pub openclaw_command: String,
+    #[serde(default = "default_clawbot_channel")]
+    pub channel: String,
+    #[serde(default)]
+    pub account: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub forward_user_messages: bool,
+    #[serde(default = "default_true")]
+    pub forward_assistant_messages: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompanionRelationshipState {
     pub favorability: i32,
     pub intimacy: i32,
@@ -331,6 +350,20 @@ impl Default for AiSettings {
     }
 }
 
+impl Default for WechatClawbotSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            openclaw_command: default_openclaw_command(),
+            channel: default_clawbot_channel(),
+            account: String::new(),
+            target: String::new(),
+            forward_user_messages: false,
+            forward_assistant_messages: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PetDrawerConfig {
@@ -341,6 +374,8 @@ pub struct PetDrawerConfig {
     pub system: SystemSettings,
     #[serde(default)]
     pub ai: AiSettings,
+    #[serde(default)]
+    pub wechat_clawbot: WechatClawbotSettings,
     #[serde(default = "default_companions")]
     pub companions: Vec<Companion>,
     #[serde(default = "default_current_companion_id")]
@@ -376,6 +411,7 @@ impl Default for PetDrawerConfig {
             },
             system: SystemSettings::default(),
             ai: AiSettings::default(),
+            wechat_clawbot: WechatClawbotSettings::default(),
             companions: default_companions(),
             current_companion_id: default_current_companion_id(),
             companions_initialized: true,
@@ -442,6 +478,14 @@ fn default_ai_base_url() -> String {
 
 fn default_ai_model() -> String {
     "gpt-4o-mini".to_string()
+}
+
+fn default_openclaw_command() -> String {
+    "openclaw".to_string()
+}
+
+fn default_clawbot_channel() -> String {
+    "openclaw-weixin".to_string()
 }
 
 fn default_ai_system_prompt() -> String {

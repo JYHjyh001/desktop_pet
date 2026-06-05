@@ -27,10 +27,12 @@ import type {
   RuntimeInfo,
   StorageSettings,
   UpdateCheckResult,
+  WechatClawbotSendResult,
 } from '../types/app'
 import { getPetSkinAnimation, getPetSkinPreview } from '../utils/defaultPet'
 import {
   appNameFromPath,
+  fileNameFromPath,
   folderNameFromPath,
   normalizeWebsiteUrl,
   parseTags,
@@ -82,6 +84,10 @@ const aiTestMessage = ref('')
 const aiTestError = ref('')
 const aiProfileStatus = ref('')
 const aiProfileError = ref('')
+const wechatClawbotTesting = ref(false)
+const wechatClawbotStatus = ref('')
+const wechatClawbotError = ref('')
+const wechatClawbotTestMessage = ref('PetDrawer ClawBot 测试消息')
 const petMemories = ref<PetMemory[]>([])
 const petMemoriesLoading = ref(false)
 const petMemoryStatus = ref('')
@@ -161,6 +167,7 @@ type SettingsSectionId =
   | 'appearance'
   | 'companion'
   | 'ai'
+  | 'wechat'
   | 'storage'
   | 'memory'
   | 'window'
@@ -174,6 +181,7 @@ const settingsSections: Array<{ id: SettingsSectionId; label: string; descriptio
   { id: 'appearance', label: '外观', description: '界面主题风格' },
   { id: 'companion', label: '伴侣', description: '角色与切换' },
   { id: 'ai', label: 'AI 接口', description: '宠物聊天 API' },
+  { id: 'wechat', label: '微信', description: 'ClawBot 通道' },
   { id: 'storage', label: '存储', description: '数据文件目录' },
   { id: 'memory', label: '记忆', description: '长期记忆管理' },
   { id: 'window', label: '窗口', description: '置顶行为' },
@@ -284,8 +292,13 @@ const itemKindLabels: Record<AppItemKind, string> = {
   app: '软件',
   folder: '文件夹',
   website: '网站',
+  file: '文件',
 }
-const shortcutTypeCategoryLabels = new Set([itemKindLabels.folder, itemKindLabels.website])
+const shortcutTypeCategoryLabels = new Set([
+  itemKindLabels.folder,
+  itemKindLabels.website,
+  itemKindLabels.file,
+])
 const editableKindOptions = computed(() =>
   store.itemKindOptions.filter(
     (item): item is { value: AppItemKind; label: string } => item.value !== 'all',
@@ -303,6 +316,10 @@ const targetLabel = computed(() => {
     return '文件夹路径'
   }
 
+  if (form.itemKind === 'file') {
+    return '文件路径'
+  }
+
   return '软件路径'
 })
 const targetPlaceholder = computed(() => {
@@ -312,6 +329,10 @@ const targetPlaceholder = computed(() => {
 
   if (form.itemKind === 'folder') {
     return '选择或填写本机文件夹路径'
+  }
+
+  if (form.itemKind === 'file') {
+    return '选择或填写本机文件路径'
   }
 
   return '选择或填写本机 exe 路径'
@@ -379,6 +400,13 @@ const settingsDraft = reactive({
   aiActiveProfileId: '',
   aiProfiles: [] as AiConnectionProfile[],
   newAiProfileLabel: '',
+  wechatClawbotEnabled: false,
+  wechatClawbotOpenclawCommand: 'openclaw',
+  wechatClawbotChannel: 'openclaw-weixin',
+  wechatClawbotAccount: '',
+  wechatClawbotTarget: '',
+  wechatClawbotForwardUserMessages: false,
+  wechatClawbotForwardAssistantMessages: true,
   storageDataDir: '',
   storageMemoryDir: '',
   storagePetAssetsDir: '',
@@ -544,6 +572,15 @@ function syncSettingsDraft(config: PetDrawerConfig) {
     ? (config.ai?.activeProfileId ?? '')
     : ''
   settingsDraft.newAiProfileLabel = ''
+  const wechat = config.wechatClawbot
+  settingsDraft.wechatClawbotEnabled = Boolean(wechat?.enabled)
+  settingsDraft.wechatClawbotOpenclawCommand = wechat?.openclawCommand || 'openclaw'
+  settingsDraft.wechatClawbotChannel = wechat?.channel || 'openclaw-weixin'
+  settingsDraft.wechatClawbotAccount = wechat?.account ?? ''
+  settingsDraft.wechatClawbotTarget = wechat?.target ?? ''
+  settingsDraft.wechatClawbotForwardUserMessages = wechat?.forwardUserMessages ?? false
+  settingsDraft.wechatClawbotForwardAssistantMessages =
+    wechat?.forwardAssistantMessages ?? true
 }
 
 function normalizeTagDisplayMode(value?: string | null): 'compact' | 'detailed' {
@@ -806,6 +843,19 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
       activeProfileId: settingsDraft.aiActiveProfileId,
       profiles,
     },
+    wechatClawbot: buildWechatClawbotSettings(),
+  }
+}
+
+function buildWechatClawbotSettings() {
+  return {
+    enabled: settingsDraft.wechatClawbotEnabled,
+    openclawCommand: settingsDraft.wechatClawbotOpenclawCommand.trim() || 'openclaw',
+    channel: settingsDraft.wechatClawbotChannel.trim() || 'openclaw-weixin',
+    account: settingsDraft.wechatClawbotAccount.trim(),
+    target: settingsDraft.wechatClawbotTarget.trim(),
+    forwardUserMessages: settingsDraft.wechatClawbotForwardUserMessages,
+    forwardAssistantMessages: settingsDraft.wechatClawbotForwardAssistantMessages,
   }
 }
 
@@ -901,6 +951,27 @@ async function testAiConnection() {
     aiTestError.value = String(err)
   } finally {
     aiTesting.value = false
+  }
+}
+
+async function testWechatClawbot() {
+  wechatClawbotTesting.value = true
+  wechatClawbotStatus.value = ''
+  wechatClawbotError.value = ''
+
+  try {
+    const result = await invoke<WechatClawbotSendResult>('test_wechat_clawbot', {
+      settings: {
+        ...buildWechatClawbotSettings(),
+        enabled: true,
+      },
+      message: wechatClawbotTestMessage.value.trim() || 'PetDrawer ClawBot 测试消息',
+    })
+    wechatClawbotStatus.value = result.message
+  } catch (err) {
+    wechatClawbotError.value = String(err)
+  } finally {
+    wechatClawbotTesting.value = false
   }
 }
 
@@ -1589,6 +1660,20 @@ async function pickFolder() {
   }
 }
 
+async function pickFile() {
+  const selected = await open({
+    multiple: false,
+    directory: false,
+  })
+
+  if (typeof selected === 'string') {
+    form.path = selected
+    if (!form.name.trim()) {
+      form.name = fileNameFromPath(selected)
+    }
+  }
+}
+
 function normalizeEntryCategory(category: string) {
   const trimmed = category.trim()
   return !trimmed || shortcutTypeCategoryLabels.has(trimmed) ? '其他' : trimmed
@@ -1602,6 +1687,11 @@ async function pickTarget() {
 
   if (form.itemKind === 'app') {
     await pickExecutable()
+    return
+  }
+
+  if (form.itemKind === 'file') {
+    await pickFile()
   }
 }
 
@@ -1895,7 +1985,9 @@ async function saveApp() {
       ? websiteNameFromUrl(targetPath)
       : form.itemKind === 'folder'
         ? folderNameFromPath(targetPath)
-        : appNameFromPath(targetPath)
+        : form.itemKind === 'file'
+          ? fileNameFromPath(targetPath)
+          : appNameFromPath(targetPath)
   const itemName = form.name.trim() || defaultName
 
   if (!itemName.trim()) {
@@ -2057,7 +2149,7 @@ async function openStoryMode() {
       <section class="drawer-main">
         <SearchBar
           v-model="store.keyword"
-          v-model:active-kind="store.itemKindFilter"
+          v-model:active-kinds="store.itemKindFilters"
           :kind-options="store.itemKindOptions"
           :quick-tags="quickSearchTags"
           @quick-tag="applyQuickSearchTag"
@@ -2069,7 +2161,7 @@ async function openStoryMode() {
           <div class="panel-status error" v-else-if="store.error">{{ store.error }}</div>
           <div class="empty-state" v-else-if="store.filteredApps.length === 0">
             <h2>还没有匹配的快捷入口</h2>
-            <p>可以添加本地软件、常用文件夹或网站，数据会保存在本机 JSON 中。</p>
+            <p>可以添加本地软件、常用文件夹、文件或网站，数据会保存在本机 JSON 中。</p>
             <div class="empty-actions">
               <button class="primary-button" type="button" @click="openAddModal()">添加</button>
             </div>
@@ -2831,6 +2923,96 @@ async function openStoryMode() {
                 {{ currentCompanion.model }}；实际聊天使用该模型，但仍通过本页的服务商、Base URL 和 API Key 连接。
               </p>
               <p class="settings-empty">{{ selectedAiProviderPreset().help }}</p>
+            </section>
+
+            <section v-show="activeSettingsSection === 'wechat'" class="settings-section">
+              <h3>微信 ClawBot</h3>
+              <div class="settings-update-panel">
+                <div>
+                  <strong>通过 OpenClaw 官方 ClawBot 通道发送微信消息</strong>
+                  <small>先安装并登录 ClawBot；本页只保存本机命令、通道和目标会话，不保存到仓库。</small>
+                </div>
+              </div>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>启用微信 ClawBot 同步</strong>
+                  <small>开启后，对话窗口可按下方规则把用户消息或宠物回复同步到微信目标会话。</small>
+                </span>
+                <input v-model="settingsDraft.wechatClawbotEnabled" type="checkbox" />
+              </label>
+
+              <div class="settings-form-grid">
+                <label class="settings-field">
+                  OpenClaw 命令
+                  <input
+                    v-model="settingsDraft.wechatClawbotOpenclawCommand"
+                    placeholder="openclaw"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="settings-field">
+                  ClawBot 通道
+                  <input
+                    v-model="settingsDraft.wechatClawbotChannel"
+                    placeholder="openclaw-weixin"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="settings-field">
+                  微信账号（可选）
+                  <input
+                    v-model="settingsDraft.wechatClawbotAccount"
+                    placeholder="留空使用默认登录账号"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="settings-field">
+                  目标会话
+                  <input
+                    v-model="settingsDraft.wechatClawbotTarget"
+                    placeholder="联系人、群或 OpenClaw 支持的 target"
+                    autocomplete="off"
+                  />
+                </label>
+              </div>
+
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>同步用户消息</strong>
+                  <small>发送宠物聊天时，也把用户输入同步到微信。</small>
+                </span>
+                <input v-model="settingsDraft.wechatClawbotForwardUserMessages" type="checkbox" />
+              </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>同步宠物回复</strong>
+                  <small>AI 回复完成后，把宠物回复同步到微信。</small>
+                </span>
+                <input v-model="settingsDraft.wechatClawbotForwardAssistantMessages" type="checkbox" />
+              </label>
+
+              <div class="settings-update-panel">
+                <div>
+                  <strong>测试发送</strong>
+                  <small>使用当前表单配置执行一次 `openclaw message send`。</small>
+                </div>
+                <div class="settings-update-actions">
+                  <input
+                    v-model="wechatClawbotTestMessage"
+                    placeholder="测试消息"
+                    autocomplete="off"
+                  />
+                  <button type="button" :disabled="wechatClawbotTesting" @click="testWechatClawbot">
+                    {{ wechatClawbotTesting ? '发送中...' : '发送测试' }}
+                  </button>
+                </div>
+              </div>
+              <p v-if="wechatClawbotStatus" class="settings-empty">{{ wechatClawbotStatus }}</p>
+              <p v-if="wechatClawbotError" class="form-error">{{ wechatClawbotError }}</p>
+              <p class="settings-empty">
+                官方准备步骤：安装 OpenClaw 后运行
+                `npx -y @tencent-weixin/openclaw-weixin-cli install`，再按插件提示扫码登录微信。
+              </p>
             </section>
 
             <section v-show="activeSettingsSection === 'storage'" class="settings-section">

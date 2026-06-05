@@ -5,18 +5,19 @@ import type { AppDraft, AppItemKind, AppItemKindFilter, PetApp } from '../types/
 const apps = ref<PetApp[]>([])
 const keyword = ref('')
 const category = ref('全部')
-const itemKindFilter = ref<AppItemKindFilter>('all')
+const itemKindFilters = ref<AppItemKind[]>([])
 const loading = ref(false)
 const error = ref('')
 
 const defaultCategories = ['全部', '常用', '开发工具', '游戏', '办公', '系统工具', '其他']
-const shortcutTypeCategories = new Set(['文件夹', '网站'])
+const shortcutTypeCategories = new Set(['文件夹', '网站', '文件'])
 const configuredCategories = ref<string[]>(defaultCategories)
 const itemKindOptions: { value: AppItemKindFilter; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'app', label: '软件' },
   { value: 'folder', label: '文件夹' },
   { value: 'website', label: '网站' },
+  { value: 'file', label: '文件' },
 ]
 
 function normalizeCategories(categories: string[]) {
@@ -62,7 +63,7 @@ function normalizeApp(app: PetApp): PetApp {
 }
 
 function normalizeItemKind(value?: string): AppItemKind {
-  return value === 'folder' || value === 'website' ? value : 'app'
+  return value === 'folder' || value === 'website' || value === 'file' ? value : 'app'
 }
 
 async function attachIconData(app: PetApp): Promise<PetApp> {
@@ -98,7 +99,8 @@ export function useAppStore() {
     const query = keyword.value.trim().toLowerCase()
 
     return apps.value.filter((app) => {
-      const matchKind = itemKindFilter.value === 'all' || app.itemKind === itemKindFilter.value
+      const matchKind =
+        itemKindFilters.value.length === 0 || itemKindFilters.value.includes(app.itemKind)
       const matchCategory =
         category.value === '全部' ||
         (category.value === '常用' && app.favorite) ||
@@ -152,6 +154,16 @@ export function useAppStore() {
     apps.value = apps.value.filter((app) => app.id !== appId)
   }
 
+  function setItemKindFilters(filters: AppItemKind[]) {
+    const validKinds = new Set(
+      itemKindOptions.map((option) => option.value).filter((value) => value !== 'all'),
+    )
+    itemKindFilters.value = filters.filter(
+      (item, index) =>
+        validKinds.has(item) && filters.findIndex((candidate) => candidate === item) === index,
+    )
+  }
+
   async function launchApp(appId: string) {
     await invoke('launch_app', { appId })
     await loadApps()
@@ -180,7 +192,8 @@ export function useAppStore() {
     apps,
     keyword,
     category,
-    itemKindFilter,
+    itemKindFilters,
+    setItemKindFilters,
     itemKindOptions,
     categories,
     filteredApps,

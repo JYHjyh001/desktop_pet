@@ -9,6 +9,11 @@ export function folderNameFromPath(path: string): string {
   return normalized.split('/').pop() || normalized || '新文件夹'
 }
 
+export function fileNameFromPath(path: string): string {
+  const normalized = path.replace(/\\/g, '/')
+  return normalized.split('/').pop() || '新文件'
+}
+
 export function websiteNameFromUrl(url: string): string {
   try {
     const parsed = new URL(normalizeWebsiteUrl(url))

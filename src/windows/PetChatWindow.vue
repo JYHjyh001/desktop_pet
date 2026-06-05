@@ -56,6 +56,8 @@ type MessageDeleteRequest = {
   summary: string
 }
 
+type WechatForwardRole = 'user' | 'assistant'
+
 const chatWindow = getCurrentWindow()
 const messages = ref<ChatMessage[]>([
   {
@@ -752,6 +754,37 @@ function nowSeconds() {
   return Math.floor(Date.now() / 1000).toString()
 }
 
+function shouldForwardWechatClawbot(role: WechatForwardRole) {
+  const settings = config.value?.wechatClawbot
+  if (!settings?.enabled || !settings.target?.trim()) {
+    return false
+  }
+
+  return role === 'user'
+    ? Boolean(settings.forwardUserMessages)
+    : settings.forwardAssistantMessages !== false
+}
+
+function formatWechatClawbotMessage(role: WechatForwardRole, content: string) {
+  const roleName = role === 'user' ? '用户' : currentCompanion.value?.name || 'PetDrawer'
+  return `[PetDrawer/${roleName}]\n${content.trim()}`
+}
+
+async function forwardWechatClawbotMessage(role: WechatForwardRole, content: string) {
+  const message = content.trim()
+  if (!message || !shouldForwardWechatClawbot(role)) {
+    return
+  }
+
+  try {
+    await invoke('send_wechat_clawbot_message', {
+      message: formatWechatClawbotMessage(role, message),
+    })
+  } catch (err) {
+    console.warn('微信 ClawBot 同步失败', err)
+  }
+}
+
 function timestampDate(value?: string | null) {
   if (!value) {
     return null
@@ -961,6 +994,7 @@ async function sendMessage() {
     content: stripInternalTimeLabels(outgoingContent),
     createdAt: nowSeconds(),
   })
+  void forwardWechatClawbotMessage('user', stripInternalTimeLabels(outgoingContent))
   const previousMessageIds = new Set(
     messages.value
       .map((message) => message.memoryId)
@@ -993,6 +1027,7 @@ async function sendMessage() {
       messages.value.push(assistantMessage)
     }
     startTypewriter(assistantMessage.id)
+    void forwardWechatClawbotMessage('assistant', reply.message)
     if (reply.favorabilityChange?.status) {
       companionStatus.value = reply.favorabilityChange.status
       manualFavorabilityDraft.value = reply.favorabilityChange.status.favorability

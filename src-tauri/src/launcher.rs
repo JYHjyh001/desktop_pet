@@ -17,6 +17,7 @@ pub fn launch_app(app: &AppHandle, app_id: &str) -> Result<PetApp, String> {
     match apps[index].item_kind.as_str() {
         "folder" => launch_folder(Path::new(&apps[index].path))?,
         "website" => launch_website(&apps[index].path)?,
+        "file" => launch_file(Path::new(&apps[index].path))?,
         _ => {
             let app_path = Path::new(&apps[index].path);
             if !app_path.exists() {
@@ -52,6 +53,18 @@ fn launch_folder(folder_path: &Path) -> Result<(), String> {
 fn launch_website(url: &str) -> Result<(), String> {
     let normalized = normalize_website_url(url)?;
     open_website(&normalized)
+}
+
+fn launch_file(file_path: &Path) -> Result<(), String> {
+    if !file_path.exists() {
+        return Err("文件不存在".to_string());
+    }
+
+    if !file_path.is_file() {
+        return Err("该路径不是文件".to_string());
+    }
+
+    open_file(file_path)
 }
 
 fn launch_process(app_path: &Path, run_as_admin: bool) -> Result<(), String> {
@@ -165,6 +178,46 @@ fn open_website(url: &str) -> Result<(), String> {
         .map_err(|err| format!("打开网站失败：{err}"))
 }
 
+#[cfg(target_os = "windows")]
+fn open_file(file_path: &Path) -> Result<(), String> {
+    use std::{os::windows::ffi::OsStrExt, ptr};
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let operation = to_wide_null("open");
+    let file = file_path
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+
+    let result = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(format!("打开文件失败：系统返回错误码 {result}"))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn open_file(file_path: &Path) -> Result<(), String> {
+    Command::new("open")
+        .arg(file_path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("打开文件失败：{err}"))
+}
+
 #[cfg(target_os = "macos")]
 fn launch_process_as_admin(app_path: &Path) -> Result<(), String> {
     Command::new("/usr/bin/osascript")
@@ -202,10 +255,10 @@ pub fn open_app_dir(app: &AppHandle, app_id: &str) -> Result<(), String> {
 
     let path = Path::new(&target.path);
     if !path.exists() {
-        return Err(if target.item_kind == "folder" {
-            "文件夹不存在".to_string()
-        } else {
-            "软件路径不存在".to_string()
+        return Err(match target.item_kind.as_str() {
+            "folder" => "文件夹不存在".to_string(),
+            "file" => "文件不存在".to_string(),
+            _ => "软件路径不存在".to_string(),
         });
     }
 
@@ -229,7 +282,7 @@ pub fn open_app_dir(app: &AppHandle, app_id: &str) -> Result<(), String> {
         } else {
             let parent = path
                 .parent()
-                .ok_or_else(|| "无法获取软件目录".to_string())?;
+                .ok_or_else(|| "无法获取所在目录".to_string())?;
             Command::new("open")
                 .arg(parent)
                 .spawn()

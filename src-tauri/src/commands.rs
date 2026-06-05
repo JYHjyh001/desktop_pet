@@ -7,11 +7,12 @@ use crate::{
     app_data::{
         self, AiConnectionProfile, AiSettings, AppDraft, Companion, CompanionDraft,
         PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinSummary, StorageSettings,
+        WechatClawbotSettings,
     },
     favorability::{self, CompanionStatus, FavorabilityLog},
     launcher, startup,
     story_mode::{self, StoryCreateDraft, StorySave, StoryTurnReply},
-    updater, windowing,
+    updater, wechat_clawbot, windowing,
 };
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +37,8 @@ pub struct DrawerPreferencesDraft {
     pub auto_favorite_enabled: bool,
     #[serde(default)]
     pub ai: AiSettingsDraft,
+    #[serde(default)]
+    pub wechat_clawbot: WechatClawbotSettingsDraft,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +77,25 @@ pub struct AiConnectionProfileDraft {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WechatClawbotSettingsDraft {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub openclaw_command: String,
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default)]
+    pub account: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub forward_user_messages: bool,
+    #[serde(default)]
+    pub forward_assistant_messages: bool,
 }
 
 impl Default for AiSettingsDraft {
@@ -172,7 +194,7 @@ pub fn upsert_app(app: AppHandle, draft: AppDraft) -> Result<PetApp, String> {
 
 fn normalize_item_kind(value: &str) -> String {
     match value {
-        "folder" | "website" => value.to_string(),
+        "folder" | "website" | "file" => value.to_string(),
         _ => "app".to_string(),
     }
 }
@@ -408,6 +430,7 @@ pub fn save_drawer_preferences(
     config.system.start_on_boot = preferences.start_on_boot;
     config.system.auto_favorite_enabled = preferences.auto_favorite_enabled;
     config.ai = normalize_ai_settings(preferences.ai);
+    config.wechat_clawbot = normalize_wechat_clawbot_settings(preferences.wechat_clawbot);
     app_data::write_config(&app, &config)?;
 
     windowing::set_pet_size(&app, pet_size)?;
@@ -459,6 +482,32 @@ fn default_short_memory_compression_trigger_turns() -> usize {
 
 fn default_drawer_theme() -> String {
     "light".to_string()
+}
+
+fn normalize_wechat_clawbot_settings(
+    settings: WechatClawbotSettingsDraft,
+) -> WechatClawbotSettings {
+    let defaults = WechatClawbotSettings::default();
+    let openclaw_command = settings.openclaw_command.trim().to_string();
+    let channel = settings.channel.trim().to_string();
+
+    WechatClawbotSettings {
+        enabled: settings.enabled,
+        openclaw_command: if openclaw_command.is_empty() {
+            defaults.openclaw_command
+        } else {
+            openclaw_command
+        },
+        channel: if channel.is_empty() {
+            defaults.channel
+        } else {
+            channel
+        },
+        account: settings.account.trim().to_string(),
+        target: settings.target.trim().to_string(),
+        forward_user_messages: settings.forward_user_messages,
+        forward_assistant_messages: settings.forward_assistant_messages,
+    }
 }
 
 fn normalize_drawer_theme(theme: String) -> String {
@@ -799,6 +848,32 @@ pub async fn test_ai_connection(
     })
     .await
     .map_err(|err| format!("AI 连接测试任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn test_wechat_clawbot(
+    settings: WechatClawbotSettingsDraft,
+    message: String,
+) -> Result<wechat_clawbot::WechatClawbotSendResult, String> {
+    let settings = normalize_wechat_clawbot_settings(settings);
+    tauri::async_runtime::spawn_blocking(move || {
+        wechat_clawbot::send_message(&settings, &message)
+    })
+    .await
+    .map_err(|err| format!("微信 ClawBot 测试任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn send_wechat_clawbot_message(
+    app: AppHandle,
+    message: String,
+) -> Result<wechat_clawbot::WechatClawbotSendResult, String> {
+    let settings = app_data::read_config(&app)?.wechat_clawbot;
+    tauri::async_runtime::spawn_blocking(move || {
+        wechat_clawbot::send_message(&settings, &message)
+    })
+    .await
+    .map_err(|err| format!("微信 ClawBot 发送任务失败：{err}"))?
 }
 
 #[tauri::command]

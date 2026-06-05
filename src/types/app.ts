@@ -1,4 +1,4 @@
-export type AppItemKind = 'app' | 'folder' | 'website'
+export type AppItemKind = 'app' | 'folder' | 'website' | 'file'
 export type AppItemKindFilter = 'all' | AppItemKind
 
 export interface PetApp {
@@ -114,6 +114,21 @@ export interface AiConnectionTestResult {
   ok: boolean
   provider: string
   model: string
+  message: string
+}
+
+export interface WechatClawbotSettings {
+  enabled: boolean
+  openclawCommand: string
+  channel: string
+  account: string
+  target: string
+  forwardUserMessages: boolean
+  forwardAssistantMessages: boolean
+}
+
+export interface WechatClawbotSendResult {
+  ok: boolean
   message: string
 }
 
@@ -398,6 +413,7 @@ export interface PetDrawerConfig {
     autoFavoriteEnabled: boolean
   }
   ai?: AiSettings
+  wechatClawbot?: WechatClawbotSettings
   companions?: Companion[]
   currentCompanionId?: string
   companionsInitialized?: boolean

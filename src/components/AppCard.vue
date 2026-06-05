@@ -5,6 +5,7 @@ import { formatLaunchTime } from '../utils/format'
 
 const folderDefaultIcon = new URL('../assets/icons/default-folder.svg', import.meta.url).href
 const websiteDefaultIcon = new URL('../assets/icons/default-website.svg', import.meta.url).href
+const fileDefaultIcon = new URL('../assets/icons/default-file.svg', import.meta.url).href
 
 const props = defineProps<{
   app: PetApp
@@ -35,6 +36,10 @@ const itemKindLabel = computed(() => {
     return '网站'
   }
 
+  if (props.app.itemKind === 'file') {
+    return '文件'
+  }
+
   return '软件'
 })
 const targetLabel = computed(() => (props.app.itemKind === 'website' ? '网址' : '路径'))
@@ -45,6 +50,10 @@ const defaultIconUrl = computed(() => {
 
   if (props.app.itemKind === 'website') {
     return websiteDefaultIcon
+  }
+
+  if (props.app.itemKind === 'file') {
+    return fileDefaultIcon
   }
 
   return null

@@ -8,6 +8,7 @@ mod startup;
 mod story_mode;
 mod tray;
 mod updater;
+mod wechat_clawbot;
 mod windowing;
 
 pub fn run() {
@@ -71,6 +72,8 @@ pub fn run() {
             commands::delete_story_save,
             commands::rename_story_save,
             commands::test_ai_connection,
+            commands::test_wechat_clawbot,
+            commands::send_wechat_clawbot_message,
             commands::list_pet_memories,
             commands::add_pet_memory,
             commands::update_pet_memory,
