@@ -18,6 +18,7 @@ const CLICK_ANIMATION_MS = 1200
 let stateTimer: number | null = null
 let dragWatchTimer: number | null = null
 let unlistenPetImage: (() => void) | null = null
+let preloadedPetMedia: Array<HTMLImageElement | HTMLVideoElement> = []
 
 const appWindow = getCurrentWindow()
 
@@ -36,6 +37,7 @@ onBeforeUnmount(() => {
   if (dragWatchTimer !== null) {
     window.clearTimeout(dragWatchTimer)
   }
+  clearPreloadedPetMedia()
 })
 
 const currentPetImage = computed<string | undefined>(() => {
@@ -60,10 +62,52 @@ async function loadPetSkin() {
   try {
     const skin = await invoke<PetSkinSummary>('get_current_pet_skin')
     currentPetSkin.value = skin
+    preloadPetSkinAnimations(skin)
   } catch (err) {
     console.error(err)
     currentPetSkin.value = null
+    clearPreloadedPetMedia()
   }
+}
+
+function isVideoSource(source: string) {
+  return /^data:video\//i.test(source) || /\.(webm|mp4)(?:[?#].*)?$/i.test(source)
+}
+
+function preloadPetSkinAnimations(skin: PetSkinSummary | null) {
+  clearPreloadedPetMedia()
+  const animations = resolvePetSkinAnimations(skin)
+  const sources = Array.from(
+    new Set(Object.values(animations).filter((source): source is string => Boolean(source))),
+  )
+
+  preloadedPetMedia = sources.map((source) => {
+    if (isVideoSource(source)) {
+      const video = document.createElement('video')
+      video.preload = 'auto'
+      video.muted = true
+      video.playsInline = true
+      video.src = source
+      video.load()
+      return video
+    }
+
+    const image = new Image()
+    image.decoding = 'async'
+    image.src = source
+    return image
+  })
+}
+
+function clearPreloadedPetMedia() {
+  for (const media of preloadedPetMedia) {
+    if (media instanceof HTMLVideoElement) {
+      media.pause()
+      media.removeAttribute('src')
+      media.load()
+    }
+  }
+  preloadedPetMedia = []
 }
 
 async function savePosition() {
@@ -126,23 +170,11 @@ async function watchDragEnd() {
     window.clearTimeout(dragWatchTimer)
   }
 
-  let lastPosition = await appWindow.outerPosition()
-  let stableTicks = 0
-
   const tick = async () => {
     try {
-      const position = await appWindow.outerPosition()
-      const moved = position.x !== lastPosition.x || position.y !== lastPosition.y
+      const isPrimaryButtonPressed = await invoke<boolean>('is_primary_mouse_button_pressed')
 
-      if (moved) {
-        stableTicks = 0
-        lastPosition = position
-        petState.value = 'dragging'
-      } else {
-        stableTicks += 1
-      }
-
-      if (stableTicks >= 5) {
+      if (!isPrimaryButtonPressed) {
         dragStarted.value = false
         protectedUntil.value = 0
         petState.value = 'idle'
@@ -151,7 +183,8 @@ async function watchDragEnd() {
         return
       }
 
-      dragWatchTimer = window.setTimeout(tick, 120)
+      petState.value = 'dragging'
+      dragWatchTimer = window.setTimeout(tick, 80)
     } catch (err) {
       console.error(err)
       dragStarted.value = false
@@ -161,7 +194,7 @@ async function watchDragEnd() {
     }
   }
 
-  dragWatchTimer = window.setTimeout(tick, 120)
+  dragWatchTimer = window.setTimeout(tick, 80)
 }
 
 function startPointer(event: PointerEvent) {

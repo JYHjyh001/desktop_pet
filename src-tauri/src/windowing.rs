@@ -1,4 +1,6 @@
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, Position, WebviewWindow};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow,
+};
 
 use crate::app_data;
 
@@ -31,6 +33,7 @@ pub fn apply_window_preferences(app: &AppHandle) {
         return;
     };
 
+    let _ = set_pet_size(app, config.pet.size);
     let _ = set_pet_always_on_top(app, config.pet.always_on_top);
     let _ = set_drawer_always_on_top(app, config.drawer.always_on_top);
 }
@@ -137,6 +140,25 @@ pub fn hide_pet_chat(app: &AppHandle) -> Result<(), String> {
     chat.hide().map_err(|err| err.to_string())
 }
 
+pub fn show_story(app: &AppHandle) -> Result<(), String> {
+    let story = app
+        .get_webview_window("story")
+        .ok_or_else(|| "未找到故事模式窗口".to_string())?;
+
+    position_story(app)?;
+    story.show().map_err(|err| err.to_string())?;
+    story.set_focus().map_err(|err| err.to_string())?;
+    app.emit("story-opened", ()).map_err(|err| err.to_string())
+}
+
+pub fn hide_story(app: &AppHandle) -> Result<(), String> {
+    let story = app
+        .get_webview_window("story")
+        .ok_or_else(|| "未找到故事模式窗口".to_string())?;
+
+    story.hide().map_err(|err| err.to_string())
+}
+
 pub fn show_pet(app: &AppHandle) -> Result<(), String> {
     let pet = app
         .get_webview_window("pet")
@@ -154,6 +176,22 @@ pub fn set_pet_always_on_top(app: &AppHandle, always_on_top: bool) -> Result<(),
 
     pet.set_always_on_top(always_on_top)
         .map_err(|err| err.to_string())
+}
+
+pub fn set_pet_size(app: &AppHandle, size: u32) -> Result<(), String> {
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or_else(|| "未找到宠物窗口".to_string())?;
+    let size = app_data::normalize_pet_size(size);
+
+    pet.set_size(Size::Physical(PhysicalSize {
+        width: size,
+        height: size,
+    }))
+    .map_err(|err| err.to_string())?;
+    restore_pet_position(app);
+
+    Ok(())
 }
 
 pub fn set_drawer_always_on_top(app: &AppHandle, always_on_top: bool) -> Result<(), String> {
@@ -248,6 +286,45 @@ fn position_pet_chat(app: &AppHandle) -> Result<(), String> {
     }
 
     chat.set_position(Position::Physical(PhysicalPosition { x, y }))
+        .map_err(|err| err.to_string())
+}
+
+fn position_story(app: &AppHandle) -> Result<(), String> {
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or_else(|| "未找到宠物窗口".to_string())?;
+    let story = app
+        .get_webview_window("story")
+        .ok_or_else(|| "未找到故事模式窗口".to_string())?;
+
+    let pet_pos = pet.outer_position().map_err(|err| err.to_string())?;
+    let pet_size = pet.outer_size().map_err(|err| err.to_string())?;
+    let story_size = story.outer_size().map_err(|err| err.to_string())?;
+    let margin = 12;
+
+    let mut x = pet_pos.x + pet_size.width as i32 + margin;
+    let mut y = pet_pos.y - 48;
+
+    if let Ok(Some(monitor)) = pet.current_monitor() {
+        let monitor_pos = monitor.position();
+        let monitor_size = monitor.size();
+        let max_x = monitor_pos.x + monitor_size.width as i32 - story_size.width as i32 - margin;
+        let max_y = monitor_pos.y + monitor_size.height as i32 - story_size.height as i32 - margin;
+
+        if x > max_x {
+            x = pet_pos.x - story_size.width as i32 - margin;
+        }
+
+        x = x
+            .max(monitor_pos.x + margin)
+            .min(max_x.max(monitor_pos.x + margin));
+        y = y
+            .max(monitor_pos.y + margin)
+            .min(max_y.max(monitor_pos.y + margin));
+    }
+
+    story
+        .set_position(Position::Physical(PhysicalPosition { x, y }))
         .map_err(|err| err.to_string())
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "pet_drawer"
-version = "0.2.7"
+version = "0.2.8"
 description = "Desktop pet software launcher"
 authors = ["PetDrawer"]
 edition = "2021"
@@ -21,4 +21,4 @@ tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-dialog = "2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

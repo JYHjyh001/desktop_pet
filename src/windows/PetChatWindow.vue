@@ -160,6 +160,15 @@ const favorabilityStateLabel = computed(() => {
 const favorabilityToggleLabel = computed(() =>
   companionStatus.value?.favorabilityEnabled ? '关闭好感度系统' : '开启好感度系统',
 )
+const chatInputPlaceholder = computed(() => {
+  if (selectionMode.value) {
+    return '请先完成或取消多选'
+  }
+  if (!aiEnabled.value) {
+    return '先在设置中启用 AI 接口'
+  }
+  return '输入消息，Enter 发送'
+})
 
 onMounted(async () => {
   await Promise.all([loadConfig(), loadConversation(), loadCurrentPetSkin(), loadCompanionStatus()])
@@ -238,10 +247,11 @@ async function loadCompanionStatus() {
 }
 
 function welcomeMessage(companion?: Companion | null): ChatMessage {
+  const firstMessage = companion?.firstMessage?.trim()
   return {
     id: 'welcome',
     role: 'assistant',
-    content: companion ? `我是${companion.name}，想聊点什么？` : '我在，想聊点什么？',
+    content: firstMessage || (companion ? `我是${companion.name}，想聊点什么？` : '我在，想聊点什么？'),
     createdAt: nowSeconds(),
     local: true,
   }
@@ -1214,13 +1224,7 @@ async function insertTwemoji(item: TwemojiItem) {
         v-model="inputText"
         :disabled="sending || !aiEnabled || selectionMode"
         rows="2"
-        :placeholder="
-          selectionMode
-            ? '请先完成或取消多选'
-            : aiEnabled
-              ? '输入消息，Enter 发送'
-              : '先在设置中启用 AI 接口'
-        "
+        :placeholder="chatInputPlaceholder"
         @keydown="handleInputKeydown"
       />
       <div class="pet-chat-input-actions">

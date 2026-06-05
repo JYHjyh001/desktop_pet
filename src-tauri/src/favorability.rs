@@ -7,7 +7,7 @@ use std::{
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::{
     ai_memory::{self, PetMemoryMessage},
@@ -907,9 +907,7 @@ fn day_number(timestamp: Option<&str>) -> Option<u64> {
 }
 
 fn memory_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map_err(|err| format!("无法获取应用数据目录：{err}"))
+    app_data::memory_dir(app)
 }
 
 fn memory_db_file(app: &AppHandle) -> Result<PathBuf, String> {

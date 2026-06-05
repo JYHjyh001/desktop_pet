@@ -13,6 +13,7 @@ use crate::{
 const MEMORY_EXTRACTION_CONTEXT_MESSAGES: usize = 10;
 const MEMORY_EXTRACTION_MESSAGE_CHARS: usize = 240;
 const SHORT_MEMORY_SUMMARY_MESSAGE_CHARS: usize = 500;
+const STORY_OPENING_USER_PROMPT: &str = "请根据以上故事创建任务生成故事开局。";
 const SUPPORTED_CHAT_EMOJIS: &[&str] = &[
     "😀", "😄", "😆", "😂", "😅", "😉", "😊", "😍", "🥰", "🤗", "🤔", "😎", "🥳", "😭", "😡", "😴",
     "👍", "👏", "🙏", "💪", "👀", "✨", "❤️", "❤", "🔥", "⭐", "🎉", "🎁", "🌟", "💖", "💬", "✅",
@@ -135,7 +136,7 @@ pub fn send_pet_chat_message(
         &settings.emoji_frequency,
         use_deepseek_json_output,
     );
-    chat_settings.system_prompt = companion_prompt.clone();
+    chat_settings.system_prompt = append_post_history_instructions(&companion_prompt, &companion);
     let mut memory_warnings = Vec::new();
     let mut response_recent_messages = Vec::new();
     let mut response_related_memories = Vec::new();
@@ -193,12 +194,14 @@ pub fn send_pet_chat_message(
 
             let related_memories =
                 read_related_memories(app, &companion_id, user_input, &mut memory_warnings);
-            chat_settings.system_prompt = append_memory_context(
+            let memory_prompt = append_memory_context(
                 &companion_prompt,
                 &related_memories,
                 response_short_summary.as_ref(),
                 &recent_messages,
             );
+            chat_settings.system_prompt =
+                append_post_history_instructions(&memory_prompt, &companion);
             response_recent_messages = recent_messages;
             response_related_memories = related_memories;
         }
@@ -214,6 +217,7 @@ pub fn send_pet_chat_message(
                         &chat_settings,
                         &messages,
                         &companion_context,
+                        &companion,
                         &settings.emoji_frequency,
                         &response_related_memories,
                         response_short_summary.as_ref(),
@@ -225,6 +229,7 @@ pub fn send_pet_chat_message(
                 &chat_settings,
                 &messages,
                 &companion_context,
+                &companion,
                 &settings.emoji_frequency,
                 &response_related_memories,
                 response_short_summary.as_ref(),
@@ -317,6 +322,24 @@ pub fn test_ai_connection(mut settings: AiSettings) -> Result<AiConnectionTestRe
         model: settings.model,
         message: format!("连接成功，模型返回：{reply_preview}"),
     })
+}
+
+pub fn send_story_text_request(
+    mut settings: AiSettings,
+    system_prompt: String,
+    messages: Vec<PetChatMessageDraft>,
+) -> Result<String, String> {
+    if !settings.enabled {
+        return Err("请先在抽屉设置的“AI 接口”中启用宠物聊天 API。".to_string());
+    }
+    if settings.model.trim().is_empty() {
+        return Err("请先在“AI 接口”中填写模型名称。".to_string());
+    }
+
+    settings.system_prompt = system_prompt.trim().to_string();
+    let normalized_messages = normalize_story_messages(messages)?;
+    let reply = send_chat_request(&settings, &normalized_messages, false)?;
+    Ok(strip_internal_time_labels(&reply))
 }
 
 fn score_favorability_with_ai(
@@ -448,6 +471,21 @@ fn normalize_messages(
     }
 
     Ok(normalized)
+}
+
+fn normalize_story_messages(
+    messages: Vec<PetChatMessageDraft>,
+) -> Result<Vec<PetChatMessageDraft>, String> {
+    if messages.is_empty() {
+        return Ok(vec![PetChatMessageDraft {
+            role: "user".to_string(),
+            content: STORY_OPENING_USER_PROMPT.to_string(),
+            created_at: String::new(),
+            time_context: String::new(),
+        }]);
+    }
+
+    normalize_messages(messages)
 }
 
 fn sanitize_time_context(value: &str, max_chars: usize) -> String {
@@ -863,6 +901,7 @@ fn send_plain_chat_fallback(
     settings: &AiSettings,
     messages: &[PetChatMessageDraft],
     companion_context: &str,
+    companion: &Companion,
     emoji_frequency: &str,
     related_memories: &[ai_memory::PetMemory],
     short_term_summary: Option<&ai_memory::PetMemory>,
@@ -870,12 +909,13 @@ fn send_plain_chat_fallback(
 ) -> Result<String, String> {
     let mut fallback_settings = settings.clone();
     let fallback_prompt = append_chat_output_context(companion_context, emoji_frequency, false);
-    fallback_settings.system_prompt = append_memory_context(
+    let fallback_prompt = append_memory_context(
         &fallback_prompt,
         related_memories,
         short_term_summary,
         recent_messages,
     );
+    fallback_settings.system_prompt = append_post_history_instructions(&fallback_prompt, companion);
     let raw_reply = send_chat_request(&fallback_settings, messages, false)?;
     Ok(strip_internal_time_labels(&raw_reply))
 }
@@ -1428,6 +1468,13 @@ fn relationship_affect_guidance(status: &CompanionStatus) -> String {
     format!("{mood}\n{trust}\n{intimacy}")
 }
 
+fn push_prompt_field(sections: &mut Vec<String>, title: &str, content: &str) {
+    let content = content.trim();
+    if !content.is_empty() {
+        sections.push(format!("{title}：\n{content}"));
+    }
+}
+
 fn append_companion_context(
     system_prompt: &str,
     companion: &Companion,
@@ -1455,12 +1502,20 @@ fn append_companion_context(
             companion.relationship_state.favorability, companion.relationship_state.intimacy, mood
         )
     };
-    sections.push(format!(
-        "[当前伴侣档案]\n当前伴侣名称：{}\n角色设定：\n{}\n{}\n请始终以当前伴侣身份回复，不要混用其他伴侣的设定、记忆或对话。",
-        companion.name.trim(),
-        companion.persona_prompt.trim(),
-        relationship_context
-    ));
+    let mut card_sections = vec![format!("名称：{}", companion.name.trim())];
+    push_prompt_field(&mut card_sections, "角色描述", &companion.persona_prompt);
+    push_prompt_field(&mut card_sections, "人格摘要", &companion.personality);
+    push_prompt_field(&mut card_sections, "对话场景", &companion.scenario);
+    push_prompt_field(
+        &mut card_sections,
+        "首条消息风格参考",
+        &companion.first_message,
+    );
+    push_prompt_field(&mut card_sections, "示例对话", &companion.message_example);
+    card_sections.push(relationship_context);
+    card_sections
+        .push("请始终以当前伴侣身份回复，不要混用其他伴侣的设定、记忆或对话。".to_string());
+    sections.push(format!("[当前伴侣角色卡]\n{}", card_sections.join("\n\n")));
     if !companion.system_prompt.trim().is_empty() {
         sections.push(format!(
             "[伴侣附加规则]\n{}",
@@ -1469,6 +1524,19 @@ fn append_companion_context(
     }
 
     sections.join("\n\n")
+}
+
+fn append_post_history_instructions(system_prompt: &str, companion: &Companion) -> String {
+    let instructions = companion.post_history_instructions.trim();
+    if instructions.is_empty() {
+        return system_prompt.trim().to_string();
+    }
+
+    format!(
+        "{}\n\n[角色后置指令]\n{}",
+        system_prompt.trim(),
+        instructions
+    )
 }
 
 fn append_chat_output_context(
@@ -2383,6 +2451,24 @@ mod tests {
     }
 
     #[test]
+    fn companion_card_fields_are_added_to_prompt_without_creator_notes() {
+        let companion = test_companion();
+
+        let card_prompt = append_companion_context("全局规则", &companion, None);
+        let final_prompt = append_post_history_instructions(&card_prompt, &companion);
+
+        assert!(card_prompt.contains("[当前伴侣角色卡]"));
+        assert!(card_prompt.contains("角色描述"));
+        assert!(card_prompt.contains("人格摘要"));
+        assert!(card_prompt.contains("对话场景"));
+        assert!(card_prompt.contains("首条消息风格参考"));
+        assert!(card_prompt.contains("示例对话"));
+        assert!(!card_prompt.contains("只给作者看的备注"));
+        assert!(final_prompt.contains("[角色后置指令]"));
+        assert!(final_prompt.contains("优先延续最近一轮对话"));
+    }
+
+    #[test]
     fn empty_deepseek_content_is_retryable() {
         let response = r#"{"choices":[{"message":{"content":""}}]}"#;
         let err = parse_reply("deepseek", response).unwrap_err();
@@ -2405,6 +2491,15 @@ mod tests {
         assert_eq!(body["response_format"]["type"], "json_object");
     }
 
+    #[test]
+    fn story_opening_request_allows_empty_messages() {
+        let messages = normalize_story_messages(Vec::new()).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert!(messages[0].content.contains("生成故事开局"));
+    }
+
     fn test_status(stage: &str, stage_name: &str, favorability: i32) -> CompanionStatus {
         CompanionStatus {
             character_id: "test".to_string(),
@@ -2418,6 +2513,34 @@ mod tests {
             daily_gain: 0,
             last_interaction_time: None,
             last_change_reason: None,
+            updated_at: "0".to_string(),
+        }
+    }
+
+    fn test_companion() -> Companion {
+        Companion {
+            id: "test".to_string(),
+            name: "测试伴侣".to_string(),
+            avatar: None,
+            persona_prompt: "来自桌面的聊天伴侣。".to_string(),
+            personality: "温和、直接、会追问关键上下文。".to_string(),
+            scenario: "用户正在和桌面伴侣进行一对一聊天。".to_string(),
+            first_message: "我在，今天先从哪里开始？".to_string(),
+            message_example: "<START>\n{{user}}: 我有点卡住了。\n{{char}}: 先把卡住的点发给我。"
+                .to_string(),
+            creator_notes: "只给作者看的备注。".to_string(),
+            post_history_instructions: "优先延续最近一轮对话，不要复述角色卡。".to_string(),
+            system_prompt: "保持边界。".to_string(),
+            model: String::new(),
+            voice_id: String::new(),
+            memory_scope: "test".to_string(),
+            skin_id: "default".to_string(),
+            relationship_state: app_data::CompanionRelationshipState {
+                favorability: 0,
+                intimacy: 0,
+                mood: String::new(),
+            },
+            created_at: "0".to_string(),
             updated_at: "0".to_string(),
         }
     }

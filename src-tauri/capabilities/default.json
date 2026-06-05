@@ -2,12 +2,14 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Main capability for PetDrawer windows",
-  "windows": ["pet", "drawer", "pet-menu", "pet-chat"],
+  "windows": ["pet", "drawer", "pet-menu", "pet-chat", "story"],
   "permissions": [
     "core:default",
     "core:window:default",
     "core:window:allow-start-dragging",
     "core:window:allow-outer-position",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-set-fullscreen",
     "core:window:allow-close",
     "dialog:default",
     "dialog:allow-open"

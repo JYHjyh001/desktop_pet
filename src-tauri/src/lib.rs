@@ -5,6 +5,7 @@ mod commands;
 mod favorability;
 mod launcher;
 mod startup;
+mod story_mode;
 mod tray;
 mod updater;
 mod windowing;
@@ -23,6 +24,8 @@ pub fn run() {
             commands::list_companions,
             commands::get_current_companion,
             commands::upsert_companion,
+            commands::import_companion_card,
+            commands::export_companion_card,
             commands::switch_companion,
             commands::delete_companion,
             commands::get_current_companion_status,
@@ -33,6 +36,8 @@ pub fn run() {
             commands::get_companion_messages,
             commands::delete_companion_messages,
             commands::get_runtime_info,
+            commands::get_storage_settings,
+            commands::save_storage_settings,
             commands::set_quick_search_tags,
             commands::save_drawer_preferences,
             commands::save_chat_display_preferences,
@@ -48,6 +53,7 @@ pub fn run() {
             commands::import_executable_icon,
             commands::get_image_data_url,
             commands::save_pet_position,
+            commands::is_primary_mouse_button_pressed,
             commands::toggle_drawer,
             commands::show_drawer,
             commands::hide_drawer,
@@ -55,7 +61,15 @@ pub fn run() {
             commands::hide_pet_menu,
             commands::show_pet_chat,
             commands::hide_pet_chat,
+            commands::show_story,
+            commands::hide_story,
             commands::send_pet_chat_message,
+            commands::list_story_saves,
+            commands::get_story_save,
+            commands::create_story,
+            commands::advance_story,
+            commands::delete_story_save,
+            commands::rename_story_save,
             commands::test_ai_connection,
             commands::list_pet_memories,
             commands::add_pet_memory,

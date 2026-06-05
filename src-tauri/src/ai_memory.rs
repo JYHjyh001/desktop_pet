@@ -8,7 +8,8 @@ use std::{
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use serde_json::{json, Value};
+use tauri::AppHandle;
 
 use crate::app_data::{
     self, Companion, CompanionDraft, CompanionRelationshipState, PetDrawerConfig,
@@ -88,7 +89,13 @@ fn default_companion(skin_id: &str) -> Companion {
         id: DEFAULT_COMPANION_ID.to_string(),
         name: "凯蒂".to_string(),
         avatar: None,
-        persona_prompt: "你是温柔、活泼的桌面伴侣凯蒂，陪用户聊天并提供恰当帮助。".to_string(),
+        persona_prompt: app_data::default_companion_persona_prompt(),
+        personality: app_data::default_companion_personality(),
+        scenario: app_data::default_companion_scenario(),
+        first_message: app_data::default_companion_first_message(),
+        message_example: app_data::default_companion_message_example(),
+        creator_notes: String::new(),
+        post_history_instructions: app_data::default_companion_post_history_instructions(),
         system_prompt: String::new(),
         model: String::new(),
         voice_id: String::new(),
@@ -235,6 +242,12 @@ pub fn upsert_companion(app: &AppHandle, draft: CompanionDraft) -> Result<Compan
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         persona_prompt: truncate_text(persona_prompt, 2000),
+        personality: truncate_text(draft.personality.trim(), 1000),
+        scenario: truncate_text(draft.scenario.trim(), 1000),
+        first_message: truncate_text(draft.first_message.trim(), 1000),
+        message_example: truncate_text(draft.message_example.trim(), 3000),
+        creator_notes: truncate_text(draft.creator_notes.trim(), 2000),
+        post_history_instructions: truncate_text(draft.post_history_instructions.trim(), 2000),
         system_prompt: truncate_text(draft.system_prompt.trim(), 2000),
         model: truncate_text(draft.model.trim(), 120),
         voice_id: truncate_text(draft.voice_id.trim(), 120),
@@ -262,6 +275,60 @@ pub fn upsert_companion(app: &AppHandle, draft: CompanionDraft) -> Result<Compan
     }
     app_data::write_config(app, &config)?;
     Ok(companion)
+}
+
+pub fn export_companion_card(
+    app: &AppHandle,
+    companion_id: &str,
+    path: &str,
+) -> Result<(), String> {
+    let companion_id = safe_companion_id(companion_id)?;
+    let companion = read_companion_config(app)?
+        .companions
+        .into_iter()
+        .find(|companion| companion.id == companion_id)
+        .ok_or_else(|| "未找到要导出的伴侣档案".to_string())?;
+    let path = PathBuf::from(path);
+    let card = json!({
+        "spec": "chara_card_v2",
+        "spec_version": "2.0",
+        "data": {
+            "name": companion.name,
+            "description": companion.persona_prompt,
+            "personality": companion.personality,
+            "scenario": companion.scenario,
+            "first_mes": companion.first_message,
+            "mes_example": companion.message_example,
+            "creator_notes": companion.creator_notes,
+            "post_history_instructions": companion.post_history_instructions,
+            "extensions": {
+                "petDrawer": {
+                    "systemPrompt": companion.system_prompt,
+                    "model": companion.model,
+                    "voiceId": companion.voice_id,
+                    "skinId": companion.skin_id,
+                    "memoryScope": companion.memory_scope,
+                    "relationshipState": companion.relationship_state,
+                    "exportedAt": app_data::now_seconds()
+                }
+            }
+        }
+    });
+    let content = serde_json::to_vec_pretty(&card).map_err(|err| err.to_string())?;
+    app_data::atomic_write_file(&path, &content).map_err(|err| format!("导出角色卡失败：{err}"))
+}
+
+pub fn import_companion_card(app: &AppHandle, path: &str) -> Result<Companion, String> {
+    let path = PathBuf::from(path);
+    let content = fs::read_to_string(&path).map_err(|err| format!("读取角色卡失败：{err}"))?;
+    let value: Value =
+        serde_json::from_str(&content).map_err(|err| format!("角色卡 JSON 格式错误：{err}"))?;
+    let fallback_name = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("导入角色");
+    let draft = companion_draft_from_card_value(&value, fallback_name);
+    upsert_companion(app, draft)
 }
 
 pub fn switch_companion(app: &AppHandle, companion_id: &str) -> Result<Companion, String> {
@@ -1383,10 +1450,7 @@ fn legacy_memory_json_file(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn memory_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("无法获取应用数据目录：{err}"))?)
+    app_data::memory_dir(app)
 }
 
 #[cfg(target_os = "windows")]
@@ -1418,6 +1482,75 @@ fn normalize_role(role: &str) -> Option<String> {
         "assistant" => Some("assistant".to_string()),
         _ => None,
     }
+}
+
+fn companion_draft_from_card_value(value: &Value, fallback_name: &str) -> CompanionDraft {
+    let source = value
+        .get("data")
+        .or_else(|| value.get("companion"))
+        .unwrap_or(value);
+    let extension = source
+        .get("extensions")
+        .and_then(|extensions| extensions.get("petDrawer"));
+    let name = first_string(source, &["name", "char_name"])
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| fallback_name.to_string());
+    let persona_prompt = first_string(
+        source,
+        &["description", "personaPrompt", "persona_prompt", "role"],
+    )
+    .or_else(|| first_string(source, &["personality"]))
+    .filter(|value| !value.trim().is_empty())
+    .unwrap_or_else(app_data::default_companion_persona_prompt);
+
+    CompanionDraft {
+        id: None,
+        name,
+        avatar: first_string(source, &["avatar"]).filter(|value| !value.trim().is_empty()),
+        persona_prompt,
+        personality: first_string(source, &["personality"]).unwrap_or_default(),
+        scenario: first_string(source, &["scenario"]).unwrap_or_default(),
+        first_message: first_string(source, &["first_mes", "firstMessage", "first_message"])
+            .unwrap_or_default(),
+        message_example: first_string(
+            source,
+            &["mes_example", "messageExample", "message_example"],
+        )
+        .unwrap_or_default(),
+        creator_notes: first_string(source, &["creator_notes", "creatorNotes"]).unwrap_or_default(),
+        post_history_instructions: first_string(
+            source,
+            &["post_history_instructions", "postHistoryInstructions"],
+        )
+        .unwrap_or_default(),
+        system_prompt: first_string_from_sources(
+            &[extension, Some(source)],
+            &["systemPrompt", "system_prompt"],
+        )
+        .unwrap_or_default(),
+        model: first_string_from_sources(&[extension, Some(source)], &["model"])
+            .unwrap_or_default(),
+        voice_id: first_string_from_sources(&[extension, Some(source)], &["voiceId", "voice_id"])
+            .unwrap_or_default(),
+        skin_id: first_string_from_sources(&[extension, Some(source)], &["skinId", "skin_id"])
+            .unwrap_or_else(default_skin_id),
+        relationship_state: None,
+    }
+}
+
+fn first_string(source: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| source.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn first_string_from_sources(sources: &[Option<&Value>], keys: &[&str]) -> Option<String> {
+    sources
+        .iter()
+        .flatten()
+        .find_map(|source| first_string(source, keys))
 }
 
 fn safe_companion_id(companion_id: &str) -> Result<&str, String> {

@@ -67,6 +67,7 @@ button:disabled {
   width: min(128px, calc(100vmin - 18px));
   height: min(128px, calc(100vmin - 18px));
   margin: auto;
+  isolation: isolate;
   transform-origin: center bottom;
   transition: transform 160ms ease;
 }
@@ -84,12 +85,44 @@ button:disabled {
 }
 
 .custom-pet-image {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
+  background: transparent;
   object-fit: contain;
   pointer-events: none;
   user-select: none;
+}
+
+.default-pet-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.pet-media-enter-active,
+.pet-media-leave-active {
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.pet-media-enter-from,
+.pet-media-leave-to {
+  opacity: 0;
+  transform: scale(0.985);
+}
+
+.pet-media-enter-to,
+.pet-media-leave-from {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.pet-media-leave-active {
+  position: absolute;
+  inset: 0;
 }
 
 .pet-head {
@@ -812,6 +845,486 @@ button:disabled {
   color: #657188;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.story-window {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  border: 1px solid rgba(68, 78, 103, 0.18);
+  border-radius: 14px;
+  background: rgba(248, 251, 255, 0.97);
+  box-shadow: 0 18px 44px rgba(24, 39, 75, 0.16);
+  backdrop-filter: blur(18px);
+}
+
+.story-window-fullscreen {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.story-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #263754, #1f6f70 58%, #a35b2c);
+  user-select: none;
+}
+
+.story-header h1,
+.story-header p,
+.story-panel h2,
+.story-panel h3,
+.story-panel p {
+  margin: 0;
+}
+
+.story-header h1 {
+  font-size: 17px;
+}
+
+.story-header p {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+}
+
+.story-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.story-header-actions button {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.story-header-actions button:last-child {
+  width: 32px;
+  padding: 0;
+  font-size: 18px;
+}
+
+.story-notice {
+  display: grid;
+  gap: 8px;
+  margin: 10px 12px 0;
+  padding: 10px;
+  border: 1px solid #ffd7a8;
+  border-radius: 10px;
+  color: #6e4315;
+  background: #fff7ec;
+  font-size: 12px;
+}
+
+.story-notice div {
+  display: flex;
+  gap: 8px;
+}
+
+.story-notice button,
+.story-panel button,
+.story-input button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #34445e;
+  background: #e8eef6;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.story-error {
+  margin: 8px 12px 0;
+  padding: 8px 10px;
+  border: 1px solid #ffd1d6;
+  border-radius: 8px;
+  color: #a82d38;
+  background: #fff2f4;
+  font-size: 12px;
+}
+
+.story-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 210px;
+  gap: 10px;
+  min-height: 0;
+  flex: 1;
+  padding: 10px 12px 12px;
+}
+
+.story-window-fullscreen .story-layout {
+  grid-template-columns: minmax(260px, 0.68fr) minmax(560px, 2.3fr) minmax(230px, 0.72fr);
+  gap: 14px;
+  padding: 14px 18px 18px;
+}
+
+.story-panel {
+  min-height: 0;
+  border: 1px solid #dfe7f0;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(27, 43, 73, 0.08);
+}
+
+.story-create-panel,
+.story-saves-panel {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.story-create-panel header,
+.story-saves-panel header,
+.story-current-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.story-panel h2 {
+  color: #18243a;
+  font-size: 15px;
+}
+
+.story-panel h3 {
+  color: #253654;
+  font-size: 13px;
+}
+
+.story-panel p {
+  color: #657188;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.story-create-panel label,
+.story-temporary-character label {
+  display: grid;
+  gap: 5px;
+  color: #44506a;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.story-create-panel input,
+.story-create-panel textarea,
+.story-input textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #d6e0eb;
+  border-radius: 8px;
+  outline: none;
+  color: #162033;
+  background: #ffffff;
+  font-size: 13px;
+}
+
+.story-create-panel input {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.story-create-panel textarea,
+.story-input textarea {
+  resize: vertical;
+  padding: 9px 10px;
+  line-height: 1.45;
+}
+
+.story-mode-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.story-mode-row button.active,
+.story-primary-button,
+.story-input button {
+  color: #ffffff;
+  background: #1f6f70;
+}
+
+.story-role-card-section,
+.story-temporary-character {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #dfe7f0;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.story-role-card-section > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.story-role-card-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.story-role-card-list {
+  display: grid;
+  gap: 6px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.story-role-card-item {
+  display: grid !important;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px !important;
+  padding: 8px;
+  border: 1px solid #dfe7f0;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.story-role-card-item input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+}
+
+.story-role-card-item span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.story-role-card-item strong {
+  overflow: hidden;
+  color: #253654;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-role-card-item small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #657188;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.story-check-row {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.story-check-row input {
+  width: 18px;
+  height: 18px;
+}
+
+.story-play-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  gap: 10px;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.story-window-fullscreen .story-play-panel {
+  gap: 14px;
+  padding: 18px;
+}
+
+.story-current-header {
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e6edf5;
+}
+
+.story-character-chips {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+  max-width: 220px;
+}
+
+.story-character-chips span {
+  max-width: 96px;
+  overflow: hidden;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: #155a5c;
+  background: #e2f5f1;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.story-log {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.story-empty {
+  padding: 14px;
+  border: 1px dashed #cbd8e8;
+  border-radius: 10px;
+  color: #657188;
+  background: #f8fbff;
+  font-size: 12px;
+  text-align: center;
+}
+
+.story-message {
+  display: grid;
+  gap: 5px;
+  max-width: 92%;
+  padding: 10px 11px;
+  border-radius: 12px;
+  background: #f3f7fb;
+}
+
+.story-window-fullscreen .story-message {
+  max-width: min(860px, 84%);
+  padding: 14px 16px;
+}
+
+.story-message.user {
+  justify-self: end;
+  color: #ffffff;
+  background: #2168e8;
+}
+
+.story-message.assistant {
+  justify-self: start;
+  border: 1px solid #dce6ef;
+  color: #1f2f49;
+  background: #ffffff;
+}
+
+.story-message span {
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0.76;
+}
+
+.story-message p {
+  margin: 0;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.story-window-fullscreen .story-message p {
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.story-message time {
+  color: inherit;
+  font-size: 10px;
+  opacity: 0.62;
+}
+
+.story-options {
+  display: grid;
+  gap: 6px;
+}
+
+.story-window-fullscreen .story-options {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.story-options button {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  text-align: left;
+  white-space: normal;
+}
+
+.story-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: end;
+  gap: 8px;
+}
+
+.story-window-fullscreen .story-input {
+  grid-template-columns: minmax(0, 1fr) 96px;
+  gap: 12px;
+}
+
+.story-input textarea {
+  min-height: 66px;
+  max-height: 110px;
+}
+
+.story-window-fullscreen .story-input textarea {
+  min-height: 92px;
+  max-height: 150px;
+}
+
+.story-save-row {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid #dfe7f0;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.story-save-row div {
+  display: grid;
+  gap: 3px;
+}
+
+.story-save-row strong {
+  color: #243049;
+  font-size: 13px;
+}
+
+.story-save-row small {
+  color: #657188;
+  font-size: 11px;
+}
+
+.story-save-row footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.story-save-row .danger-button {
+  color: #ffffff;
+  background: #df3c46;
 }
 
 .pet-chat-delete-dialog h2,
@@ -2033,6 +2546,31 @@ button:disabled {
   line-height: 1.5;
 }
 
+.settings-field textarea.settings-field-tall {
+  min-height: 140px;
+}
+
+.settings-range-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 92px auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-range-row input[type="range"] {
+  height: 40px;
+  padding: 0;
+  accent-color: #2168e8;
+}
+
+.settings-range-row span {
+  min-width: 52px;
+  color: #243049;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: right;
+}
+
 .settings-field input:focus,
 .settings-field select:focus,
 .settings-field textarea:focus {
@@ -2370,6 +2908,23 @@ button:disabled {
   align-items: center;
   gap: 7px;
   flex-shrink: 0;
+}
+
+.settings-companion-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.settings-companion-card-actions button {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: #27344c;
+  background: #edf2f8;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .settings-companion-current-actions button {
@@ -2742,9 +3297,11 @@ button:disabled {
   font-size: 13px;
 }
 
-.skin-thumb img {
+.skin-thumb img,
+.skin-thumb video {
   width: 100%;
   height: 100%;
+  background: transparent;
   object-fit: contain;
 }
 
@@ -2789,9 +3346,11 @@ button:disabled {
   background: #edf2f8;
 }
 
-.skin-detail-preview img {
+.skin-detail-preview img,
+.skin-detail-preview video {
   width: 100%;
   height: 100%;
+  background: transparent;
   object-fit: contain;
 }
 
@@ -2832,9 +3391,11 @@ button:disabled {
   font-size: 11px;
 }
 
-.animation-status-thumb img {
+.animation-status-thumb img,
+.animation-status-thumb video {
   width: 100%;
   height: 100%;
+  background: transparent;
   object-fit: contain;
 }
 
@@ -2961,6 +3522,10 @@ button:disabled {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
+}
+
+.storage-path-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
 .icon-picker {
@@ -3101,7 +3666,8 @@ button:disabled {
 /* Warm, playful built-in theme inspired by island-style game UI. */
 .drawer-window.theme-animal-island,
 .pet-chat-window.theme-animal-island,
-.pet-menu-window.theme-animal-island {
+.pet-menu-window.theme-animal-island,
+.story-window.theme-animal-island {
   --island-ink: #5b402f;
   --island-muted: #89684f;
   --island-paper: #fffaf0;
@@ -3133,6 +3699,9 @@ button:disabled {
 
 .theme-animal-island .drawer-header h1,
 .theme-animal-island .pet-chat-header h1,
+.theme-animal-island .story-header h1,
+.theme-animal-island .story-panel h2,
+.theme-animal-island .story-panel h3,
 .theme-animal-island .empty-state h2,
 .theme-animal-island .pet-preview-copy h2,
 .theme-animal-island .settings-section h3 {
@@ -3141,6 +3710,8 @@ button:disabled {
 
 .theme-animal-island .drawer-header p,
 .theme-animal-island .pet-chat-header p,
+.theme-animal-island .story-header p,
+.theme-animal-island .story-panel p,
 .theme-animal-island .app-meta,
 .theme-animal-island .app-last,
 .theme-animal-island .app-path,
@@ -3400,7 +3971,8 @@ button:disabled {
 /* Full Animal Island control layer: pill controls, warm panels and raised interactions. */
 .drawer-window.theme-animal-island,
 .pet-chat-window.theme-animal-island,
-.pet-menu-window.theme-animal-island {
+.pet-menu-window.theme-animal-island,
+.story-window.theme-animal-island {
   font-family: "Microsoft YaHei", "PingFang SC", "Trebuchet MS", system-ui, sans-serif;
   border: 3px solid var(--island-border);
   background:
@@ -3436,7 +4008,8 @@ button:disabled {
   pointer-events: none;
 }
 
-.pet-chat-window.theme-animal-island {
+.pet-chat-window.theme-animal-island,
+.story-window.theme-animal-island {
   border-radius: 26px;
 }
 
@@ -3518,7 +4091,10 @@ button:disabled {
 .theme-animal-island .settings-field textarea,
 .theme-animal-island .settings-field select,
 .theme-animal-island .skin-import-panel input,
-.theme-animal-island .pet-chat-input textarea {
+.theme-animal-island .pet-chat-input textarea,
+.theme-animal-island .story-create-panel input,
+.theme-animal-island .story-create-panel textarea,
+.theme-animal-island .story-input textarea {
   border: 2px solid var(--island-border-soft);
   border-radius: 999px;
   color: var(--island-ink);
@@ -3528,7 +4104,9 @@ button:disabled {
 
 .theme-animal-island .settings-field textarea,
 .theme-animal-island .app-modal textarea,
-.theme-animal-island .pet-chat-input textarea {
+.theme-animal-island .pet-chat-input textarea,
+.theme-animal-island .story-create-panel textarea,
+.theme-animal-island .story-input textarea {
   border-radius: 18px;
 }
 
@@ -3548,7 +4126,10 @@ button:disabled {
 .theme-animal-island .settings-field textarea:focus,
 .theme-animal-island .settings-field select:focus,
 .theme-animal-island .skin-import-panel input:focus,
-.theme-animal-island .pet-chat-input textarea:focus {
+.theme-animal-island .pet-chat-input textarea:focus,
+.theme-animal-island .story-create-panel input:focus,
+.theme-animal-island .story-create-panel textarea:focus,
+.theme-animal-island .story-input textarea:focus {
   border-color: var(--island-gold);
   box-shadow:
     0 0 0 4px rgba(240, 167, 66, 0.22),
@@ -3565,6 +4146,8 @@ button:disabled {
 .theme-animal-island .empty-actions .primary-button,
 .theme-animal-island .pet-chat-input button,
 .theme-animal-island .pet-chat-notice button,
+.theme-animal-island .story-primary-button,
+.theme-animal-island .story-input button,
 .theme-animal-island .settings-memory-editor-actions .primary-button,
 .theme-animal-island .skin-import-panel footer .primary-button,
 .theme-animal-island .settings-modal footer .primary-button,
@@ -3584,6 +4167,8 @@ button:disabled {
 .theme-animal-island .empty-actions .primary-button:hover:not(:disabled),
 .theme-animal-island .pet-chat-input button:hover:not(:disabled),
 .theme-animal-island .pet-chat-notice button:hover:not(:disabled),
+.theme-animal-island .story-primary-button:hover:not(:disabled),
+.theme-animal-island .story-input button:hover:not(:disabled),
 .theme-animal-island .settings-memory-editor-actions .primary-button:hover:not(:disabled),
 .theme-animal-island .skin-import-panel footer .primary-button:hover:not(:disabled),
 .theme-animal-island .settings-modal footer .primary-button:hover:not(:disabled),
@@ -3595,6 +4180,8 @@ button:disabled {
 
 .theme-animal-island .primary-button:active:not(:disabled),
 .theme-animal-island .pet-chat-input button:active:not(:disabled),
+.theme-animal-island .story-primary-button:active:not(:disabled),
+.theme-animal-island .story-input button:active:not(:disabled),
 .theme-animal-island .settings-memory-editor-actions .primary-button:active:not(:disabled),
 .theme-animal-island .skin-import-panel footer .primary-button:active:not(:disabled),
 .theme-animal-island .pet-chat-settings-dialog .primary-button:active:not(:disabled) {
@@ -3605,6 +4192,9 @@ button:disabled {
 .theme-animal-island .secondary-button,
 .theme-animal-island .window-close,
 .theme-animal-island .pet-chat-header button,
+.theme-animal-island .story-header-actions button,
+.theme-animal-island .story-panel button:not(.story-primary-button):not(.danger-button),
+.theme-animal-island .story-options button,
 .theme-animal-island .app-actions button:not(.danger-button),
 .theme-animal-island .path-row button,
 .theme-animal-island .icon-picker button,
@@ -3636,6 +4226,9 @@ button:disabled {
 .theme-animal-island .secondary-button:hover:not(:disabled),
 .theme-animal-island .window-close:hover:not(:disabled),
 .theme-animal-island .pet-chat-header button:hover:not(:disabled),
+.theme-animal-island .story-header-actions button:hover:not(:disabled),
+.theme-animal-island .story-panel button:not(.story-primary-button):not(.danger-button):hover:not(:disabled),
+.theme-animal-island .story-options button:hover:not(:disabled),
 .theme-animal-island .app-actions button:not(.danger-button):hover:not(:disabled),
 .theme-animal-island .path-row button:hover:not(:disabled),
 .theme-animal-island .icon-picker button:hover:not(:disabled),
@@ -3663,6 +4256,9 @@ button:disabled {
 .theme-animal-island .secondary-button:active:not(:disabled),
 .theme-animal-island .window-close:active:not(:disabled),
 .theme-animal-island .pet-chat-header button:active:not(:disabled),
+.theme-animal-island .story-header-actions button:active:not(:disabled),
+.theme-animal-island .story-panel button:not(.story-primary-button):not(.danger-button):active:not(:disabled),
+.theme-animal-island .story-options button:active:not(:disabled),
 .theme-animal-island .app-actions button:not(.danger-button):active:not(:disabled),
 .theme-animal-island .path-row button:active:not(:disabled),
 .theme-animal-island .icon-picker button:active:not(:disabled),
@@ -3696,7 +4292,8 @@ button:disabled {
 .theme-animal-island .skin-delete-button,
 .theme-animal-island .confirmation-modal footer .danger-button,
 .theme-animal-island .pet-chat-selection-toolbar .danger-button,
-.theme-animal-island .pet-chat-delete-dialog .danger-button {
+.theme-animal-island .pet-chat-delete-dialog .danger-button,
+.theme-animal-island .story-save-row .danger-button {
   border: 1px solid #dc7569;
   border-radius: 999px;
   color: #ffffff;
@@ -3712,13 +4309,15 @@ button:disabled {
 .theme-animal-island .settings-memory-row-actions .danger-button:hover:not(:disabled),
 .theme-animal-island .skin-delete-button:hover:not(:disabled),
 .theme-animal-island .pet-chat-selection-toolbar .danger-button:hover:not(:disabled),
-.theme-animal-island .pet-chat-delete-dialog .danger-button:hover:not(:disabled) {
+.theme-animal-island .pet-chat-delete-dialog .danger-button:hover:not(:disabled),
+.theme-animal-island .story-save-row .danger-button:hover:not(:disabled) {
   background: #dc675d;
   transform: translateY(-2px);
 }
 
 .theme-animal-island .pet-chat-selection-toolbar .danger-button:active:not(:disabled),
-.theme-animal-island .pet-chat-delete-dialog .danger-button:active:not(:disabled) {
+.theme-animal-island .pet-chat-delete-dialog .danger-button:active:not(:disabled),
+.theme-animal-island .story-save-row .danger-button:active:not(:disabled) {
   background: var(--island-coral-dark);
   box-shadow: 0 1px 0 var(--island-coral-dark);
   transform: translateY(1px);
@@ -4145,6 +4744,85 @@ button:disabled {
   border-radius: 14px;
   color: #ad5048;
   background: #ffebe5;
+}
+
+.theme-animal-island .story-header,
+.theme-animal-island .story-input {
+  border-color: var(--island-border-soft);
+  color: var(--island-ink);
+  background: rgba(255, 250, 239, 0.68);
+}
+
+.theme-animal-island .story-header {
+  border-bottom: 2px dashed rgba(213, 164, 92, 0.42);
+}
+
+.theme-animal-island .story-header p {
+  color: var(--island-muted);
+}
+
+.theme-animal-island .story-panel,
+.theme-animal-island .story-notice,
+.theme-animal-island .story-role-card-section,
+.theme-animal-island .story-temporary-character,
+.theme-animal-island .story-role-card-item,
+.theme-animal-island .story-save-row,
+.theme-animal-island .story-empty {
+  border: 2px solid var(--island-border-soft);
+  border-radius: 18px;
+  background: var(--island-panel);
+  box-shadow: 0 4px 0 rgba(207, 156, 84, 0.18);
+}
+
+.theme-animal-island .story-role-card-section,
+.theme-animal-island .story-temporary-character,
+.theme-animal-island .story-save-row,
+.theme-animal-island .story-empty {
+  background: #fff8e9;
+}
+
+.theme-animal-island .story-current-header {
+  border-bottom-color: var(--island-border-soft);
+}
+
+.theme-animal-island .story-character-chips span {
+  color: #ffffff;
+  background: var(--island-mint);
+  box-shadow: 0 2px 0 var(--island-mint-dark);
+}
+
+.theme-animal-island .story-message {
+  border: 1px solid var(--island-border-soft);
+  box-shadow: 0 3px 0 rgba(206, 156, 85, 0.2);
+}
+
+.theme-animal-island .story-message.assistant {
+  color: var(--island-ink);
+  background: #fffdf6;
+}
+
+.theme-animal-island .story-message.user {
+  border-color: #35ae93;
+  color: #ffffff;
+  background: var(--island-mint);
+  box-shadow: 0 3px 0 var(--island-mint-dark);
+}
+
+.theme-animal-island .story-options button {
+  white-space: normal;
+}
+
+.theme-animal-island .story-error {
+  border: 1px solid #f0b2a6;
+  border-radius: 14px;
+  color: #ad5048;
+  background: #ffebe5;
+}
+
+.story-window.theme-animal-island.story-window-fullscreen {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .pet-menu-window.theme-animal-island {

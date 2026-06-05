@@ -1,15 +1,17 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 use crate::{
     ai_chat::{self, AiConnectionTestResult, PetChatMessageDraft, PetChatReply},
     ai_memory::{self, PetMemory, PetMemoryDraft, PetMemoryMessage},
     app_data::{
         self, AiConnectionProfile, AiSettings, AppDraft, Companion, CompanionDraft,
-        PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinSummary,
+        PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinSummary, StorageSettings,
     },
     favorability::{self, CompanionStatus, FavorabilityLog},
-    launcher, startup, updater, windowing,
+    launcher, startup,
+    story_mode::{self, StoryCreateDraft, StorySave, StoryTurnReply},
+    updater, windowing,
 };
 
 #[derive(Debug, Deserialize)]
@@ -24,6 +26,8 @@ pub struct DrawerPreferencesDraft {
     pub chat_typewriter_enabled: bool,
     #[serde(default)]
     pub chat_narration_enabled: bool,
+    #[serde(default = "default_pet_size")]
+    pub pet_size: u32,
     pub pet_always_on_top: bool,
     pub drawer_always_on_top: bool,
     #[serde(default)]
@@ -100,7 +104,12 @@ impl Default for AiSettingsDraft {
 pub struct RuntimeInfo {
     version: String,
     executable_path: String,
+    default_data_dir: String,
     data_dir: String,
+    memory_dir: String,
+    pet_assets_dir: String,
+    icons_dir: String,
+    storage_config_file: String,
 }
 
 #[tauri::command]
@@ -238,6 +247,20 @@ pub fn upsert_companion(app: AppHandle, draft: CompanionDraft) -> Result<Compani
 }
 
 #[tauri::command]
+pub fn import_companion_card(app: AppHandle, path: String) -> Result<Companion, String> {
+    ai_memory::import_companion_card(&app, &path)
+}
+
+#[tauri::command]
+pub fn export_companion_card(
+    app: AppHandle,
+    companion_id: String,
+    path: String,
+) -> Result<(), String> {
+    ai_memory::export_companion_card(&app, &companion_id, &path)
+}
+
+#[tauri::command]
 pub fn switch_companion(app: AppHandle, companion_id: String) -> Result<Companion, String> {
     let mut companion = ai_memory::switch_companion(&app, &companion_id)?;
     if app_data::set_current_pet_skin(&app, &companion.skin_id).is_err() {
@@ -310,18 +333,31 @@ pub fn get_runtime_info(app: AppHandle) -> Result<RuntimeInfo, String> {
         .map_err(|err| format!("无法获取当前程序路径：{err}"))?
         .to_string_lossy()
         .to_string();
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("无法获取应用数据目录：{err}"))?
-        .to_string_lossy()
-        .to_string();
+    let storage = app_data::effective_storage_dirs(&app)?;
 
     Ok(RuntimeInfo {
         version: app.package_info().version.to_string(),
         executable_path,
-        data_dir,
+        default_data_dir: storage.default_data_dir,
+        data_dir: storage.data_dir,
+        memory_dir: storage.memory_dir,
+        pet_assets_dir: storage.pet_assets_dir,
+        icons_dir: storage.icons_dir,
+        storage_config_file: storage.storage_config_file,
     })
+}
+
+#[tauri::command]
+pub fn get_storage_settings(app: AppHandle) -> Result<StorageSettings, String> {
+    app_data::read_storage_settings(&app)
+}
+
+#[tauri::command]
+pub fn save_storage_settings(
+    app: AppHandle,
+    settings: StorageSettings,
+) -> Result<StorageSettings, String> {
+    app_data::save_storage_settings(&app, &settings)
 }
 
 #[tauri::command]
@@ -355,6 +391,7 @@ pub fn save_drawer_preferences(
         "compact".to_string()
     };
     let theme = normalize_drawer_theme(preferences.theme);
+    let pet_size = app_data::normalize_pet_size(preferences.pet_size);
 
     let mut config = app_data::read_config(&app)?;
     startup::set_start_on_boot(preferences.start_on_boot)?;
@@ -366,12 +403,14 @@ pub fn save_drawer_preferences(
     config.drawer.chat_typewriter_enabled = preferences.chat_typewriter_enabled;
     config.drawer.chat_narration_enabled = preferences.chat_narration_enabled;
     config.drawer.always_on_top = preferences.drawer_always_on_top;
+    config.pet.size = pet_size;
     config.pet.always_on_top = preferences.pet_always_on_top;
     config.system.start_on_boot = preferences.start_on_boot;
     config.system.auto_favorite_enabled = preferences.auto_favorite_enabled;
     config.ai = normalize_ai_settings(preferences.ai);
     app_data::write_config(&app, &config)?;
 
+    windowing::set_pet_size(&app, pet_size)?;
     windowing::set_pet_always_on_top(&app, preferences.pet_always_on_top)?;
     windowing::set_drawer_always_on_top(&app, preferences.drawer_always_on_top)?;
 
@@ -404,6 +443,10 @@ fn normalize_unique_list(items: Vec<String>, max_items: usize) -> Vec<String> {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_pet_size() -> u32 {
+    app_data::DEFAULT_PET_SIZE
 }
 
 fn default_short_memory_recent_turns() -> usize {
@@ -618,6 +661,34 @@ pub fn save_pet_position(app: AppHandle, position: PetPosition) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn is_primary_mouse_button_pressed() -> bool {
+    primary_mouse_button_pressed()
+}
+
+#[cfg(windows)]
+fn primary_mouse_button_pressed() -> bool {
+    use windows_sys::Win32::UI::{
+        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON},
+        WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON},
+    };
+
+    let button = unsafe {
+        if GetSystemMetrics(SM_SWAPBUTTON) != 0 {
+            VK_RBUTTON
+        } else {
+            VK_LBUTTON
+        }
+    };
+
+    unsafe { GetAsyncKeyState(i32::from(button)) < 0 }
+}
+
+#[cfg(not(windows))]
+fn primary_mouse_button_pressed() -> bool {
+    false
+}
+
+#[tauri::command]
 pub fn toggle_drawer(app: AppHandle) -> Result<(), String> {
     windowing::toggle_drawer(&app)
 }
@@ -653,6 +724,16 @@ pub fn hide_pet_chat(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn show_story(app: AppHandle) -> Result<(), String> {
+    windowing::show_story(&app)
+}
+
+#[tauri::command]
+pub fn hide_story(app: AppHandle) -> Result<(), String> {
+    windowing::hide_story(&app)
+}
+
+#[tauri::command]
 pub async fn send_pet_chat_message(
     app: AppHandle,
     messages: Vec<PetChatMessageDraft>,
@@ -660,6 +741,53 @@ pub async fn send_pet_chat_message(
     tauri::async_runtime::spawn_blocking(move || ai_chat::send_pet_chat_message(&app, messages))
         .await
         .map_err(|err| format!("宠物对话任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub fn list_story_saves(app: AppHandle) -> Result<Vec<StorySave>, String> {
+    story_mode::list_story_saves(&app)
+}
+
+#[tauri::command]
+pub fn get_story_save(app: AppHandle, story_id: String) -> Result<StorySave, String> {
+    story_mode::get_story_save(&app, &story_id)
+}
+
+#[tauri::command]
+pub async fn create_story(
+    app: AppHandle,
+    draft: StoryCreateDraft,
+) -> Result<StoryTurnReply, String> {
+    tauri::async_runtime::spawn_blocking(move || story_mode::create_story(&app, draft))
+        .await
+        .map_err(|err| format!("故事创建任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn advance_story(
+    app: AppHandle,
+    story_id: String,
+    user_input: String,
+) -> Result<StoryTurnReply, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        story_mode::advance_story(&app, &story_id, &user_input)
+    })
+    .await
+    .map_err(|err| format!("故事推进任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub fn delete_story_save(app: AppHandle, story_id: String) -> Result<(), String> {
+    story_mode::delete_story_save(&app, &story_id)
+}
+
+#[tauri::command]
+pub fn rename_story_save(
+    app: AppHandle,
+    story_id: String,
+    title: String,
+) -> Result<StorySave, String> {
+    story_mode::rename_story_save(&app, &story_id, &title)
 }
 
 #[tauri::command]

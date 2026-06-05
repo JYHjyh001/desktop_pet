@@ -64,7 +64,19 @@ export interface UpdateCheckResult {
 export interface RuntimeInfo {
   version: string
   executablePath: string
+  defaultDataDir: string
   dataDir: string
+  memoryDir: string
+  petAssetsDir: string
+  iconsDir: string
+  storageConfigFile: string
+}
+
+export interface StorageSettings {
+  dataDir: string
+  memoryDir: string
+  petAssetsDir: string
+  iconsDir: string
 }
 
 export type AiProvider = 'openai' | 'deepseek' | 'anthropic' | 'gemini' | 'ollama' | 'custom'
@@ -160,6 +172,12 @@ export interface Companion {
   name: string
   avatar?: string | null
   personaPrompt: string
+  personality: string
+  scenario: string
+  firstMessage: string
+  messageExample: string
+  creatorNotes: string
+  postHistoryInstructions: string
   systemPrompt: string
   model: string
   voiceId: string
@@ -175,11 +193,104 @@ export interface CompanionDraft {
   name: string
   avatar?: string | null
   personaPrompt: string
+  personality: string
+  scenario: string
+  firstMessage: string
+  messageExample: string
+  creatorNotes: string
+  postHistoryInstructions: string
   systemPrompt: string
   model: string
   voiceId: string
   skinId: string
   relationshipState: CompanionRelationshipState
+}
+
+export type StoryMode = 'random' | 'custom'
+
+export interface StoryCharacterDraft {
+  name: string
+  gender: string
+  ageStage: string
+  identity: string
+  appearance: string
+  personality: string
+  relationshipToUser: string
+  relationshipToOthers: string
+  roleInStory: string
+  speakingStyle: string
+  hiddenSetting: string
+  isInteractable: boolean
+}
+
+export interface StoryCreateDraft {
+  mode: StoryMode
+  storyType: string
+  tone: string
+  premise: string
+  companionIds: string[]
+  companionRole: string
+  temporaryCharacters: StoryCharacterDraft[]
+}
+
+export interface StoryCharacter {
+  id: string
+  name: string
+  source: 'existing_avatar' | 'temporary' | 'generated' | string
+  avatarId?: string | null
+  roleInStory: string
+  personality: string
+  appearance: string
+  speakingStyle: string
+  relationshipToUser: string
+  relationshipToOthers: string
+  hiddenSetting: string
+  isInteractable: boolean
+}
+
+export interface StoryChoice {
+  id: string
+  chapter: number
+  scene: string
+  userAction: string
+  resultSummary: string
+  timestamp: number
+}
+
+export interface StoryMessage {
+  role: 'user' | 'assistant' | string
+  content: string
+  timestamp: number
+}
+
+export interface StorySave {
+  id: string
+  title: string
+  storyType: string
+  mode: StoryMode | string
+  createdAt: number
+  updatedAt: number
+  userRole: string
+  currentChapter: number
+  currentScene: string
+  currentLocation: string
+  currentTime: string
+  characters: StoryCharacter[]
+  activeCharacterIds: string[]
+  relationshipValues: Record<string, Record<string, string | number>>
+  emotionStates: Record<string, string>
+  importantChoices: StoryChoice[]
+  unlockedEvents: string[]
+  hiddenFlags: Record<string, boolean>
+  inventory: string[]
+  clues: string[]
+  storySummary: string
+  recentMessages: StoryMessage[]
+}
+
+export interface StoryTurnReply {
+  story: StorySave
+  reply: string
 }
 
 export type MemoryType =
@@ -263,6 +374,7 @@ export interface PetDrawerConfig {
   pet: {
     x: number | null
     y: number | null
+    size: number
     currentSkin: string
     customImage?: string | null
     alwaysOnTop: boolean
