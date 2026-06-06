@@ -38,7 +38,7 @@ PetDrawer 是一个基于 Tauri v2 + Vue 3 + TypeScript + Rust 的桌面宠物�
 2. 优先下载安装包文件，文件名通常类似：
 
 ```txt
-PetDrawer_0.2.9_x64-setup.exe
+PetDrawer_0.2.10_x64-setup.exe
 ```
 
 3. 如果发布者提供的是免安装版本，文件名通常类似：
@@ -51,7 +51,7 @@ pet_drawer.exe
 
 ### 安装版本使用步骤
 
-1. 双击 `PetDrawer_0.2.9_x64-setup.exe`。
+1. 双击 `PetDrawer_0.2.10_x64-setup.exe`。
 2. 如果 Windows 弹出安全提示，确认文件来自可信发布者后，选择“更多信息”，再选择“仍要运行”。
 3. 按安装向导完成安装。
 4. 安装完成后，从桌面快捷方式、开始菜单或安装目录启动 PetDrawer。
@@ -80,6 +80,8 @@ D:\Apps\PetDrawer\
 4. 填写名称、分类和标签；名称为空时会根据路径或网址自动生成。
 5. 保存后，快捷入口会显示在抽屉中。
 6. 点击文件入口会用系统默认程序打开文件；点击详细卡片里的“目录”会打开文件所在目录。
+7. 如果软件需要提权，在软件卡片中勾选“管理员启动”；后续启动时 Windows 会弹出 UAC 确认窗口。
+8. 后续点击卡片即可快速打开该软件、文件夹、文件或网站。
 
 ### 接入微信 ClawBot
 
@@ -95,8 +97,54 @@ npx -y @tencent-weixin/openclaw-weixin-cli install
 5. 点击“发送测试”确认 `openclaw message send` 可以把消息发到微信。
 6. 开启“同步用户消息”或“同步宠物回复”后，宠物聊天窗口会按设置把对应消息同步到微信。
 7. OpenClaw 命令、账号、目标会话和同步开关只保存在本机 `config.json`，不会提交到 GitHub 或 Release 附件。
-6. 如果软件需要提权，在软件卡片中勾选“管理员启动”；后续启动时 Windows 会弹出 UAC 确认窗口。
-7. 后续点击卡片即可快速打开该软件、文件夹或网站。
+
+### 让微信 ClawBot 调用 PetDrawer AI
+
+如果 OpenClaw / 微信 ClawBot 装在虚拟机或服务器上，而 PetDrawer 装在本机，可以启用 PetDrawer 的通用 HTTP Bridge，让 ClawBot 收到微信消息后调用本机 AI 接口。
+
+1. 打开 PetDrawer 设置 -> 微信。
+2. 在“通用 HTTP 接入”中开启“ClawBot HTTP Bridge”。
+3. 推荐保持默认监听：
+
+```txt
+监听地址：127.0.0.1
+端口：18080
+路径：/clawbot/chat
+```
+
+4. 如果 OpenClaw 在远程服务器上，推荐从本机建立 SSH 反向隧道：
+
+```powershell
+ssh -N -R 18080:127.0.0.1:18080 user@你的服务器IP
+```
+
+5. 此时服务器上的 ClawBot 可以调用：
+
+```bash
+curl -X POST http://127.0.0.1:18080/clawbot/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"用户的微信消息","sender":"微信昵称","sessionId":"wechat-session"}'
+```
+
+6. PetDrawer 会返回：
+
+```json
+{
+  "ok": true,
+  "reply": "当前伴侣的 AI 回复",
+  "message": "当前伴侣的 AI 回复",
+  "provider": "openai",
+  "model": "gpt-4o-mini"
+}
+```
+
+7. 如果设置了 Bridge Token，请在请求中加入：
+
+```bash
+-H "Authorization: Bearer 你的token"
+```
+
+8. 不建议把 Bridge 直接暴露到公网；跨机器调用优先使用 SSH 反向隧道、Tailscale、ZeroTier 或其他私有网络。
 
 ### 更换宠物形象
 

@@ -125,6 +125,11 @@ export interface WechatClawbotSettings {
   target: string
   forwardUserMessages: boolean
   forwardAssistantMessages: boolean
+  bridgeEnabled: boolean
+  bridgeHost: string
+  bridgePort: number
+  bridgePath: string
+  bridgeToken: string
 }
 
 export interface WechatClawbotSendResult {

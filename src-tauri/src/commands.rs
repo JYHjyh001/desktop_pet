@@ -9,6 +9,7 @@ use crate::{
         PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinSummary, StorageSettings,
         WechatClawbotSettings,
     },
+    clawbot_bridge,
     favorability::{self, CompanionStatus, FavorabilityLog},
     launcher, startup,
     story_mode::{self, StoryCreateDraft, StorySave, StoryTurnReply},
@@ -96,6 +97,16 @@ pub struct WechatClawbotSettingsDraft {
     pub forward_user_messages: bool,
     #[serde(default)]
     pub forward_assistant_messages: bool,
+    #[serde(default)]
+    pub bridge_enabled: bool,
+    #[serde(default)]
+    pub bridge_host: String,
+    #[serde(default)]
+    pub bridge_port: u16,
+    #[serde(default)]
+    pub bridge_path: String,
+    #[serde(default)]
+    pub bridge_token: String,
 }
 
 impl Default for AiSettingsDraft {
@@ -432,6 +443,7 @@ pub fn save_drawer_preferences(
     config.ai = normalize_ai_settings(preferences.ai);
     config.wechat_clawbot = normalize_wechat_clawbot_settings(preferences.wechat_clawbot);
     app_data::write_config(&app, &config)?;
+    clawbot_bridge::restart_bridge_server(&app)?;
 
     windowing::set_pet_size(&app, pet_size)?;
     windowing::set_pet_always_on_top(&app, preferences.pet_always_on_top)?;
@@ -490,6 +502,8 @@ fn normalize_wechat_clawbot_settings(
     let defaults = WechatClawbotSettings::default();
     let openclaw_command = settings.openclaw_command.trim().to_string();
     let channel = settings.channel.trim().to_string();
+    let bridge_host = settings.bridge_host.trim().to_string();
+    let bridge_path = settings.bridge_path.trim().to_string();
 
     WechatClawbotSettings {
         enabled: settings.enabled,
@@ -507,6 +521,25 @@ fn normalize_wechat_clawbot_settings(
         target: settings.target.trim().to_string(),
         forward_user_messages: settings.forward_user_messages,
         forward_assistant_messages: settings.forward_assistant_messages,
+        bridge_enabled: settings.bridge_enabled,
+        bridge_host: if bridge_host.is_empty() {
+            defaults.bridge_host
+        } else {
+            bridge_host
+        },
+        bridge_port: if settings.bridge_port == 0 {
+            defaults.bridge_port
+        } else {
+            settings.bridge_port
+        },
+        bridge_path: if bridge_path.is_empty() {
+            defaults.bridge_path
+        } else if bridge_path.starts_with('/') {
+            bridge_path
+        } else {
+            format!("/{bridge_path}")
+        },
+        bridge_token: settings.bridge_token.trim().to_string(),
     }
 }
 

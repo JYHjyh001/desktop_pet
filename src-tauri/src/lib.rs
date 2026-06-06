@@ -1,6 +1,7 @@
 mod ai_chat;
 mod ai_memory;
 mod app_data;
+mod clawbot_bridge;
 mod commands;
 mod favorability;
 mod launcher;
@@ -98,6 +99,9 @@ pub fn run() {
             })?;
             windowing::restore_pet_position(app.handle());
             windowing::apply_window_preferences(app.handle());
+            if let Err(err) = clawbot_bridge::restart_bridge_server(app.handle()) {
+                eprintln!("ClawBot HTTP Bridge 启动失败：{err}");
+            }
             tray::create_tray(app.handle())?;
             Ok(())
         })

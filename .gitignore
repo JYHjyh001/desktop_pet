@@ -38,6 +38,7 @@ local-config/
 
 # Local planning / prompt files
 prompt.md
+petdrawer-openclaw*.cmd
 
 # Local app data that may contain private software paths, usage history, or user assets
 /apps.json

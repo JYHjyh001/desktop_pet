@@ -1,7 +1,7 @@
 {
   "name": "pet-drawer",
   "private": true,
-  "version": "0.2.9",
+  "version": "0.2.10",
   "type": "module",
   "scripts": {
     "create-icon": "powershell -ExecutionPolicy Bypass -File scripts/create-icon.ps1",

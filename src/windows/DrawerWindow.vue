@@ -407,6 +407,11 @@ const settingsDraft = reactive({
   wechatClawbotTarget: '',
   wechatClawbotForwardUserMessages: false,
   wechatClawbotForwardAssistantMessages: true,
+  wechatClawbotBridgeEnabled: false,
+  wechatClawbotBridgeHost: '127.0.0.1',
+  wechatClawbotBridgePort: 18080,
+  wechatClawbotBridgePath: '/clawbot/chat',
+  wechatClawbotBridgeToken: '',
   storageDataDir: '',
   storageMemoryDir: '',
   storagePetAssetsDir: '',
@@ -581,6 +586,11 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.wechatClawbotForwardUserMessages = wechat?.forwardUserMessages ?? false
   settingsDraft.wechatClawbotForwardAssistantMessages =
     wechat?.forwardAssistantMessages ?? true
+  settingsDraft.wechatClawbotBridgeEnabled = wechat?.bridgeEnabled ?? false
+  settingsDraft.wechatClawbotBridgeHost = wechat?.bridgeHost || '127.0.0.1'
+  settingsDraft.wechatClawbotBridgePort = clampInteger(wechat?.bridgePort ?? 18080, 1, 65535)
+  settingsDraft.wechatClawbotBridgePath = wechat?.bridgePath || '/clawbot/chat'
+  settingsDraft.wechatClawbotBridgeToken = wechat?.bridgeToken ?? ''
 }
 
 function normalizeTagDisplayMode(value?: string | null): 'compact' | 'detailed' {
@@ -856,7 +866,17 @@ function buildWechatClawbotSettings() {
     target: settingsDraft.wechatClawbotTarget.trim(),
     forwardUserMessages: settingsDraft.wechatClawbotForwardUserMessages,
     forwardAssistantMessages: settingsDraft.wechatClawbotForwardAssistantMessages,
+    bridgeEnabled: settingsDraft.wechatClawbotBridgeEnabled,
+    bridgeHost: settingsDraft.wechatClawbotBridgeHost.trim() || '127.0.0.1',
+    bridgePort: clampInteger(settingsDraft.wechatClawbotBridgePort, 1, 65535),
+    bridgePath: normalizeBridgePath(settingsDraft.wechatClawbotBridgePath),
+    bridgeToken: settingsDraft.wechatClawbotBridgeToken.trim(),
   }
+}
+
+function normalizeBridgePath(path: string) {
+  const trimmed = path.trim() || '/clawbot/chat'
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
 }
 
 function buildStorageSettings(): StorageSettings {
@@ -3012,6 +3032,63 @@ async function openStoryMode() {
               <p class="settings-empty">
                 官方准备步骤：安装 OpenClaw 后运行
                 `npx -y @tencent-weixin/openclaw-weixin-cli install`，再按插件提示扫码登录微信。
+              </p>
+
+              <h3>通用 HTTP 接入</h3>
+              <div class="settings-update-panel">
+                <div>
+                  <strong>让远程 ClawBot 调用 PetDrawer AI</strong>
+                  <small>ClawBot 收到微信消息后 POST 到此接口，PetDrawer 返回当前伴侣的 AI 回复。</small>
+                </div>
+              </div>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>启用 ClawBot HTTP Bridge</strong>
+                  <small>默认只监听本机 127.0.0.1；远程服务器建议通过 SSH 反向隧道或私有网络访问。</small>
+                </span>
+                <input v-model="settingsDraft.wechatClawbotBridgeEnabled" type="checkbox" />
+              </label>
+              <div class="settings-form-grid">
+                <label class="settings-field">
+                  监听地址
+                  <input
+                    v-model="settingsDraft.wechatClawbotBridgeHost"
+                    placeholder="127.0.0.1"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="settings-field">
+                  端口
+                  <input
+                    v-model.number="settingsDraft.wechatClawbotBridgePort"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    step="1"
+                  />
+                </label>
+                <label class="settings-field">
+                  路径
+                  <input
+                    v-model="settingsDraft.wechatClawbotBridgePath"
+                    placeholder="/clawbot/chat"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="settings-field">
+                  Bridge Token（可选）
+                  <input
+                    v-model="settingsDraft.wechatClawbotBridgeToken"
+                    type="password"
+                    placeholder="留空则不校验"
+                    autocomplete="off"
+                  />
+                </label>
+              </div>
+              <p class="settings-empty">
+                请求格式：POST JSON `{"message":"用户消息","sender":"微信昵称","sessionId":"会话ID"}`；
+                返回格式：`{"ok":true,"reply":"AI 回复"}`。如果设置 Token，请带
+                `Authorization: Bearer &lt;token&gt;` 或 `X-PetDrawer-Token`。
               </p>
             </section>
 

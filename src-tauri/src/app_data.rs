@@ -258,6 +258,16 @@ pub struct WechatClawbotSettings {
     pub forward_user_messages: bool,
     #[serde(default = "default_true")]
     pub forward_assistant_messages: bool,
+    #[serde(default)]
+    pub bridge_enabled: bool,
+    #[serde(default = "default_clawbot_bridge_host")]
+    pub bridge_host: String,
+    #[serde(default = "default_clawbot_bridge_port")]
+    pub bridge_port: u16,
+    #[serde(default = "default_clawbot_bridge_path")]
+    pub bridge_path: String,
+    #[serde(default)]
+    pub bridge_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -360,6 +370,11 @@ impl Default for WechatClawbotSettings {
             target: String::new(),
             forward_user_messages: false,
             forward_assistant_messages: true,
+            bridge_enabled: false,
+            bridge_host: default_clawbot_bridge_host(),
+            bridge_port: default_clawbot_bridge_port(),
+            bridge_path: default_clawbot_bridge_path(),
+            bridge_token: String::new(),
         }
     }
 }
@@ -486,6 +501,18 @@ fn default_openclaw_command() -> String {
 
 fn default_clawbot_channel() -> String {
     "openclaw-weixin".to_string()
+}
+
+fn default_clawbot_bridge_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_clawbot_bridge_port() -> u16 {
+    18080
+}
+
+fn default_clawbot_bridge_path() -> String {
+    "/clawbot/chat".to_string()
 }
 
 fn default_ai_system_prompt() -> String {
