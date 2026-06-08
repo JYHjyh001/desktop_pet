@@ -27,6 +27,7 @@ import type {
   RuntimeInfo,
   StorageSettings,
   UpdateCheckResult,
+  WechatBridgeChatResult,
   WechatClawbotSendResult,
 } from '../types/app'
 import { getPetSkinAnimation, getPetSkinPreview } from '../utils/defaultPet'
@@ -38,6 +39,8 @@ import {
   parseTags,
   websiteNameFromUrl,
 } from '../utils/format'
+
+const WECHAT_INTEGRATION_ENABLED: boolean = false
 
 type ImportantConfirmation = {
   title: string
@@ -88,6 +91,13 @@ const wechatClawbotTesting = ref(false)
 const wechatClawbotStatus = ref('')
 const wechatClawbotError = ref('')
 const wechatClawbotTestMessage = ref('PetDrawer ClawBot 测试消息')
+const wechatBridgeSimulating = ref(false)
+const wechatBridgeSimulationStatus = ref('')
+const wechatBridgeSimulationError = ref('')
+const wechatBridgeSimulationMessage = ref('今天有点累，想和你聊一会。')
+const wechatBridgeSimulationSender = ref('微信用户')
+const wechatBridgeSimulationSessionId = ref('local-wechat-simulation')
+const wechatBridgeSimulationReply = ref('')
 const petMemories = ref<PetMemory[]>([])
 const petMemoriesLoading = ref(false)
 const petMemoryStatus = ref('')
@@ -175,7 +185,7 @@ type SettingsSectionId =
   | 'diagnostics'
   | 'about'
 
-const settingsSections: Array<{ id: SettingsSectionId; label: string; description: string }> = [
+const allSettingsSections: Array<{ id: SettingsSectionId; label: string; description: string }> = [
   { id: 'entries', label: '入口管理', description: '分类和快捷搜索' },
   { id: 'system', label: '系统', description: '自启和常用规则' },
   { id: 'appearance', label: '外观', description: '界面主题风格' },
@@ -189,6 +199,10 @@ const settingsSections: Array<{ id: SettingsSectionId; label: string; descriptio
   { id: 'diagnostics', label: '诊断', description: '运行路径和数据' },
   { id: 'about', label: '关于', description: '开源许可' },
 ]
+
+const settingsSections = allSettingsSections.filter(
+  (section) => WECHAT_INTEGRATION_ENABLED || section.id !== 'wechat',
+)
 
 const activeSettingsSection = ref<SettingsSectionId>('entries')
 
@@ -407,6 +421,7 @@ const settingsDraft = reactive({
   wechatClawbotTarget: '',
   wechatClawbotForwardUserMessages: false,
   wechatClawbotForwardAssistantMessages: true,
+  wechatClawbotFriendModeEnabled: true,
   wechatClawbotBridgeEnabled: false,
   wechatClawbotBridgeHost: '127.0.0.1',
   wechatClawbotBridgePort: 18080,
@@ -586,6 +601,7 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.wechatClawbotForwardUserMessages = wechat?.forwardUserMessages ?? false
   settingsDraft.wechatClawbotForwardAssistantMessages =
     wechat?.forwardAssistantMessages ?? true
+  settingsDraft.wechatClawbotFriendModeEnabled = wechat?.friendModeEnabled ?? true
   settingsDraft.wechatClawbotBridgeEnabled = wechat?.bridgeEnabled ?? false
   settingsDraft.wechatClawbotBridgeHost = wechat?.bridgeHost || '127.0.0.1'
   settingsDraft.wechatClawbotBridgePort = clampInteger(wechat?.bridgePort ?? 18080, 1, 65535)
@@ -866,6 +882,7 @@ function buildWechatClawbotSettings() {
     target: settingsDraft.wechatClawbotTarget.trim(),
     forwardUserMessages: settingsDraft.wechatClawbotForwardUserMessages,
     forwardAssistantMessages: settingsDraft.wechatClawbotForwardAssistantMessages,
+    friendModeEnabled: settingsDraft.wechatClawbotFriendModeEnabled,
     bridgeEnabled: settingsDraft.wechatClawbotBridgeEnabled,
     bridgeHost: settingsDraft.wechatClawbotBridgeHost.trim() || '127.0.0.1',
     bridgePort: clampInteger(settingsDraft.wechatClawbotBridgePort, 1, 65535),
@@ -975,6 +992,11 @@ async function testAiConnection() {
 }
 
 async function testWechatClawbot() {
+  if (!WECHAT_INTEGRATION_ENABLED) {
+    wechatClawbotError.value = '微信功能已暂时停用。'
+    return
+  }
+
   wechatClawbotTesting.value = true
   wechatClawbotStatus.value = ''
   wechatClawbotError.value = ''
@@ -992,6 +1014,39 @@ async function testWechatClawbot() {
     wechatClawbotError.value = String(err)
   } finally {
     wechatClawbotTesting.value = false
+  }
+}
+
+async function simulateWechatBridgeMessage() {
+  if (!WECHAT_INTEGRATION_ENABLED) {
+    wechatBridgeSimulationError.value = '微信功能已暂时停用。'
+    return
+  }
+
+  const message = wechatBridgeSimulationMessage.value.trim()
+  if (!message) {
+    wechatBridgeSimulationError.value = '请输入一条模拟微信消息。'
+    return
+  }
+
+  wechatBridgeSimulating.value = true
+  wechatBridgeSimulationStatus.value = ''
+  wechatBridgeSimulationError.value = ''
+  wechatBridgeSimulationReply.value = ''
+
+  try {
+    const result = await invoke<WechatBridgeChatResult>('simulate_wechat_clawbot_message', {
+      settings: buildWechatClawbotSettings(),
+      message,
+      sender: wechatBridgeSimulationSender.value.trim() || '微信用户',
+      sessionId: wechatBridgeSimulationSessionId.value.trim() || 'local-wechat-simulation',
+    })
+    wechatBridgeSimulationReply.value = result.reply || result.text || result.message
+    wechatBridgeSimulationStatus.value = `软件侧链路已打通：${result.provider} / ${result.model}`
+  } catch (err) {
+    wechatBridgeSimulationError.value = String(err)
+  } finally {
+    wechatBridgeSimulating.value = false
   }
 }
 
@@ -2945,7 +3000,11 @@ async function openStoryMode() {
               <p class="settings-empty">{{ selectedAiProviderPreset().help }}</p>
             </section>
 
-            <section v-show="activeSettingsSection === 'wechat'" class="settings-section">
+            <section
+              v-if="WECHAT_INTEGRATION_ENABLED"
+              v-show="activeSettingsSection === 'wechat'"
+              class="settings-section"
+            >
               <h3>微信 ClawBot</h3>
               <div class="settings-update-panel">
                 <div>
@@ -3009,6 +3068,13 @@ async function openStoryMode() {
                   <small>AI 回复完成后，把宠物回复同步到微信。</small>
                 </span>
                 <input v-model="settingsDraft.wechatClawbotForwardAssistantMessages" type="checkbox" />
+              </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>微信陪伴模式</strong>
+                  <small>Bridge 收到微信消息时，会提示 AI 使用更像微信好友单聊的短句、自然追问和当前伴侣语气。</small>
+                </span>
+                <input v-model="settingsDraft.wechatClawbotFriendModeEnabled" type="checkbox" />
               </label>
 
               <div class="settings-update-panel">
@@ -3087,8 +3153,59 @@ async function openStoryMode() {
               </div>
               <p class="settings-empty">
                 请求格式：POST JSON `{"message":"用户消息","sender":"微信昵称","sessionId":"会话ID"}`；
-                返回格式：`{"ok":true,"reply":"AI 回复"}`。如果设置 Token，请带
+                返回格式包含 `reply`、`message` 和 `text`，ClawBot 脚本任选其一发回微信即可。如果设置 Token，请带
                 `Authorization: Bearer &lt;token&gt;` 或 `X-PetDrawer-Token`。
+              </p>
+
+              <div class="settings-update-panel">
+                <div>
+                  <strong>本机模拟微信入站消息</strong>
+                  <small>没有 OpenClaw 或服务器时，用这里验证 PetDrawer 软件侧能按微信陪伴模式调用当前伴侣并返回回复。</small>
+                </div>
+              </div>
+              <div class="settings-form-grid">
+                <label class="settings-field">
+                  模拟发送者
+                  <input
+                    v-model="wechatBridgeSimulationSender"
+                    placeholder="微信昵称"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="settings-field">
+                  模拟会话 ID
+                  <input
+                    v-model="wechatBridgeSimulationSessionId"
+                    placeholder="local-wechat-simulation"
+                    autocomplete="off"
+                  />
+                </label>
+                <label class="settings-field wide">
+                  模拟微信消息
+                  <textarea
+                    v-model="wechatBridgeSimulationMessage"
+                    rows="3"
+                    placeholder="输入一条模拟微信消息"
+                  />
+                </label>
+              </div>
+              <div class="settings-update-actions">
+                <button
+                  type="button"
+                  :disabled="wechatBridgeSimulating"
+                  @click="simulateWechatBridgeMessage"
+                >
+                  {{ wechatBridgeSimulating ? '调用中...' : '模拟入站并生成回复' }}
+                </button>
+              </div>
+              <p v-if="wechatBridgeSimulationStatus" class="settings-empty">
+                {{ wechatBridgeSimulationStatus }}
+              </p>
+              <p v-if="wechatBridgeSimulationReply" class="settings-empty">
+                模拟回复：{{ wechatBridgeSimulationReply }}
+              </p>
+              <p v-if="wechatBridgeSimulationError" class="form-error">
+                {{ wechatBridgeSimulationError }}
               </p>
             </section>
 

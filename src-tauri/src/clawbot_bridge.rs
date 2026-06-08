@@ -16,6 +16,7 @@ use tauri::AppHandle;
 use crate::{
     ai_chat::{self, PetChatMessageDraft},
     app_data::{self, WechatClawbotSettings},
+    feature_flags,
 };
 
 const MAX_REQUEST_BYTES: usize = 128 * 1024;
@@ -42,16 +43,18 @@ struct ClawbotChatRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ClawbotChatResponse {
-    ok: bool,
-    reply: String,
-    message: String,
-    provider: String,
-    model: String,
+pub struct ClawbotChatResponse {
+    pub ok: bool,
+    pub reply: String,
+    pub message: String,
+    pub text: String,
+    pub provider: String,
+    pub model: String,
+    pub source: String,
+    pub should_reply: bool,
 }
 
 pub fn restart_bridge_server(app: &AppHandle) -> Result<(), String> {
-    let settings = app_data::read_config(app)?.wechat_clawbot;
     let state = BRIDGE_SERVER.get_or_init(|| Mutex::new(None));
     let mut guard = state
         .lock()
@@ -59,13 +62,18 @@ pub fn restart_bridge_server(app: &AppHandle) -> Result<(), String> {
 
     stop_bridge_server(&mut guard);
 
+    if !feature_flags::WECHAT_INTEGRATION_ENABLED {
+        return Ok(());
+    }
+
+    let settings = app_data::read_config(app)?.wechat_clawbot;
     if !settings.bridge_enabled {
         return Ok(());
     }
 
     let bind_addr = format!("{}:{}", settings.bridge_host.trim(), settings.bridge_port);
-    let listener =
-        TcpListener::bind(&bind_addr).map_err(|err| format!("启动 ClawBot HTTP Bridge 失败：{err}"))?;
+    let listener = TcpListener::bind(&bind_addr)
+        .map_err(|err| format!("启动 ClawBot HTTP Bridge 失败：{err}"))?;
     listener
         .set_nonblocking(true)
         .map_err(|err| format!("设置 ClawBot HTTP Bridge 非阻塞模式失败：{err}"))?;
@@ -73,13 +81,37 @@ pub fn restart_bridge_server(app: &AppHandle) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let app_handle = app.clone();
-    let join = thread::spawn(move || run_bridge_server(listener, app_handle, settings, thread_stop));
+    let join =
+        thread::spawn(move || run_bridge_server(listener, app_handle, settings, thread_stop));
     *guard = Some(BridgeServerHandle {
         stop,
         join: Some(join),
     });
 
     Ok(())
+}
+
+pub fn simulate_chat(
+    app: &AppHandle,
+    settings: &WechatClawbotSettings,
+    message: String,
+    sender: String,
+    session_id: String,
+) -> Result<ClawbotChatResponse, String> {
+    if !feature_flags::WECHAT_INTEGRATION_ENABLED {
+        return Err(feature_flags::WECHAT_INTEGRATION_DISABLED_MESSAGE.to_string());
+    }
+
+    handle_chat_request(
+        app,
+        settings,
+        ClawbotChatRequest {
+            message,
+            sender,
+            session_id,
+            messages: Vec::new(),
+        },
+    )
 }
 
 fn stop_bridge_server(handle: &mut Option<BridgeServerHandle>) {
@@ -181,9 +213,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     let header_end = header_end.ok_or_else(|| "HTTP 请求头不完整".to_string())?;
     let headers_text = String::from_utf8_lossy(&buffer[..header_end]);
     let mut lines = headers_text.lines();
-    let request_line = lines
-        .next()
-        .ok_or_else(|| "HTTP 请求行缺失".to_string())?;
+    let request_line = lines.next().ok_or_else(|| "HTTP 请求行缺失".to_string())?;
     let mut request_parts = request_line.split_whitespace();
     let method = request_parts.next().unwrap_or_default().to_string();
     let path = request_parts.next().unwrap_or_default().to_string();
@@ -268,7 +298,7 @@ fn route_request(
         }
     };
 
-    match handle_chat_request(app, chat_request) {
+    match handle_chat_request(app, settings, chat_request) {
         Ok(response) => json_response(
             200,
             "OK",
@@ -284,6 +314,7 @@ fn route_request(
 
 fn handle_chat_request(
     app: &AppHandle,
+    settings: &WechatClawbotSettings,
     request: ClawbotChatRequest,
 ) -> Result<ClawbotChatResponse, String> {
     let mut messages = request.messages;
@@ -294,7 +325,11 @@ fn handle_chat_request(
             role: "user".to_string(),
             content: incoming,
             created_at: app_data::now_seconds(),
-            time_context: build_time_context(&request.sender, &request.session_id),
+            time_context: build_time_context(
+                &request.sender,
+                &request.session_id,
+                settings.friend_mode_enabled,
+            ),
         });
     }
 
@@ -306,19 +341,29 @@ fn handle_chat_request(
     Ok(ClawbotChatResponse {
         ok: true,
         reply: reply.message.clone(),
-        message: reply.message,
+        message: reply.message.clone(),
+        text: reply.message,
         provider: reply.provider,
         model: reply.model,
+        source: "petdrawer-wechat-bridge".to_string(),
+        should_reply: true,
     })
 }
 
-fn build_time_context(sender: &str, session_id: &str) -> String {
+fn build_time_context(sender: &str, session_id: &str, friend_mode_enabled: bool) -> String {
     let mut parts = Vec::new();
+    parts.push("消息入口：微信 ClawBot".to_string());
     if !sender.trim().is_empty() {
         parts.push(format!("微信发送者：{}", sender.trim()));
     }
     if !session_id.trim().is_empty() {
         parts.push(format!("微信会话：{}", session_id.trim()));
+    }
+    if friend_mode_enabled {
+        parts.push(
+            "微信陪伴模式：像微信好友单聊一样回复，短句优先，少用列表和说明文口吻；保持当前伴侣人设，可自然追问一个问题；不要自称客服、公众号或机器人。"
+                .to_string(),
+        );
     }
 
     parts.join("；")

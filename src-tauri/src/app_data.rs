@@ -258,6 +258,8 @@ pub struct WechatClawbotSettings {
     pub forward_user_messages: bool,
     #[serde(default = "default_true")]
     pub forward_assistant_messages: bool,
+    #[serde(default = "default_true")]
+    pub friend_mode_enabled: bool,
     #[serde(default)]
     pub bridge_enabled: bool,
     #[serde(default = "default_clawbot_bridge_host")]
@@ -370,6 +372,7 @@ impl Default for WechatClawbotSettings {
             target: String::new(),
             forward_user_messages: false,
             forward_assistant_messages: true,
+            friend_mode_enabled: true,
             bridge_enabled: false,
             bridge_host: default_clawbot_bridge_host(),
             bridge_port: default_clawbot_bridge_port(),

@@ -1754,7 +1754,13 @@ fn emotion_emoji(emotion: &str) -> Option<&'static str> {
 }
 
 fn request_message_content(message: &PetChatMessageDraft) -> String {
-    strip_internal_time_labels(&message.content)
+    let content = strip_internal_time_labels(&message.content);
+    let context = message.time_context.trim();
+    if context.is_empty() {
+        content
+    } else {
+        format!("[对话上下文：{context}]\n{content}")
+    }
 }
 
 fn strip_internal_time_labels(value: &str) -> String {

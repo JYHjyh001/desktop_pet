@@ -125,6 +125,7 @@ export interface WechatClawbotSettings {
   target: string
   forwardUserMessages: boolean
   forwardAssistantMessages: boolean
+  friendModeEnabled: boolean
   bridgeEnabled: boolean
   bridgeHost: string
   bridgePort: number
@@ -135,6 +136,17 @@ export interface WechatClawbotSettings {
 export interface WechatClawbotSendResult {
   ok: boolean
   message: string
+}
+
+export interface WechatBridgeChatResult {
+  ok: boolean
+  reply: string
+  message: string
+  text: string
+  provider: string
+  model: string
+  source: string
+  shouldReply: boolean
 }
 
 export interface CompanionRelationshipState {

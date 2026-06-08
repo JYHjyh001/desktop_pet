@@ -2,7 +2,7 @@ use std::process::Command;
 
 use serde::Serialize;
 
-use crate::app_data::WechatClawbotSettings;
+use crate::{app_data::WechatClawbotSettings, feature_flags};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +15,10 @@ pub fn send_message(
     settings: &WechatClawbotSettings,
     message: &str,
 ) -> Result<WechatClawbotSendResult, String> {
+    if !feature_flags::WECHAT_INTEGRATION_ENABLED {
+        return Err(feature_flags::WECHAT_INTEGRATION_DISABLED_MESSAGE.to_string());
+    }
+
     let message = message.trim();
     if message.is_empty() {
         return Err("微信消息不能为空".to_string());

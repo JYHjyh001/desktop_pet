@@ -24,7 +24,7 @@ PetDrawer 是一个基于 Tauri v2 + Vue 3 + TypeScript + Rust 的桌面宠物�
 18. 宠物对话回复支持打字机式逐字展示；可在“外观”设置或对话窗口右上角“对话设置”中切换为立即完整显示，长回复在逐字模式下会自动加速完成；聊天窗口内置项目本地 Twemoji 默认表情包，用户消息和宠物回复都会用本地 SVG 渲染支持的表情，并可在“伴侣”设置中控制 AI 主动使用表情的频率；使用 DeepSeek 聊天时会通过 JSON Output 获取 `reply`、`emotion` 和 `emoji`，再由本地设置最终决定是否显示表情；如果 DeepSeek JSON Output 偶发返回空内容或无效结构，应用会自动降级为普通聊天请求重试；当前伴侣的本地记忆可在设置中查看、添加、编辑、删除、导入、导出或清理。
 19. 每位伴侣拥有独立好感度状态；好感度系统默认关闭，开启后会用“规则 + AI 评分”的混合方式根据对话更新好感度、关系阶段、心情、信任度和亲密度，并写入本机关系变化日志。
 20. 对话窗口中的 AI 回复会显示当前角色头像；右键头像可以查看当前状态、查看关系变化记录、手动设置好感度、重置好感度或开启/关闭好感度系统。
-21. 支持通过 OpenClaw 官方微信 ClawBot 通道同步宠物聊天消息到微信目标会话。
+21. 微信 ClawBot 通道代码保留，但当前版本暂时停用；默认不显示微信入口、不启动 Bridge，也不会向微信发送消息。
 22. 可以在设置中控制是否开机自启，以及是否启用自动加入“常用”。
 23. 启用自动加入“常用”后，最近 7 天内打开 2 次及以上的快捷入口会自动加入“常用”，自动加入的快捷入口超过 7 天未打开会自动移出。
 
@@ -83,7 +83,9 @@ D:\Apps\PetDrawer\
 7. 如果软件需要提权，在软件卡片中勾选“管理员启动”；后续启动时 Windows 会弹出 UAC 确认窗口。
 8. 后续点击卡片即可快速打开该软件、文件夹、文件或网站。
 
-### 接入微信 ClawBot
+### 接入微信 ClawBot（暂时停用）
+
+当前版本已暂时停用微信相关功能。程序会保留已有配置和代码，但不会显示微信设置入口、不会启动 ClawBot HTTP Bridge，也不会调用 OpenClaw 发送微信消息。下面步骤仅作为后续恢复功能时的参考。
 
 1. 先安装并配置 OpenClaw。
 2. 安装官方微信 ClawBot 插件：
@@ -98,13 +100,18 @@ npx -y @tencent-weixin/openclaw-weixin-cli install
 6. 开启“同步用户消息”或“同步宠物回复”后，宠物聊天窗口会按设置把对应消息同步到微信。
 7. OpenClaw 命令、账号、目标会话和同步开关只保存在本机 `config.json`，不会提交到 GitHub 或 Release 附件。
 
-### 让微信 ClawBot 调用 PetDrawer AI
+### 让微信 ClawBot 调用 PetDrawer AI（暂时停用）
+
+当前版本已暂时停用此功能。Bridge 代码保留，但应用启动时不会监听 HTTP 端口；前端本机模拟入口也不会显示。
 
 如果 OpenClaw / 微信 ClawBot 装在虚拟机或服务器上，而 PetDrawer 装在本机，可以启用 PetDrawer 的通用 HTTP Bridge，让 ClawBot 收到微信消息后调用本机 AI 接口。
 
+这个模式是当前项目实现类似 TheOne 微信聊天效果的推荐路线：微信负责收发消息，PetDrawer 负责当前伴侣的人设、记忆、好感度和 AI 回复。它不是把程序伪装成个人微信协议客户端，而是通过 OpenClaw / ClawBot 的消息通道把微信消息转进 PetDrawer。
+
 1. 打开 PetDrawer 设置 -> 微信。
 2. 在“通用 HTTP 接入”中开启“ClawBot HTTP Bridge”。
-3. 推荐保持默认监听：
+3. 开启“微信陪伴模式”。开启后，Bridge 会把“这是微信好友单聊场景”的上下文传给 AI，让回复更短、更自然，更像微信里和熟人聊天。
+4. 推荐保持默认监听：
 
 ```txt
 监听地址：127.0.0.1
@@ -112,13 +119,13 @@ npx -y @tencent-weixin/openclaw-weixin-cli install
 路径：/clawbot/chat
 ```
 
-4. 如果 OpenClaw 在远程服务器上，推荐从本机建立 SSH 反向隧道：
+5. 如果 OpenClaw 在远程服务器上，推荐从本机建立 SSH 反向隧道：
 
 ```powershell
 ssh -N -R 18080:127.0.0.1:18080 user@你的服务器IP
 ```
 
-5. 此时服务器上的 ClawBot 可以调用：
+6. 此时服务器上的 ClawBot 可以调用：
 
 ```bash
 curl -X POST http://127.0.0.1:18080/clawbot/chat \
@@ -126,25 +133,47 @@ curl -X POST http://127.0.0.1:18080/clawbot/chat \
   -d '{"message":"用户的微信消息","sender":"微信昵称","sessionId":"wechat-session"}'
 ```
 
-6. PetDrawer 会返回：
+7. PetDrawer 会返回：
 
 ```json
 {
   "ok": true,
   "reply": "当前伴侣的 AI 回复",
   "message": "当前伴侣的 AI 回复",
+  "text": "当前伴侣的 AI 回复",
+  "source": "petdrawer-wechat-bridge",
+  "shouldReply": true,
   "provider": "openai",
   "model": "gpt-4o-mini"
 }
 ```
 
-7. 如果设置了 Bridge Token，请在请求中加入：
+8. ClawBot 脚本收到返回值后，取 `reply`、`message` 或 `text` 任意一个字段，通过 OpenClaw 发回微信当前会话。
+9. 如果设置了 Bridge Token，请在请求中加入：
 
 ```bash
 -H "Authorization: Bearer 你的token"
 ```
 
-8. 不建议把 Bridge 直接暴露到公网；跨机器调用优先使用 SSH 反向隧道、Tailscale、ZeroTier 或其他私有网络。
+10. 不建议把 Bridge 直接暴露到公网；跨机器调用优先使用 SSH 反向隧道、Tailscale、ZeroTier 或其他私有网络。
+
+如果你暂时没有服务器运行 OpenClaw，也可以先把 PetDrawer 软件侧链路打通：
+
+1. 打开 PetDrawer 设置 -> 微信。
+2. 找到“通用 HTTP 接入”里的“本机模拟微信入站消息”。
+3. 填写模拟发送者、模拟会话 ID 和一条模拟微信消息。
+4. 点击“模拟入站并生成回复”。
+5. 如果看到“模拟回复”，说明 PetDrawer 已经能按微信陪伴模式调用当前伴侣并返回可发回微信的文本。
+6. 后续接入 OpenClaw / ClawBot 时，只需要把真实微信入站消息 POST 到同一个 Bridge 接口，再把返回的 `reply`、`message` 或 `text` 发回微信。
+
+要让体验更像“朋友”，还需要在“伴侣”里把角色卡写得像真人聊天对象，而不是客服助手：
+
+1. “人设”写清楚身份、关系和相处边界。
+2. “人格摘要”写成自然说话风格，例如短句、会接梗、少讲大道理。
+3. “对话场景”写明这是微信一对一聊天。
+4. “后置指令”加入：优先延续最近一轮，不要每次总结，不要频繁列清单。
+5. 开启“记忆”，让它记住称呼、偏好、重要事件和相处方式。
+6. 如果想让它更主动，可以在 ClawBot 或外部调度器里定时调用 Bridge，输入类似“现在是晚上十点，结合记忆生成一句自然晚安问候”，再把返回内容发到微信。
 
 ### 更换宠物形象
 

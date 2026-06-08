@@ -4,6 +4,7 @@ mod app_data;
 mod clawbot_bridge;
 mod commands;
 mod favorability;
+mod feature_flags;
 mod launcher;
 mod startup;
 mod story_mode;
@@ -74,6 +75,7 @@ pub fn run() {
             commands::rename_story_save,
             commands::test_ai_connection,
             commands::test_wechat_clawbot,
+            commands::simulate_wechat_clawbot_message,
             commands::send_wechat_clawbot_message,
             commands::list_pet_memories,
             commands::add_pet_memory,
@@ -99,8 +101,10 @@ pub fn run() {
             })?;
             windowing::restore_pet_position(app.handle());
             windowing::apply_window_preferences(app.handle());
-            if let Err(err) = clawbot_bridge::restart_bridge_server(app.handle()) {
-                eprintln!("ClawBot HTTP Bridge 启动失败：{err}");
+            if feature_flags::WECHAT_INTEGRATION_ENABLED {
+                if let Err(err) = clawbot_bridge::restart_bridge_server(app.handle()) {
+                    eprintln!("ClawBot HTTP Bridge 启动失败：{err}");
+                }
             }
             tray::create_tray(app.handle())?;
             Ok(())

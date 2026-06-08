@@ -97,6 +97,8 @@ pub struct WechatClawbotSettingsDraft {
     pub forward_user_messages: bool,
     #[serde(default)]
     pub forward_assistant_messages: bool,
+    #[serde(default = "default_true")]
+    pub friend_mode_enabled: bool,
     #[serde(default)]
     pub bridge_enabled: bool,
     #[serde(default)]
@@ -521,6 +523,7 @@ fn normalize_wechat_clawbot_settings(
         target: settings.target.trim().to_string(),
         forward_user_messages: settings.forward_user_messages,
         forward_assistant_messages: settings.forward_assistant_messages,
+        friend_mode_enabled: settings.friend_mode_enabled,
         bridge_enabled: settings.bridge_enabled,
         bridge_host: if bridge_host.is_empty() {
             defaults.bridge_host
@@ -889,11 +892,25 @@ pub async fn test_wechat_clawbot(
     message: String,
 ) -> Result<wechat_clawbot::WechatClawbotSendResult, String> {
     let settings = normalize_wechat_clawbot_settings(settings);
+    tauri::async_runtime::spawn_blocking(move || wechat_clawbot::send_message(&settings, &message))
+        .await
+        .map_err(|err| format!("微信 ClawBot 测试任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn simulate_wechat_clawbot_message(
+    app: AppHandle,
+    settings: WechatClawbotSettingsDraft,
+    message: String,
+    sender: String,
+    session_id: String,
+) -> Result<clawbot_bridge::ClawbotChatResponse, String> {
+    let settings = normalize_wechat_clawbot_settings(settings);
     tauri::async_runtime::spawn_blocking(move || {
-        wechat_clawbot::send_message(&settings, &message)
+        clawbot_bridge::simulate_chat(&app, &settings, message, sender, session_id)
     })
     .await
-    .map_err(|err| format!("微信 ClawBot 测试任务失败：{err}"))?
+    .map_err(|err| format!("微信入站模拟任务失败：{err}"))?
 }
 
 #[tauri::command]
@@ -902,11 +919,9 @@ pub async fn send_wechat_clawbot_message(
     message: String,
 ) -> Result<wechat_clawbot::WechatClawbotSendResult, String> {
     let settings = app_data::read_config(&app)?.wechat_clawbot;
-    tauri::async_runtime::spawn_blocking(move || {
-        wechat_clawbot::send_message(&settings, &message)
-    })
-    .await
-    .map_err(|err| format!("微信 ClawBot 发送任务失败：{err}"))?
+    tauri::async_runtime::spawn_blocking(move || wechat_clawbot::send_message(&settings, &message))
+        .await
+        .map_err(|err| format!("微信 ClawBot 发送任务失败：{err}"))?
 }
 
 #[tauri::command]

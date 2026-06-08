@@ -58,6 +58,7 @@ type MessageDeleteRequest = {
 
 type WechatForwardRole = 'user' | 'assistant'
 
+const WECHAT_INTEGRATION_ENABLED: boolean = false
 const chatWindow = getCurrentWindow()
 const messages = ref<ChatMessage[]>([
   {
@@ -755,6 +756,10 @@ function nowSeconds() {
 }
 
 function shouldForwardWechatClawbot(role: WechatForwardRole) {
+  if (!WECHAT_INTEGRATION_ENABLED) {
+    return false
+  }
+
   const settings = config.value?.wechatClawbot
   if (!settings?.enabled || !settings.target?.trim()) {
     return false
