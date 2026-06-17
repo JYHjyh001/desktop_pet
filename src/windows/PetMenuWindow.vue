@@ -25,7 +25,7 @@ onBeforeUnmount(() => {
   unlistenThemeChanged?.()
 })
 
-async function runAction(action: 'chat' | 'story' | 'drawer' | 'hidePet' | 'quit') {
+async function runAction(action: 'chat' | 'story' | 'drawer' | 'music' | 'hidePet' | 'quit') {
   await invoke('hide_pet_menu')
 
   if (action === 'chat') {
@@ -40,6 +40,11 @@ async function runAction(action: 'chat' | 'story' | 'drawer' | 'hidePet' | 'quit
 
   if (action === 'drawer') {
     await invoke('show_drawer')
+    return
+  }
+
+  if (action === 'music') {
+    await invoke('show_music_player')
     return
   }
 
@@ -61,6 +66,7 @@ async function hideMenu() {
     <button type="button" @click="runAction('chat')">对话</button>
     <button type="button" @click="runAction('story')">故事模式</button>
     <button type="button" @click="runAction('drawer')">打开抽屉</button>
+    <button type="button" @click="runAction('music')">音乐播放</button>
     <button type="button" @click="runAction('hidePet')">隐藏宠物</button>
     <button type="button" @click="runAction('quit')">退出程序</button>
   </main>

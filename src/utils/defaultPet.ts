@@ -1,13 +1,54 @@
-import type { PetAnimationSet, PetSkinSummary } from '../types/app'
+import type { PetAnimationKey, PetAnimationSet, PetSkinSummary } from '../types/app'
 
-type PetAnimationKey = keyof PetAnimationSet
 type BuiltinPetAnimations = Record<PetAnimationKey, string>
+
+export const petAnimationFields: Array<{
+  key: PetAnimationKey
+  label: string
+  required?: boolean
+}> = [
+  { key: 'idle', label: '待机动画', required: true },
+  { key: 'hover', label: '选中动画' },
+  { key: 'click', label: '点击动画' },
+  { key: 'dragging', label: '拖动动画' },
+  { key: 'draggingLeft', label: '向左拖动动画' },
+  { key: 'draggingRight', label: '向右拖动动画' },
+  { key: 'waving', label: '打招呼动画' },
+  { key: 'jumping', label: '跳跃动画' },
+  { key: 'waiting', label: '等待动画' },
+  { key: 'running', label: '处理中动画' },
+  { key: 'review', label: '检查动画' },
+  { key: 'failed', label: '失败动画' },
+]
+
+const petAnimationFallbackKeys: Record<PetAnimationKey, PetAnimationKey> = {
+  idle: 'idle',
+  hover: 'hover',
+  click: 'click',
+  dragging: 'dragging',
+  draggingLeft: 'dragging',
+  draggingRight: 'dragging',
+  waving: 'hover',
+  jumping: 'click',
+  waiting: 'idle',
+  running: 'hover',
+  review: 'idle',
+  failed: 'click',
+}
 
 export const defaultPetAnimations: BuiltinPetAnimations = {
   idle: new URL('../assets/pets/default/idle.svg', import.meta.url).href,
   hover: new URL('../assets/pets/default/hover.svg', import.meta.url).href,
   click: new URL('../assets/pets/default/click.svg', import.meta.url).href,
   dragging: new URL('../assets/pets/default/dragging.svg', import.meta.url).href,
+  draggingLeft: new URL('../assets/pets/default/dragging.svg', import.meta.url).href,
+  draggingRight: new URL('../assets/pets/default/dragging.svg', import.meta.url).href,
+  waving: new URL('../assets/pets/default/hover.svg', import.meta.url).href,
+  jumping: new URL('../assets/pets/default/click.svg', import.meta.url).href,
+  waiting: new URL('../assets/pets/default/idle.svg', import.meta.url).href,
+  running: new URL('../assets/pets/default/hover.svg', import.meta.url).href,
+  review: new URL('../assets/pets/default/idle.svg', import.meta.url).href,
+  failed: new URL('../assets/pets/default/click.svg', import.meta.url).href,
 }
 
 export const defaultPetPreview = new URL('../assets/pets/default/preview.svg', import.meta.url).href
@@ -59,10 +100,16 @@ export function resolvePetSkinAnimations(skin: PetSkinSummary | null | undefined
   const fallback = skin?.builtin ? getBuiltinPetAnimations(skin.id) : defaultPetAnimations
   const animations = skin?.animations ?? {}
 
-  return {
-    idle: animations.idle || fallback.idle,
-    hover: animations.hover || animations.idle || fallback.hover,
-    click: animations.click || animations.idle || fallback.click,
-    dragging: animations.dragging || animations.idle || fallback.dragging,
-  }
+  return petAnimationFields.reduce((resolved, field) => {
+    const key = field.key
+    const fallbackKey = petAnimationFallbackKeys[key]
+    resolved[key] =
+      animations[key] ||
+      animations[fallbackKey] ||
+      animations.idle ||
+      fallback[key] ||
+      fallback[fallbackKey] ||
+      fallback.idle
+    return resolved
+  }, {} as BuiltinPetAnimations)
 }

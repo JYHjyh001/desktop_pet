@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { PetAnimationKey } from '../types/app'
 
 const props = defineProps<{
-  state: 'idle' | 'hover' | 'dragging' | 'click'
+  state: PetAnimationKey
   imageUrl?: string
 }>()
 

@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use tauri::{
     AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow,
 };
@@ -5,6 +6,41 @@ use tauri::{
 use crate::app_data;
 
 const SCREEN_MARGIN: i32 = 8;
+const PET_BUBBLE_GAP: i32 = 10;
+const PET_BUBBLE_TAIL_MARGIN: i32 = 22;
+const PET_BUBBLE_WIDTH: u32 = 300;
+const PET_BUBBLE_HEIGHT: u32 = 96;
+const PET_BADGE_WIDTH: u32 = 144;
+const PET_BADGE_HEIGHT: u32 = 44;
+const PET_COMPLETION_WIDTH: u32 = 156;
+const PET_COMPLETION_HEIGHT: u32 = 52;
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetBubblePayload {
+    pub kind: String,
+    pub state: String,
+    pub message: String,
+    pub theme: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PetBubbleRenderPayload {
+    kind: String,
+    state: String,
+    message: String,
+    theme: String,
+    placement: String,
+    tail_x: i32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PetBubblePlacementPayload {
+    placement: String,
+    tail_x: i32,
+}
 
 pub fn restore_pet_position(app: &AppHandle) {
     let Ok(mut config) = app_data::read_config(app) else {
@@ -159,6 +195,24 @@ pub fn hide_story(app: &AppHandle) -> Result<(), String> {
     story.hide().map_err(|err| err.to_string())
 }
 
+pub fn show_music_player(app: &AppHandle) -> Result<(), String> {
+    let music = app
+        .get_webview_window("music")
+        .ok_or_else(|| "未找到音乐播放窗口".to_string())?;
+
+    position_music_player(app)?;
+    music.show().map_err(|err| err.to_string())?;
+    music.set_focus().map_err(|err| err.to_string())
+}
+
+pub fn hide_music_player(app: &AppHandle) -> Result<(), String> {
+    let music = app
+        .get_webview_window("music")
+        .ok_or_else(|| "未找到音乐播放窗口".to_string())?;
+
+    music.hide().map_err(|err| err.to_string())
+}
+
 pub fn show_pet(app: &AppHandle) -> Result<(), String> {
     let pet = app
         .get_webview_window("pet")
@@ -175,7 +229,15 @@ pub fn set_pet_always_on_top(app: &AppHandle, always_on_top: bool) -> Result<(),
         .ok_or_else(|| "未找到宠物窗口".to_string())?;
 
     pet.set_always_on_top(always_on_top)
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+
+    if let Some(bubble) = app.get_webview_window("pet-bubble") {
+        bubble
+            .set_always_on_top(always_on_top)
+            .map_err(|err| err.to_string())?;
+    }
+
+    Ok(())
 }
 
 pub fn set_pet_size(app: &AppHandle, size: u32) -> Result<(), String> {
@@ -190,6 +252,7 @@ pub fn set_pet_size(app: &AppHandle, size: u32) -> Result<(), String> {
     }))
     .map_err(|err| err.to_string())?;
     restore_pet_position(app);
+    let _ = reposition_pet_bubble(app);
 
     Ok(())
 }
@@ -209,7 +272,220 @@ pub fn hide_pet(app: &AppHandle) -> Result<(), String> {
         .get_webview_window("pet")
         .ok_or_else(|| "未找到宠物窗口".to_string())?;
 
+    let _ = hide_pet_bubble(app);
     pet.hide().map_err(|err| err.to_string())
+}
+
+pub fn show_pet_bubble(app: &AppHandle, payload: PetBubblePayload) -> Result<(), String> {
+    let bubble = app
+        .get_webview_window("pet-bubble")
+        .ok_or_else(|| "未找到宠物气泡窗口".to_string())?;
+    let payload = normalize_pet_bubble_payload(payload);
+    let (width, height) = pet_bubble_window_size(&payload.kind);
+
+    bubble
+        .set_size(Size::Physical(PhysicalSize { width, height }))
+        .map_err(|err| err.to_string())?;
+    let placement = position_pet_bubble_window(app, &bubble, &payload.kind, width, height)?;
+    bubble
+        .emit(
+            "pet-bubble-updated",
+            PetBubbleRenderPayload {
+                kind: payload.kind,
+                state: payload.state,
+                message: payload.message,
+                theme: payload.theme,
+                placement: placement.placement,
+                tail_x: placement.tail_x,
+            },
+        )
+        .map_err(|err| err.to_string())?;
+    bubble.show().map_err(|err| err.to_string())
+}
+
+pub fn hide_pet_bubble(app: &AppHandle) -> Result<(), String> {
+    let bubble = app
+        .get_webview_window("pet-bubble")
+        .ok_or_else(|| "未找到宠物气泡窗口".to_string())?;
+
+    bubble.hide().map_err(|err| err.to_string())
+}
+
+pub fn reposition_pet_bubble(app: &AppHandle) -> Result<(), String> {
+    let bubble = app
+        .get_webview_window("pet-bubble")
+        .ok_or_else(|| "未找到宠物气泡窗口".to_string())?;
+
+    if !bubble.is_visible().map_err(|err| err.to_string())? {
+        return Ok(());
+    }
+
+    let size = bubble.outer_size().map_err(|err| err.to_string())?;
+    let kind = pet_bubble_kind_for_size(size.width, size.height);
+    let placement = position_pet_bubble_window(app, &bubble, kind, size.width, size.height)?;
+    bubble
+        .emit("pet-bubble-placement-updated", placement)
+        .map_err(|err| err.to_string())
+}
+
+fn normalize_pet_bubble_payload(payload: PetBubblePayload) -> PetBubblePayload {
+    let kind = match payload.kind.as_str() {
+        "badge" | "completion" => payload.kind,
+        _ => "bubble".to_string(),
+    };
+    let theme = if payload.theme == "animal-island" {
+        "animal-island".to_string()
+    } else {
+        "light".to_string()
+    };
+    let state = match payload.state.as_str() {
+        "disconnected" | "starting" | "connected" | "running" | "waiting" | "review"
+        | "completed" | "failed" => payload.state,
+        _ => "connected".to_string(),
+    };
+    let message = payload
+        .message
+        .trim()
+        .chars()
+        .take(if kind == "badge" || kind == "completion" {
+            24
+        } else {
+            140
+        })
+        .collect::<String>();
+
+    PetBubblePayload {
+        kind,
+        state,
+        message,
+        theme,
+    }
+}
+
+fn pet_bubble_window_size(kind: &str) -> (u32, u32) {
+    match kind {
+        "badge" => (PET_BADGE_WIDTH, PET_BADGE_HEIGHT),
+        "completion" => (PET_COMPLETION_WIDTH, PET_COMPLETION_HEIGHT),
+        _ => (PET_BUBBLE_WIDTH, PET_BUBBLE_HEIGHT),
+    }
+}
+
+fn pet_bubble_kind_for_size(width: u32, height: u32) -> &'static str {
+    if width == PET_COMPLETION_WIDTH && height == PET_COMPLETION_HEIGHT {
+        "completion"
+    } else if width == PET_BADGE_WIDTH && height == PET_BADGE_HEIGHT {
+        "badge"
+    } else {
+        "bubble"
+    }
+}
+
+fn position_pet_bubble_window(
+    app: &AppHandle,
+    bubble: &WebviewWindow,
+    kind: &str,
+    width: u32,
+    height: u32,
+) -> Result<PetBubblePlacementPayload, String> {
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or_else(|| "未找到宠物窗口".to_string())?;
+    let pet_pos = pet.outer_position().map_err(|err| err.to_string())?;
+    let pet_size = pet.outer_size().map_err(|err| err.to_string())?;
+    let width = width as i32;
+    let height = height as i32;
+    let pet_center_x = pet_pos.x + pet_size.width as i32 / 2;
+    if kind == "completion" {
+        return position_pet_completion_window(&pet, bubble, pet_pos, pet_size, width, height);
+    }
+
+    let preferred_x = pet_center_x - width / 2;
+    let top_y = pet_pos.y - height - PET_BUBBLE_GAP;
+    let bottom_y = pet_pos.y + pet_size.height as i32 + PET_BUBBLE_GAP;
+    let mut x = preferred_x;
+    let mut y = top_y;
+    let mut placement = "top".to_string();
+
+    if let Some((left, top, right, bottom)) = monitor_bounds_for_window(&pet) {
+        let min_x = left + SCREEN_MARGIN;
+        let max_x = (right - width - SCREEN_MARGIN).max(min_x);
+        let min_y = top + SCREEN_MARGIN;
+        let max_y = (bottom - height - SCREEN_MARGIN).max(min_y);
+        let can_fit_top = top_y >= min_y;
+        let can_fit_bottom = bottom_y <= max_y;
+
+        if !can_fit_top && can_fit_bottom {
+            y = bottom_y;
+            placement = "bottom".to_string();
+        }
+
+        x = x.max(min_x).min(max_x);
+        y = y.max(min_y).min(max_y);
+    }
+
+    bubble
+        .set_position(Position::Physical(PhysicalPosition { x, y }))
+        .map_err(|err| err.to_string())?;
+
+    let max_tail_x = (width - PET_BUBBLE_TAIL_MARGIN).max(PET_BUBBLE_TAIL_MARGIN);
+    let tail_x = (pet_center_x - x)
+        .max(PET_BUBBLE_TAIL_MARGIN)
+        .min(max_tail_x);
+
+    Ok(PetBubblePlacementPayload { placement, tail_x })
+}
+
+fn position_pet_completion_window(
+    pet: &WebviewWindow,
+    bubble: &WebviewWindow,
+    pet_pos: PhysicalPosition<i32>,
+    pet_size: PhysicalSize<u32>,
+    width: i32,
+    height: i32,
+) -> Result<PetBubblePlacementPayload, String> {
+    let mut x = pet_pos.x + pet_size.width as i32 - 18;
+    let mut y = pet_pos.y + pet_size.height as i32 - height - 8;
+
+    if let Some((left, top, right, bottom)) = monitor_bounds_for_window(pet) {
+        let min_x = left + SCREEN_MARGIN;
+        let max_x = (right - width - SCREEN_MARGIN).max(min_x);
+        let min_y = top + SCREEN_MARGIN;
+        let max_y = (bottom - height - SCREEN_MARGIN).max(min_y);
+
+        x = x.max(min_x).min(max_x);
+        y = y.max(min_y).min(max_y);
+    }
+
+    bubble
+        .set_position(Position::Physical(PhysicalPosition { x, y }))
+        .map_err(|err| err.to_string())?;
+
+    Ok(PetBubblePlacementPayload {
+        placement: "side".to_string(),
+        tail_x: width / 2,
+    })
+}
+
+fn monitor_bounds_for_window(window: &WebviewWindow) -> Option<(i32, i32, i32, i32)> {
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .or_else(|| {
+            window
+                .available_monitors()
+                .ok()
+                .and_then(|monitors| monitors.into_iter().next())
+        })?;
+    let monitor_pos = monitor.position();
+    let monitor_size = monitor.size();
+    Some((
+        monitor_pos.x,
+        monitor_pos.y,
+        monitor_pos.x + monitor_size.width as i32,
+        monitor_pos.y + monitor_size.height as i32,
+    ))
 }
 
 fn position_drawer(app: &AppHandle) -> Result<(), String> {
@@ -324,6 +600,45 @@ fn position_story(app: &AppHandle) -> Result<(), String> {
     }
 
     story
+        .set_position(Position::Physical(PhysicalPosition { x, y }))
+        .map_err(|err| err.to_string())
+}
+
+fn position_music_player(app: &AppHandle) -> Result<(), String> {
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or_else(|| "未找到宠物窗口".to_string())?;
+    let music = app
+        .get_webview_window("music")
+        .ok_or_else(|| "未找到音乐播放窗口".to_string())?;
+
+    let pet_pos = pet.outer_position().map_err(|err| err.to_string())?;
+    let pet_size = pet.outer_size().map_err(|err| err.to_string())?;
+    let music_size = music.outer_size().map_err(|err| err.to_string())?;
+    let margin = 12;
+
+    let mut x = pet_pos.x + pet_size.width as i32 + margin;
+    let mut y = pet_pos.y - 24;
+
+    if let Ok(Some(monitor)) = pet.current_monitor() {
+        let monitor_pos = monitor.position();
+        let monitor_size = monitor.size();
+        let max_x = monitor_pos.x + monitor_size.width as i32 - music_size.width as i32 - margin;
+        let max_y = monitor_pos.y + monitor_size.height as i32 - music_size.height as i32 - margin;
+
+        if x > max_x {
+            x = pet_pos.x - music_size.width as i32 - margin;
+        }
+
+        x = x
+            .max(monitor_pos.x + margin)
+            .min(max_x.max(monitor_pos.x + margin));
+        y = y
+            .max(monitor_pos.y + margin)
+            .min(max_y.max(monitor_pos.y + margin));
+    }
+
+    music
         .set_position(Position::Physical(PhysicalPosition { x, y }))
         .map_err(|err| err.to_string())
 }

@@ -36,18 +36,32 @@ export interface PetPosition {
   y: number
 }
 
-export interface PetAnimationSet {
-  idle?: string | null
-  hover?: string | null
-  dragging?: string | null
-  click?: string | null
-}
+export type PetAnimationKey =
+  | 'idle'
+  | 'hover'
+  | 'click'
+  | 'dragging'
+  | 'draggingLeft'
+  | 'draggingRight'
+  | 'waving'
+  | 'jumping'
+  | 'waiting'
+  | 'running'
+  | 'review'
+  | 'failed'
+
+export type PetAnimationSet = Partial<Record<PetAnimationKey, string | null>>
 
 export interface PetSkinSummary {
   id: string
   name: string
   builtin: boolean
   preview?: string | null
+  animations: PetAnimationSet
+}
+
+export interface PetSkinPackageDraft {
+  name: string
   animations: PetAnimationSet
 }
 
@@ -131,6 +145,71 @@ export interface WechatClawbotSettings {
   bridgePort: number
   bridgePath: string
   bridgeToken: string
+}
+
+export interface CodexAppServerSettings {
+  enabled: boolean
+  autoStart?: boolean
+  mode: 'proxy' | 'managed' | 'sessionLog' | string
+  command: string
+  socketPath?: string
+  port: number
+  completionNotificationsEnabled: boolean
+}
+
+export type CodexAppServerState =
+  | 'disconnected'
+  | 'starting'
+  | 'connected'
+  | 'running'
+  | 'waiting'
+  | 'review'
+  | 'completed'
+  | 'failed'
+  | string
+
+export interface CodexAppServerStatus {
+  state: CodexAppServerState
+  message: string
+  active?: boolean
+  threadId?: string | null
+  turnId?: string | null
+  endpoint?: string | null
+  mode?: string | null
+  lastEvent?: string | null
+  error?: string | null
+  notify?: boolean
+  updatedAt: number
+  summary?: CodexStatusSummary
+  tasks?: CodexTaskStatus[]
+}
+
+export interface CodexStatusSummary {
+  state: CodexAppServerState
+  message: string
+  attention: 'none' | 'idle' | 'working' | 'waiting' | 'completed' | 'failed' | string
+  totalCount: number
+  activeCount: number
+  runningCount: number
+  reviewCount: number
+  waitingCount: number
+  completedCount: number
+  failedCount: number
+  unreadCount: number
+  unreadCompletedCount: number
+  unreadFailedCount: number
+  badgeLabel?: string | null
+}
+
+export interface CodexTaskStatus {
+  id: string
+  label: string
+  state: CodexAppServerState
+  message: string
+  mode?: string | null
+  lastEvent?: string | null
+  updatedAt: number
+  unread: boolean
 }
 
 export interface WechatClawbotSendResult {
@@ -417,6 +496,7 @@ export interface PetDrawerConfig {
     theme: DrawerTheme | string
     chatTypewriterEnabled?: boolean
     chatNarrationEnabled?: boolean
+    chatMusicLinkEnabled?: boolean
     alwaysOnTop: boolean
     categories?: string[]
     quickSearchTags?: string[]
@@ -431,6 +511,7 @@ export interface PetDrawerConfig {
   }
   ai?: AiSettings
   wechatClawbot?: WechatClawbotSettings
+  codexAppServer?: CodexAppServerSettings
   companions?: Companion[]
   currentCompanionId?: string
   companionsInitialized?: boolean

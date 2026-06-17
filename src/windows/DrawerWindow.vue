@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { emit as emitEvent } from '@tauri-apps/api/event'
+import { emit as emitEvent, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import AppCard from '../components/AppCard.vue'
@@ -17,12 +17,15 @@ import type {
   ChatEmojiFrequency,
   Companion,
   CompanionDraft,
+  CodexAppServerStatus,
   DrawerTheme,
   PetMemory,
   PetMemoryDraft,
+  PetAnimationKey,
   PetAnimationSet,
   PetApp,
   PetDrawerConfig,
+  PetSkinPackageDraft,
   PetSkinSummary,
   RuntimeInfo,
   StorageSettings,
@@ -30,7 +33,7 @@ import type {
   WechatBridgeChatResult,
   WechatClawbotSendResult,
 } from '../types/app'
-import { getPetSkinAnimation, getPetSkinPreview } from '../utils/defaultPet'
+import { getPetSkinAnimation, getPetSkinPreview, petAnimationFields } from '../utils/defaultPet'
 import {
   appNameFromPath,
   fileNameFromPath,
@@ -72,7 +75,7 @@ const petSkinError = ref('')
 const skinImporting = ref(false)
 const skinDeleting = ref(false)
 const editingPetSkinId = ref<string | null>(null)
-const clearedPetAnimationStates = ref<Array<keyof PetAnimationSet>>([])
+const clearedPetAnimationStates = ref<PetAnimationKey[]>([])
 const quickSearchTags = ref<string[]>([])
 const tagDisplayMode = ref<'compact' | 'detailed'>('compact')
 const drawerTheme = ref<DrawerTheme>('light')
@@ -106,15 +109,29 @@ const editingMemoryId = ref<number | null>(null)
 const runtimeInfo = ref<RuntimeInfo | null>(null)
 const runtimeInfoLoading = ref(false)
 const runtimeInfoError = ref('')
+const codexStatus = ref<CodexAppServerStatus | null>(null)
+const codexActionLoading = ref(false)
+const codexActionError = ref('')
+const codexTestPrompt = ref('用一句话回复：PetDrawer Codex App Server 测试完成。')
+const codexTestCwd = ref('')
+let unlistenCodexStatus: (() => void) | null = null
 const importantConfirmation = ref<ImportantConfirmation | null>(null)
 let resolveImportantConfirmation: ((confirmed: boolean) => void) | null = null
 
-const skinDraft = reactive({
+const skinDraft = reactive<Record<PetAnimationKey, string> & { name: string }>({
   name: '',
   idle: '',
   hover: '',
-  dragging: '',
   click: '',
+  dragging: '',
+  draggingLeft: '',
+  draggingRight: '',
+  waving: '',
+  jumping: '',
+  waiting: '',
+  running: '',
+  review: '',
+  failed: '',
 })
 const companionDraft = reactive({
   name: '',
@@ -134,17 +151,11 @@ const companionDraft = reactive({
   mood: '',
 })
 
-const animationFields: Array<{
-  key: keyof PetAnimationSet
-  label: string
-  required?: boolean
-}> = [
-  { key: 'idle', label: '待机动画', required: true },
-  { key: 'hover', label: '选中动画' },
-  { key: 'click', label: '点击动画' },
-  { key: 'dragging', label: '拖动动画' },
-]
 const imageFileExtensions = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'ico']
+const executableIconSourceExtensions = ['exe', 'lnk', 'ico']
+const iconSourceFileExtensions = Array.from(
+  new Set([...imageFileExtensions, ...executableIconSourceExtensions]),
+)
 const petAnimationFileExtensions = [...imageFileExtensions, 'webm', 'mp4']
 
 const memoryTypeOptions = [
@@ -177,6 +188,7 @@ type SettingsSectionId =
   | 'appearance'
   | 'companion'
   | 'ai'
+  | 'codex'
   | 'wechat'
   | 'storage'
   | 'memory'
@@ -191,6 +203,7 @@ const allSettingsSections: Array<{ id: SettingsSectionId; label: string; descrip
   { id: 'appearance', label: '外观', description: '界面主题风格' },
   { id: 'companion', label: '伴侣', description: '角色与切换' },
   { id: 'ai', label: 'AI 接口', description: '宠物聊天 API' },
+  { id: 'codex', label: 'Codex', description: '工作状态提醒' },
   { id: 'wechat', label: '微信', description: 'ClawBot 通道' },
   { id: 'storage', label: '存储', description: '数据文件目录' },
   { id: 'memory', label: '记忆', description: '长期记忆管理' },
@@ -263,7 +276,7 @@ function petSkinPreviewUrl(skin: PetSkinSummary | null | undefined) {
 
 function petSkinAnimationThumbUrl(
   skin: PetSkinSummary | null | undefined,
-  key: keyof PetAnimationSet,
+  key: PetAnimationKey,
 ) {
   if (!skin) {
     return ''
@@ -276,12 +289,44 @@ function petSkinAnimationThumbUrl(
   return skin.animations[key] || ''
 }
 
-function petSkinAnimationStatus(skin: PetSkinSummary, key: keyof PetAnimationSet) {
+function petSkinAnimationStatus(skin: PetSkinSummary, key: PetAnimationKey) {
   if (skin.animations[key]) {
     return '已配置'
   }
 
-  return skin.builtin ? '内置' : '使用待机动画'
+  if (skin.builtin) {
+    return ['idle', 'hover', 'click', 'dragging', 'draggingLeft', 'draggingRight'].includes(key)
+      ? '内置'
+      : '回退到默认动画'
+  }
+
+  return '使用待机动画'
+}
+
+function petAnimationTagLabel(key: PetAnimationKey) {
+  return petAnimationFields.find((field) => field.key === key)?.label.replace(/动画$/, '') ?? key
+}
+
+function configuredPetAnimationFields(skin: PetSkinSummary) {
+  const builtinStates = new Set<PetAnimationKey>([
+    'idle',
+    'hover',
+    'click',
+    'dragging',
+    'draggingLeft',
+    'draggingRight',
+  ])
+  return petAnimationFields.filter((field) => {
+    if (field.required) {
+      return true
+    }
+
+    if (skin.builtin) {
+      return builtinStates.has(field.key)
+    }
+
+    return Boolean(skin.animations[field.key])
+  })
 }
 
 function isVideoSource(source?: string | null) {
@@ -384,6 +429,30 @@ const chatEmojiFrequencyOptions: Array<{
   { value: 'high', label: '较多', description: '更活泼亲近，但仍避免堆叠刷屏。' },
 ]
 
+type CodexAppServerMode = 'proxy' | 'managed' | 'sessionLog'
+
+const codexModeOptions: Array<{
+  value: CodexAppServerMode
+  label: string
+  description: string
+}> = [
+  {
+    value: 'sessionLog',
+    label: '日志监听模式',
+    description: '监听本机 Codex 会话日志，适合 Windows Codex Desktop 的完成提醒。',
+  },
+  {
+    value: 'proxy',
+    label: '监听当前 Codex',
+    description: '连接已暴露的 Codex App 控制通道，适合支持 control socket 的环境。',
+  },
+  {
+    value: 'managed',
+    label: '独立测试模式',
+    description: '由桌宠启动独立 App Server，用 Codex CLI --remote 或短测试任务验证状态提醒。',
+  },
+]
+
 const settingsDraft = reactive({
   categories: [] as string[],
   quickSearchTags: [] as string[],
@@ -398,6 +467,7 @@ const settingsDraft = reactive({
   drawerTheme: 'light' as DrawerTheme,
   chatTypewriterEnabled: true,
   chatNarrationEnabled: false,
+  chatMusicLinkEnabled: true,
   aiEnabled: false,
   aiMemoryEnabled: true,
   aiShortMemorySummaryEnabled: true,
@@ -427,6 +497,13 @@ const settingsDraft = reactive({
   wechatClawbotBridgePort: 18080,
   wechatClawbotBridgePath: '/clawbot/chat',
   wechatClawbotBridgeToken: '',
+  codexAppServerEnabled: false,
+  codexAppServerAutoStart: false,
+  codexAppServerMode: defaultCodexMode(),
+  codexAppServerCommand: defaultCodexCommand(),
+  codexAppServerSocketPath: '',
+  codexAppServerPort: 0,
+  codexCompletionNotificationsEnabled: true,
   storageDataDir: '',
   storageMemoryDir: '',
   storagePetAssetsDir: '',
@@ -436,6 +513,48 @@ const settingsDraft = reactive({
 const selectedAiProfile = computed(() =>
   settingsDraft.aiProfiles.find((profile) => profile.id === settingsDraft.aiActiveProfileId),
 )
+const isCodexManagedMode = computed(() => settingsDraft.codexAppServerMode === 'managed')
+const isCodexProxyMode = computed(() => settingsDraft.codexAppServerMode === 'proxy')
+const isCodexSessionLogMode = computed(() => settingsDraft.codexAppServerMode === 'sessionLog')
+const isCodexRuntimeActive = computed(() => Boolean(codexStatus.value?.active))
+const canStartCodexAppServer = computed(
+  () =>
+    !codexActionLoading.value &&
+    settingsDraft.codexAppServerEnabled &&
+    !isCodexRuntimeActive.value,
+)
+const canDisconnectCodexAppServer = computed(
+  () => !codexActionLoading.value && isCodexRuntimeActive.value,
+)
+const canStartCodexTestTurn = computed(
+  () =>
+    !codexActionLoading.value &&
+    settingsDraft.codexAppServerEnabled &&
+    (!isCodexRuntimeActive.value || codexStatus.value?.mode === 'managed'),
+)
+const codexSummary = computed(() => codexStatus.value?.summary)
+const codexRecentTasks = computed(() => (codexStatus.value?.tasks ?? []).slice(0, 5))
+const codexConnectLabel = computed(() => {
+  if (codexActionLoading.value) {
+    return '处理中...'
+  }
+  if (isCodexManagedMode.value) {
+    return '启动独立测试'
+  }
+  if (isCodexSessionLogMode.value) {
+    return '开始监听日志'
+  }
+  return '开始监听当前 Codex'
+})
+const codexRemoteCommand = computed(() => {
+  if (!isCodexManagedMode.value || !codexStatus.value?.endpoint?.startsWith('ws://')) {
+    return ''
+  }
+
+  return `${settingsDraft.codexAppServerCommand.trim() || defaultCodexCommand()} --remote ${
+    codexStatus.value.endpoint
+  }`
+})
 const isEditingPetSkin = computed(() => Boolean(editingPetSkinId.value))
 const canManageSelectedPetSkin = computed(
   () =>
@@ -478,6 +597,16 @@ onMounted(() => {
   void loadPetSkins()
   void loadCompanions()
   void loadDrawerSettings()
+  void loadCodexStatus()
+  void listen<CodexAppServerStatus>('codex-status-updated', (event) => {
+    codexStatus.value = event.payload
+  }).then((unlisten) => {
+    unlistenCodexStatus = unlisten
+  })
+})
+
+onBeforeUnmount(() => {
+  unlistenCodexStatus?.()
 })
 
 async function loadDrawerSettings() {
@@ -508,6 +637,7 @@ async function openSettings() {
   companionStatus.value = ''
   petMemoryError.value = ''
   runtimeInfoError.value = ''
+  codexActionError.value = ''
   activeSettingsSection.value = 'entries'
   await Promise.all([
     loadDrawerSettings(),
@@ -515,6 +645,7 @@ async function openSettings() {
     loadCompanions(),
     loadPetMemories(),
     loadRuntimeInfo(),
+    loadCodexStatus(),
   ])
   checkForUpdate()
 }
@@ -560,6 +691,7 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.startOnBoot = Boolean(config.system?.startOnBoot)
   settingsDraft.autoFavoriteEnabled = config.system?.autoFavoriteEnabled ?? true
   settingsDraft.aiEnabled = Boolean(config.ai?.enabled)
+  settingsDraft.chatMusicLinkEnabled = config.drawer?.chatMusicLinkEnabled !== false
   settingsDraft.aiMemoryEnabled = config.ai?.memoryEnabled ?? true
   settingsDraft.aiShortMemorySummaryEnabled = config.ai?.shortMemorySummaryEnabled ?? true
   settingsDraft.aiShortMemoryRecentTurns = clampInteger(config.ai?.shortMemoryRecentTurns ?? 10, 2, 40)
@@ -607,6 +739,14 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.wechatClawbotBridgePort = clampInteger(wechat?.bridgePort ?? 18080, 1, 65535)
   settingsDraft.wechatClawbotBridgePath = wechat?.bridgePath || '/clawbot/chat'
   settingsDraft.wechatClawbotBridgeToken = wechat?.bridgeToken ?? ''
+  const codex = config.codexAppServer
+  settingsDraft.codexAppServerEnabled = Boolean(codex?.enabled)
+  settingsDraft.codexAppServerAutoStart = Boolean(codex?.autoStart)
+  settingsDraft.codexAppServerMode = normalizeCodexMode(codex?.mode)
+  settingsDraft.codexAppServerCommand = codex?.command || defaultCodexCommand()
+  settingsDraft.codexAppServerSocketPath = codex?.socketPath || ''
+  settingsDraft.codexAppServerPort = clampInteger(codex?.port ?? 0, 0, 65535)
+  settingsDraft.codexCompletionNotificationsEnabled = codex?.completionNotificationsEnabled ?? true
 }
 
 function normalizeTagDisplayMode(value?: string | null): 'compact' | 'detailed' {
@@ -821,6 +961,7 @@ async function saveSettings() {
     void emitEvent('ui-theme-changed', config.drawer.theme)
     void emitEvent('ui-chat-display-changed', config.drawer.chatTypewriterEnabled ?? true)
     void emitEvent('ui-chat-narration-changed', config.drawer.chatNarrationEnabled ?? false)
+    void emitEvent('ui-chat-music-link-changed', config.drawer.chatMusicLinkEnabled ?? true)
     settingsModalVisible.value = false
   } catch (err) {
     settingsError.value = String(err)
@@ -843,6 +984,7 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
     theme: settingsDraft.drawerTheme,
     chatTypewriterEnabled: settingsDraft.chatTypewriterEnabled,
     chatNarrationEnabled: settingsDraft.chatNarrationEnabled,
+    chatMusicLinkEnabled: settingsDraft.chatMusicLinkEnabled,
     petSize: normalizePetSize(settingsDraft.petSize),
     petAlwaysOnTop: settingsDraft.petAlwaysOnTop,
     drawerAlwaysOnTop: settingsDraft.drawerAlwaysOnTop,
@@ -870,6 +1012,7 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
       profiles,
     },
     wechatClawbot: buildWechatClawbotSettings(),
+    codexAppServer: buildCodexAppServerSettings(),
   }
 }
 
@@ -894,6 +1037,32 @@ function buildWechatClawbotSettings() {
 function normalizeBridgePath(path: string) {
   const trimmed = path.trim() || '/clawbot/chat'
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+}
+
+function defaultCodexCommand() {
+  return navigator.userAgent.includes('Windows') ? 'codex.cmd' : 'codex'
+}
+
+function defaultCodexMode(): CodexAppServerMode {
+  return navigator.userAgent.includes('Windows') ? 'sessionLog' : 'proxy'
+}
+
+function normalizeCodexMode(value?: string | null): CodexAppServerMode {
+  return codexModeOptions.some((option) => option.value === value)
+    ? (value as CodexAppServerMode)
+    : defaultCodexMode()
+}
+
+function buildCodexAppServerSettings() {
+  return {
+    enabled: settingsDraft.codexAppServerEnabled,
+    autoStart: settingsDraft.codexAppServerEnabled && settingsDraft.codexAppServerAutoStart,
+    mode: settingsDraft.codexAppServerMode,
+    command: settingsDraft.codexAppServerCommand.trim() || defaultCodexCommand(),
+    socketPath: settingsDraft.codexAppServerSocketPath.trim(),
+    port: clampInteger(settingsDraft.codexAppServerPort, 0, 65535),
+    completionNotificationsEnabled: settingsDraft.codexCompletionNotificationsEnabled,
+  }
 }
 
 function buildStorageSettings(): StorageSettings {
@@ -972,6 +1141,120 @@ async function saveDrawerPreferences(tagMode: 'compact' | 'detailed') {
   return invoke<PetDrawerConfig>('save_drawer_preferences', {
     preferences: buildDrawerPreferences(tagMode),
   })
+}
+
+async function loadCodexStatus() {
+  try {
+    codexStatus.value = await invoke<CodexAppServerStatus>('get_codex_app_server_status')
+  } catch (err) {
+    codexActionError.value = String(err)
+  }
+}
+
+async function saveCodexSettingsBeforeAction() {
+  const config = await saveDrawerPreferences(settingsDraft.tagDisplayMode)
+  applyDrawerConfig(config)
+  return config
+}
+
+async function connectCodexAppServer() {
+  codexActionLoading.value = true
+  codexActionError.value = ''
+
+  try {
+    await saveCodexSettingsBeforeAction()
+    codexStatus.value = await invoke<CodexAppServerStatus>('start_codex_app_server')
+  } catch (err) {
+    codexActionError.value = String(err)
+  } finally {
+    codexActionLoading.value = false
+  }
+}
+
+async function disconnectCodexAppServer() {
+  codexActionLoading.value = true
+  codexActionError.value = ''
+
+  try {
+    codexStatus.value = await invoke<CodexAppServerStatus>('stop_codex_app_server')
+  } catch (err) {
+    codexActionError.value = String(err)
+  } finally {
+    codexActionLoading.value = false
+  }
+}
+
+async function startCodexTestTurn() {
+  const prompt = codexTestPrompt.value.trim()
+  if (!prompt) {
+    codexActionError.value = '请输入要发送给 Codex 的测试任务。'
+    return
+  }
+
+  codexActionLoading.value = true
+  codexActionError.value = ''
+
+  try {
+    await saveCodexSettingsBeforeAction()
+    codexStatus.value = await invoke<CodexAppServerStatus>('start_codex_app_server_turn', {
+      prompt,
+      cwd: codexTestCwd.value.trim() || null,
+    })
+  } catch (err) {
+    codexActionError.value = String(err)
+  } finally {
+    codexActionLoading.value = false
+  }
+}
+
+function codexStatusLabel(status: CodexAppServerStatus | null = codexStatus.value) {
+  return codexStateLabel(status?.summary?.state || status?.state)
+}
+
+function codexStateLabel(state?: string | null) {
+  switch (state) {
+    case 'starting':
+      return '启动中'
+    case 'connected':
+      return '已连接'
+    case 'running':
+      return '工作中'
+    case 'waiting':
+      return '等待处理'
+    case 'review':
+      return '审查中'
+    case 'completed':
+      return '已完成'
+    case 'failed':
+      return '失败'
+    default:
+      return '未连接'
+  }
+}
+
+function formatCodexStatusTime(status: CodexAppServerStatus | null) {
+  if (!status?.updatedAt) {
+    return '暂无'
+  }
+
+  return new Date(status.updatedAt * 1000).toLocaleString()
+}
+
+function formatCodexTaskTime(updatedAt?: number | null) {
+  if (!updatedAt) {
+    return '暂无'
+  }
+
+  return new Date(updatedAt * 1000).toLocaleString()
+}
+
+async function ackCodexNotifications() {
+  codexActionError.value = ''
+  try {
+    codexStatus.value = await invoke<CodexAppServerStatus>('ack_codex_notifications')
+  } catch (err) {
+    codexActionError.value = String(err)
+  }
 }
 
 async function testAiConnection() {
@@ -1800,7 +2083,7 @@ async function selectPetSkin(skin: PetSkinSummary) {
   }
 }
 
-async function pickPetAnimation(state: keyof PetAnimationSet) {
+async function pickPetAnimation(state: PetAnimationKey) {
   const selected = await openPetAnimationFile()
   if (typeof selected !== 'string') {
     return
@@ -1814,7 +2097,26 @@ async function pickPetAnimation(state: keyof PetAnimationSet) {
   }
 }
 
-function clearPetAnimation(state: keyof PetAnimationSet) {
+async function pickPetSkinPackage() {
+  const selected = await openPetSkinPackageDirectory()
+  if (typeof selected !== 'string') {
+    return
+  }
+
+  try {
+    const draft = await invoke<PetSkinPackageDraft>('read_pet_skin_package', { path: selected })
+    skinDraft.name = draft.name || folderNameFromPath(selected)
+    for (const field of petAnimationFields) {
+      skinDraft[field.key] = draft.animations[field.key] || ''
+    }
+    clearedPetAnimationStates.value = []
+    petSkinError.value = ''
+  } catch (err) {
+    petSkinError.value = String(err)
+  }
+}
+
+function clearPetAnimation(state: PetAnimationKey) {
   skinDraft[state] = ''
   if (
     isEditingPetSkin.value &&
@@ -1832,10 +2134,9 @@ function resetPetSkinDraft() {
   editingPetSkinId.value = null
   clearedPetAnimationStates.value = []
   skinDraft.name = ''
-  skinDraft.idle = ''
-  skinDraft.hover = ''
-  skinDraft.dragging = ''
-  skinDraft.click = ''
+  for (const field of petAnimationFields) {
+    skinDraft[field.key] = ''
+  }
 }
 
 function editSelectedPetSkin() {
@@ -1851,22 +2152,21 @@ function editSelectedPetSkin() {
   editingPetSkinId.value = skin.id
   clearedPetAnimationStates.value = []
   skinDraft.name = skin.name
-  skinDraft.idle = ''
-  skinDraft.hover = ''
-  skinDraft.dragging = ''
-  skinDraft.click = ''
+  for (const field of petAnimationFields) {
+    skinDraft[field.key] = ''
+  }
   petSkinError.value = ''
 }
 
-function isPetAnimationCleared(state: keyof PetAnimationSet) {
+function isPetAnimationCleared(state: PetAnimationKey) {
   return clearedPetAnimationStates.value.includes(state)
 }
 
-function restorePetAnimation(state: keyof PetAnimationSet) {
+function restorePetAnimation(state: PetAnimationKey) {
   clearedPetAnimationStates.value = clearedPetAnimationStates.value.filter((item) => item !== state)
 }
 
-function canClearPetAnimation(state: keyof PetAnimationSet) {
+function canClearPetAnimation(state: PetAnimationKey) {
   if (skinDraft[state]) {
     return true
   }
@@ -1879,7 +2179,7 @@ function canClearPetAnimation(state: keyof PetAnimationSet) {
   )
 }
 
-function petAnimationDraftLabel(state: keyof PetAnimationSet) {
+function petAnimationDraftLabel(state: PetAnimationKey) {
   if (skinDraft[state]) {
     return skinDraft[state]
   }
@@ -1906,12 +2206,10 @@ async function savePetSkin() {
 
   try {
     const editingId = editingPetSkinId.value
-    const animations = {
-      idle: skinDraft.idle || null,
-      hover: skinDraft.hover || null,
-      dragging: skinDraft.dragging || null,
-      click: skinDraft.click || null,
-    }
+    const animations = petAnimationFields.reduce((draft, field) => {
+      draft[field.key] = skinDraft[field.key] || null
+      return draft
+    }, {} as PetAnimationSet)
     const saved = editingId
       ? await invoke<PetSkinSummary>('update_pet_skin', {
           skinId: editingId,
@@ -1989,19 +2287,46 @@ async function resetPetImage() {
 }
 
 async function pickAppIcon() {
-  const selected = await openImageFile()
+  const selected = await openIconSourceFile()
 
   if (typeof selected !== 'string') {
     return
   }
 
+  iconLoading.value = true
+  formError.value = ''
+
   try {
-    const relativePath = await invoke<string>('import_app_icon', { path: selected })
+    const extension = fileExtension(selected)
+    if (!iconSourceFileExtensions.includes(extension)) {
+      formError.value = '请选择 png、jpg、jpeg、webp、gif、ico、exe 或 lnk 文件作为图标来源'
+      return
+    }
+
+    const command = executableIconSourceExtensions.includes(extension)
+      ? 'import_executable_icon'
+      : 'import_app_icon'
+    const relativePath = await invoke<string>(command, { path: selected })
     form.icon = relativePath
     form.iconPreview = await invoke<string>('get_image_data_url', { relativePath })
   } catch (err) {
     formError.value = String(err)
+  } finally {
+    iconLoading.value = false
   }
+}
+
+function fileExtension(path: string) {
+  const fileName = path.replace(/\\/g, '/').split('/').pop() ?? ''
+  const index = fileName.lastIndexOf('.')
+  return index >= 0 ? fileName.slice(index + 1).toLowerCase() : ''
+}
+
+async function openIconSourceFile() {
+  return open({
+    multiple: false,
+    directory: false,
+  })
 }
 
 async function openImageFile() {
@@ -2027,6 +2352,13 @@ async function openPetAnimationFile() {
         extensions: petAnimationFileExtensions,
       },
     ],
+  })
+}
+
+async function openPetSkinPackageDirectory() {
+  return open({
+    multiple: false,
+    directory: true,
   })
 }
 
@@ -2387,10 +2719,12 @@ async function openStoryMode() {
               </span>
               <span class="skin-card-name">{{ skin.name }}</span>
               <span class="skin-state-tags">
-                <span>待机</span>
-                <span v-if="skin.builtin || skin.animations.hover">选中</span>
-                <span v-if="skin.builtin || skin.animations.click">点击</span>
-                <span v-if="skin.builtin || skin.animations.dragging">拖动</span>
+                <span
+                  v-for="field in configuredPetAnimationFields(skin)"
+                  :key="field.key"
+                >
+                  {{ petAnimationTagLabel(field.key) }}
+                </span>
               </span>
             </button>
           </div>
@@ -2419,7 +2753,7 @@ async function openStoryMode() {
             <p>{{ selectedPetSkin?.builtin ? '内置宠物形象' : '已存储宠物形象' }}</p>
 
             <div class="skin-animation-list" v-if="selectedPetSkin">
-              <div v-for="field in animationFields" :key="field.key" class="skin-animation-item">
+              <div v-for="field in petAnimationFields" :key="field.key" class="skin-animation-item">
                 <span class="animation-status-thumb">
                   <video
                     v-if="isVideoSource(petSkinAnimationThumbUrl(selectedPetSkin, field.key))"
@@ -2475,7 +2809,10 @@ async function openStoryMode() {
         </div>
 
         <section class="skin-import-panel">
-          <h3>{{ isEditingPetSkin ? '编辑宠物形象' : '导入宠物' }}</h3>
+          <div class="skin-import-title-row">
+            <h3>{{ isEditingPetSkin ? '编辑宠物形象' : '导入宠物' }}</h3>
+            <button type="button" @click="pickPetSkinPackage">选择宠物包</button>
+          </div>
           <p v-if="isEditingPetSkin" class="settings-empty">
             仅选择需要替换的素材；未选择的动画会继续保留当前配置。
           </p>
@@ -2485,7 +2822,7 @@ async function openStoryMode() {
           </label>
 
           <div class="animation-picker-grid">
-            <div v-for="field in animationFields" :key="field.key" class="animation-picker">
+            <div v-for="field in petAnimationFields" :key="field.key" class="animation-picker">
               <div>
                 <strong>{{ field.label }}</strong>
                 <span>
@@ -2667,6 +3004,13 @@ async function openStoryMode() {
                   <small>开启后，括号、【】或 *动作* 中的内容会作为旁白显示；关闭后聊天只显示双方对话。</small>
                 </span>
                 <input v-model="settingsDraft.chatNarrationEnabled" type="checkbox" />
+              </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>对话音乐联动</strong>
+                  <small>开启后，AI 明确判断你想听歌或控制音乐时才会操作播放器；关闭后音乐指令只作为普通聊天处理。</small>
+                </span>
+                <input v-model="settingsDraft.chatMusicLinkEnabled" type="checkbox" />
               </label>
             </section>
 
@@ -2998,6 +3342,210 @@ async function openStoryMode() {
                 {{ currentCompanion.model }}；实际聊天使用该模型，但仍通过本页的服务商、Base URL 和 API Key 连接。
               </p>
               <p class="settings-empty">{{ selectedAiProviderPreset().help }}</p>
+            </section>
+
+            <section v-show="activeSettingsSection === 'codex'" class="settings-section">
+              <h3>Codex 工作状态</h3>
+              <div
+                class="codex-status-card"
+                :class="`state-${codexSummary?.state || codexStatus?.state || 'disconnected'}`"
+              >
+                <div>
+                  <strong>{{ codexStatusLabel() }}</strong>
+                  <small>{{ codexSummary?.message || codexStatus?.message || 'Codex App Server 未连接' }}</small>
+                </div>
+                <span>{{ codexSummary?.badgeLabel || codexStatus?.lastEvent || 'idle' }}</span>
+              </div>
+              <div v-if="codexStatus" class="settings-runtime-list">
+                <div class="settings-runtime-row">
+                  <strong>连接方式</strong>
+                  <code>{{ codexStatus.endpoint || '未连接' }}</code>
+                </div>
+                <div class="settings-runtime-row">
+                  <strong>模式</strong>
+                  <code>{{ codexStatus.mode || '暂无' }}</code>
+                </div>
+                <div class="settings-runtime-row">
+                  <strong>任务数</strong>
+                  <code>{{ codexSummary?.totalCount ?? codexStatus.tasks?.length ?? 0 }}</code>
+                </div>
+                <div class="settings-runtime-row">
+                  <strong>未读提醒</strong>
+                  <code>{{ codexSummary?.badgeLabel || '暂无' }}</code>
+                </div>
+                <div class="settings-runtime-row">
+                  <strong>更新时间</strong>
+                  <code>{{ formatCodexStatusTime(codexStatus) }}</code>
+                </div>
+              </div>
+              <div v-if="codexRecentTasks.length > 0" class="codex-task-list">
+                <div
+                  v-for="task in codexRecentTasks"
+                  :key="task.id"
+                  class="codex-task-row"
+                  :class="[`state-${task.state}`, { unread: task.unread }]"
+                >
+                  <div>
+                    <strong>{{ task.label }}</strong>
+                    <small>{{ task.message }}</small>
+                    <small>{{ task.mode || '未知模式' }} · {{ formatCodexTaskTime(task.updatedAt) }}</small>
+                  </div>
+                  <span>{{ codexStateLabel(task.state) }}</span>
+                </div>
+              </div>
+              <p v-else class="settings-empty">暂无 Codex 任务记录。</p>
+              <div
+                v-if="(codexSummary?.unreadCount ?? 0) > 0"
+                class="settings-update-actions codex-actions"
+              >
+                <button type="button" :disabled="codexActionLoading" @click="ackCodexNotifications">
+                  清除提醒
+                </button>
+              </div>
+              <p v-if="codexStatus?.error" class="form-error">{{ codexStatus.error }}</p>
+
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>启用 Codex 状态提醒</strong>
+                  <small>保存后可监听 Codex 会话日志、control socket，或启动独立 App Server 验证状态链路。</small>
+                </span>
+                <input v-model="settingsDraft.codexAppServerEnabled" type="checkbox" />
+              </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>启动时自动连接 Codex</strong>
+                  <small>保存后下次启动桌宠时，会按当前连接模式自动开始监听或连接 Codex。</small>
+                </span>
+                <input
+                  v-model="settingsDraft.codexAppServerAutoStart"
+                  type="checkbox"
+                  :disabled="!settingsDraft.codexAppServerEnabled"
+                />
+              </label>
+              <label class="settings-toggle-row">
+                <span>
+                  <strong>完成时提醒</strong>
+                  <small>Codex 完成一轮工作后，宠物显示完成气泡并播放完成动画。</small>
+                </span>
+                <input v-model="settingsDraft.codexCompletionNotificationsEnabled" type="checkbox" />
+              </label>
+              <div class="settings-form-grid">
+                <label class="settings-field">
+                  连接模式
+                  <select v-model="settingsDraft.codexAppServerMode">
+                    <option
+                      v-for="option in codexModeOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                  <small>
+                    {{
+                      codexModeOptions.find((option) => option.value === settingsDraft.codexAppServerMode)
+                        ?.description
+                    }}
+                  </small>
+                </label>
+              </div>
+              <div class="settings-form-grid">
+                <label v-if="!isCodexSessionLogMode" class="settings-field">
+                  Codex 命令
+                  <input
+                    v-model="settingsDraft.codexAppServerCommand"
+                    placeholder="codex.cmd 或完整 codex.exe 路径"
+                    autocomplete="off"
+                  />
+                  <small>Windows 下 npm 安装通常使用 codex.cmd；桌面版也可填完整 codex.exe 路径。</small>
+                </label>
+                <label v-if="isCodexProxyMode" class="settings-field">
+                  Control socket 路径
+                  <input
+                    v-model="settingsDraft.codexAppServerSocketPath"
+                    placeholder="留空使用 Codex 默认 control socket"
+                    autocomplete="off"
+                  />
+                  <small>当前 Codex 未暴露默认 socket 时，可填写 Codex 侧提供的自定义 --sock 路径。</small>
+                </label>
+                <label v-if="isCodexManagedMode" class="settings-field">
+                  独立服务端口
+                  <input
+                    v-model.number="settingsDraft.codexAppServerPort"
+                    type="number"
+                    min="0"
+                    max="65535"
+                  />
+                  <small>仅独立测试模式使用；填 0 表示自动分配本机端口。</small>
+                </label>
+              </div>
+              <div class="settings-update-actions codex-actions">
+                <button
+                  type="button"
+                  :disabled="!canStartCodexAppServer"
+                  @click="connectCodexAppServer"
+                >
+                  {{ codexConnectLabel }}
+                </button>
+                <button
+                  type="button"
+                  :disabled="!canDisconnectCodexAppServer"
+                  @click="disconnectCodexAppServer"
+                >
+                  断开连接
+                </button>
+                <button type="button" :disabled="codexActionLoading" @click="loadCodexStatus">
+                  刷新状态
+                </button>
+              </div>
+
+              <template v-if="isCodexSessionLogMode">
+                <p class="settings-empty">
+                  日志监听模式会读取本机 Codex 会话日志新增事件，只识别任务开始、完成、中断等状态，不展示 prompt、回复正文、工具输出或真实日志路径。
+                </p>
+                <p class="settings-empty">
+                  适用于 Windows Codex Desktop：先点击“开始监听日志”，再回到 Codex 桌面端开始任务；Codex 写入完成事件后，宠物会提醒你。
+                </p>
+              </template>
+              <template v-else-if="isCodexManagedMode">
+                <div v-if="codexRemoteCommand" class="settings-runtime-list">
+                  <div class="settings-runtime-row">
+                    <strong>连接这个服务</strong>
+                    <code>{{ codexRemoteCommand }}</code>
+                  </div>
+                </div>
+                <p class="settings-empty">
+                  在终端运行上面的命令后，在那个 Codex CLI 窗口里开始任务；宠物会监听这个独立 App Server 上的工作状态。
+                </p>
+                <h3>测试任务</h3>
+                <label class="settings-field wide">
+                  任务内容
+                  <textarea
+                    v-model="codexTestPrompt"
+                    maxlength="500"
+                    placeholder="输入一条短任务，用于验证状态提醒"
+                  />
+                  <small>测试内容只通过运行时发送给独立 App Server，不写入源码或文档。</small>
+                </label>
+                <label class="settings-field wide">
+                  工作目录（可选）
+                  <input v-model="codexTestCwd" placeholder="留空时由 Codex 使用默认工作目录" />
+                </label>
+                <div class="settings-update-actions codex-actions">
+                  <button
+                    class="primary-button"
+                    type="button"
+                    :disabled="!canStartCodexTestTurn"
+                    @click="startCodexTestTurn"
+                  >
+                    {{ codexActionLoading ? '提交中...' : '提交测试任务' }}
+                  </button>
+                </div>
+              </template>
+              <p v-else class="settings-empty">
+                监听当前 Codex 需要 Codex 侧暴露 control socket；Windows Codex Desktop 通常不会生成默认 socket，建议优先使用日志监听模式。
+              </p>
+              <p v-if="codexActionError" class="form-error">{{ codexActionError }}</p>
             </section>
 
             <section

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PetDrawer",
-  "version": "0.2.10",
+  "version": "0.3.0",
   "identifier": "com.petdrawer.app",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,7 +13,11 @@
     "macOSPrivateApi": true,
     "withGlobalTauri": false,
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     },
     "windows": [
       {
@@ -25,6 +29,19 @@
         "transparent": true,
         "shadow": false,
         "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
+      },
+      {
+        "label": "pet-bubble",
+        "title": "PetDrawer Bubble",
+        "width": 300,
+        "height": 96,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "resizable": false,
+        "visible": false,
         "alwaysOnTop": true,
         "skipTaskbar": true
       },
@@ -45,7 +62,7 @@
         "label": "pet-menu",
         "title": "PetDrawer Menu",
         "width": 150,
-        "height": 212,
+        "height": 250,
         "decorations": false,
         "transparent": true,
         "shadow": false,
@@ -72,6 +89,19 @@
         "title": "PetDrawer Story",
         "width": 900,
         "height": 680,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "resizable": false,
+        "visible": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
+      },
+      {
+        "label": "music",
+        "title": "PetDrawer Music",
+        "width": 520,
+        "height": 740,
         "decorations": false,
         "transparent": true,
         "shadow": false,

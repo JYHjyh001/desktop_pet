@@ -76,6 +76,7 @@ Desktop.ini
 
 # Logs and crash dumps
 *.log
+log.txt
 logs/
 npm-debug.log*
 yarn-debug.log*

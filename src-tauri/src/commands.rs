@@ -1,20 +1,32 @@
+use lofty::{
+    prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt},
+    tag::Tag,
+};
 use serde::{Deserialize, Serialize};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 use tauri::AppHandle;
 
 use crate::{
-    ai_chat::{self, AiConnectionTestResult, PetChatMessageDraft, PetChatReply},
+    ai_chat::{
+        self, AiConnectionTestResult, MusicChatActionContext, MusicIntentContext, MusicIntentReply,
+        PetChatMessageDraft, PetChatReply,
+    },
     ai_memory::{self, PetMemory, PetMemoryDraft, PetMemoryMessage},
     app_data::{
-        self, AiConnectionProfile, AiSettings, AppDraft, Companion, CompanionDraft,
-        PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinSummary, StorageSettings,
-        WechatClawbotSettings,
+        self, AiConnectionProfile, AiSettings, AppDraft, CodexAppServerSettings, Companion,
+        CompanionDraft, PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinPackageDraft,
+        PetSkinSummary, StorageSettings, WechatClawbotSettings,
     },
-    clawbot_bridge,
+    clawbot_bridge, codex_app_server,
     favorability::{self, CompanionStatus, FavorabilityLog},
     launcher, startup,
     story_mode::{self, StoryCreateDraft, StorySave, StoryTurnReply},
     updater, wechat_clawbot, windowing,
 };
+use tauri::State;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +40,8 @@ pub struct DrawerPreferencesDraft {
     pub chat_typewriter_enabled: bool,
     #[serde(default)]
     pub chat_narration_enabled: bool,
+    #[serde(default = "default_true")]
+    pub chat_music_link_enabled: bool,
     #[serde(default = "default_pet_size")]
     pub pet_size: u32,
     pub pet_always_on_top: bool,
@@ -40,6 +54,8 @@ pub struct DrawerPreferencesDraft {
     pub ai: AiSettingsDraft,
     #[serde(default)]
     pub wechat_clawbot: WechatClawbotSettingsDraft,
+    #[serde(default)]
+    pub codex_app_server: CodexAppServerSettingsDraft,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +127,25 @@ pub struct WechatClawbotSettingsDraft {
     pub bridge_token: String,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexAppServerSettingsDraft {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub auto_start: bool,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub socket_path: String,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default = "default_true")]
+    pub completion_notifications_enabled: bool,
+}
+
 impl Default for AiSettingsDraft {
     fn default() -> Self {
         let settings = AiSettings::default();
@@ -145,6 +180,25 @@ pub struct RuntimeInfo {
     pet_assets_dir: String,
     icons_dir: String,
     storage_config_file: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicImportItem {
+    source_path: String,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicMetadataResult {
+    title: Option<String>,
+    artist: Option<String>,
+    album: Option<String>,
+    duration: Option<u64>,
+    source: String,
+    confidence: f32,
+    warnings: Vec<String>,
 }
 
 #[tauri::command]
@@ -437,6 +491,7 @@ pub fn save_drawer_preferences(
     config.drawer.theme = theme;
     config.drawer.chat_typewriter_enabled = preferences.chat_typewriter_enabled;
     config.drawer.chat_narration_enabled = preferences.chat_narration_enabled;
+    config.drawer.chat_music_link_enabled = preferences.chat_music_link_enabled;
     config.drawer.always_on_top = preferences.drawer_always_on_top;
     config.pet.size = pet_size;
     config.pet.always_on_top = preferences.pet_always_on_top;
@@ -444,6 +499,7 @@ pub fn save_drawer_preferences(
     config.system.auto_favorite_enabled = preferences.auto_favorite_enabled;
     config.ai = normalize_ai_settings(preferences.ai);
     config.wechat_clawbot = normalize_wechat_clawbot_settings(preferences.wechat_clawbot);
+    config.codex_app_server = normalize_codex_app_server_settings(preferences.codex_app_server);
     app_data::write_config(&app, &config)?;
     clawbot_bridge::restart_bridge_server(&app)?;
 
@@ -459,10 +515,12 @@ pub fn save_chat_display_preferences(
     app: AppHandle,
     chat_typewriter_enabled: bool,
     chat_narration_enabled: bool,
+    chat_music_link_enabled: bool,
 ) -> Result<PetDrawerConfig, String> {
     let mut config = app_data::read_config(&app)?;
     config.drawer.chat_typewriter_enabled = chat_typewriter_enabled;
     config.drawer.chat_narration_enabled = chat_narration_enabled;
+    config.drawer.chat_music_link_enabled = chat_music_link_enabled;
     app_data::write_config(&app, &config)?;
     Ok(config)
 }
@@ -543,6 +601,36 @@ fn normalize_wechat_clawbot_settings(
             format!("/{bridge_path}")
         },
         bridge_token: settings.bridge_token.trim().to_string(),
+    }
+}
+
+fn normalize_codex_app_server_settings(
+    settings: CodexAppServerSettingsDraft,
+) -> CodexAppServerSettings {
+    let defaults = CodexAppServerSettings::default();
+    let command = settings.command.trim().to_string();
+
+    CodexAppServerSettings {
+        enabled: settings.enabled,
+        auto_start: settings.enabled && settings.auto_start,
+        mode: normalize_codex_app_server_mode(&settings.mode),
+        command: if command.is_empty() {
+            defaults.command
+        } else {
+            command
+        },
+        socket_path: settings.socket_path.trim().to_string(),
+        port: settings.port,
+        completion_notifications_enabled: settings.completion_notifications_enabled,
+    }
+}
+
+fn normalize_codex_app_server_mode(value: &str) -> String {
+    match value.trim() {
+        "managed" => "managed".to_string(),
+        "sessionLog" => "sessionLog".to_string(),
+        "proxy" => "proxy".to_string(),
+        _ => CodexAppServerSettings::default().mode,
     }
 }
 
@@ -681,6 +769,11 @@ pub fn set_pet_skin(app: AppHandle, skin_id: String) -> Result<PetSkinSummary, S
 }
 
 #[tauri::command]
+pub fn read_pet_skin_package(path: String) -> Result<PetSkinPackageDraft, String> {
+    app_data::read_pet_skin_package(&path)
+}
+
+#[tauri::command]
 pub fn import_pet_skin(
     app: AppHandle,
     name: String,
@@ -799,6 +892,21 @@ pub fn hide_pet_menu(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn show_pet_bubble(app: AppHandle, payload: windowing::PetBubblePayload) -> Result<(), String> {
+    windowing::show_pet_bubble(&app, payload)
+}
+
+#[tauri::command]
+pub fn hide_pet_bubble(app: AppHandle) -> Result<(), String> {
+    windowing::hide_pet_bubble(&app)
+}
+
+#[tauri::command]
+pub fn reposition_pet_bubble(app: AppHandle) -> Result<(), String> {
+    windowing::reposition_pet_bubble(&app)
+}
+
+#[tauri::command]
 pub fn show_pet_chat(app: AppHandle) -> Result<(), String> {
     windowing::show_pet_chat(&app)
 }
@@ -819,6 +927,252 @@ pub fn hide_story(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub fn show_music_player(app: AppHandle) -> Result<(), String> {
+    windowing::show_music_player(&app)
+}
+
+#[tauri::command]
+pub fn hide_music_player(app: AppHandle) -> Result<(), String> {
+    windowing::hide_music_player(&app)
+}
+
+#[tauri::command]
+pub fn list_music_files_in_directory(directory: String) -> Result<Vec<String>, String> {
+    let root = PathBuf::from(directory.trim());
+    if !root.is_dir() {
+        return Err("请选择有效的音乐文件夹".to_string());
+    }
+
+    let mut paths = Vec::new();
+    collect_music_files(&root, &mut paths)?;
+    paths.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+
+    Ok(paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect())
+}
+
+#[tauri::command]
+pub fn import_music_files(
+    paths: Vec<String>,
+    storage_dir: String,
+) -> Result<Vec<MusicImportItem>, String> {
+    let storage_dir = storage_dir.trim();
+    let storage = if storage_dir.is_empty() {
+        None
+    } else {
+        let path = PathBuf::from(storage_dir);
+        fs::create_dir_all(&path).map_err(|err| format!("无法创建音乐存储目录：{err}"))?;
+        if !path.is_dir() {
+            return Err("音乐存储目录无效".to_string());
+        }
+        Some(path)
+    };
+
+    let mut output = Vec::new();
+    for source in paths {
+        let source_path = PathBuf::from(source.trim());
+        if !source_path.is_file() || !is_supported_music_file(&source_path) {
+            continue;
+        }
+
+        let target_path = if let Some(storage) = storage.as_ref() {
+            copy_music_file_to_storage(&source_path, storage)?
+        } else {
+            source_path.clone()
+        };
+
+        output.push(MusicImportItem {
+            source_path: source_path.to_string_lossy().to_string(),
+            path: target_path.to_string_lossy().to_string(),
+        });
+    }
+
+    if output.is_empty() {
+        return Err("没有找到可导入的音频文件".to_string());
+    }
+
+    Ok(output)
+}
+
+#[tauri::command]
+pub fn read_music_metadata(path: String) -> Result<MusicMetadataResult, String> {
+    let music_path = PathBuf::from(path.trim());
+    if !music_path.is_file() || !is_supported_music_file(&music_path) {
+        return Err("请选择有效的音频文件".to_string());
+    }
+
+    let tagged_file = lofty::read_from_path(&music_path)
+        .map_err(|err| format!("无法读取音频 metadata：{err}"))?;
+    let tag = tagged_file
+        .primary_tag()
+        .or_else(|| tagged_file.first_tag());
+    let title = tag.and_then(read_music_title);
+    let artist = tag.and_then(read_music_artist);
+    let album = tag.and_then(read_music_album);
+    let duration = {
+        let seconds = tagged_file.properties().duration().as_secs();
+        if seconds > 0 {
+            Some(seconds)
+        } else {
+            None
+        }
+    };
+
+    let mut warnings = Vec::new();
+    if title.is_none() {
+        warnings.push("metadata 中没有读取到歌名".to_string());
+    }
+    if artist.is_none() {
+        warnings.push("metadata 中没有读取到歌手".to_string());
+    }
+
+    let confidence = match (title.is_some(), artist.is_some()) {
+        (true, true) => 0.95,
+        (true, false) | (false, true) => 0.62,
+        (false, false) => 0.0,
+    };
+
+    Ok(MusicMetadataResult {
+        title,
+        artist,
+        album,
+        duration,
+        source: "metadata".to_string(),
+        confidence,
+        warnings,
+    })
+}
+
+fn collect_music_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = fs::read_dir(directory)
+        .map_err(|err| format!("无法读取文件夹 {}：{err}", directory.to_string_lossy()))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("读取文件夹项目失败：{err}"))?;
+        let path = entry.path();
+        let metadata = entry
+            .metadata()
+            .map_err(|err| format!("无法读取文件信息 {}：{err}", path.to_string_lossy()))?;
+
+        if metadata.is_dir() {
+            collect_music_files(&path, output)?;
+        } else if metadata.is_file() && is_supported_music_file(&path) {
+            output.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn is_supported_music_file(path: &Path) -> bool {
+    const MUSIC_EXTENSIONS: &[&str] = &["mp3", "wav", "ogg", "flac", "m4a", "aac", "webm"];
+
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            MUSIC_EXTENSIONS
+                .iter()
+                .any(|item| item.eq_ignore_ascii_case(extension))
+        })
+        .unwrap_or(false)
+}
+
+fn copy_music_file_to_storage(source: &Path, storage: &Path) -> Result<PathBuf, String> {
+    let file_name = source
+        .file_name()
+        .and_then(|item| item.to_str())
+        .ok_or_else(|| "无法识别音乐文件名".to_string())?;
+    let file_stem = source
+        .file_stem()
+        .and_then(|item| item.to_str())
+        .unwrap_or("music");
+    let extension = source
+        .extension()
+        .and_then(|item| item.to_str())
+        .unwrap_or("");
+
+    for index in 0..10_000 {
+        let candidate_name = if index == 0 {
+            file_name.to_string()
+        } else if extension.is_empty() {
+            format!("{file_stem} ({index})")
+        } else {
+            format!("{file_stem} ({index}).{extension}")
+        };
+        let candidate = storage.join(candidate_name);
+
+        if candidate.exists() {
+            if same_path(source, &candidate) {
+                return Ok(candidate);
+            }
+            continue;
+        }
+
+        fs::copy(source, &candidate).map_err(|err| {
+            format!(
+                "复制音乐文件 {} 到 {} 失败：{err}",
+                source.to_string_lossy(),
+                candidate.to_string_lossy()
+            )
+        })?;
+        return Ok(candidate);
+    }
+
+    Err("音乐文件重名过多，无法生成唯一文件名".to_string())
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn clean_optional_text(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| item.chars().take(240).collect())
+}
+
+fn read_music_title(tag: &Tag) -> Option<String> {
+    clean_optional_text(tag.get_string(ItemKey::TrackTitle))
+        .or_else(|| clean_optional_text(tag.title().as_deref()))
+}
+
+fn read_music_artist(tag: &Tag) -> Option<String> {
+    clean_joined_texts(tag.get_strings(ItemKey::TrackArtist))
+        .or_else(|| clean_joined_texts(tag.get_strings(ItemKey::TrackArtists)))
+        .or_else(|| clean_optional_text(tag.artist().as_deref()))
+        .or_else(|| clean_joined_texts(tag.get_strings(ItemKey::AlbumArtist)))
+        .or_else(|| clean_joined_texts(tag.get_strings(ItemKey::AlbumArtists)))
+}
+
+fn read_music_album(tag: &Tag) -> Option<String> {
+    clean_optional_text(tag.get_string(ItemKey::AlbumTitle))
+        .or_else(|| clean_optional_text(tag.album().as_deref()))
+}
+
+fn clean_joined_texts<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut cleaned = Vec::new();
+    for value in values {
+        if let Some(item) = clean_optional_text(Some(value)) {
+            if !cleaned.iter().any(|existing| existing == &item) {
+                cleaned.push(item);
+            }
+        }
+    }
+
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned.join(" / ").chars().take(240).collect())
+    }
+}
+
+#[tauri::command]
 pub async fn send_pet_chat_message(
     app: AppHandle,
     messages: Vec<PetChatMessageDraft>,
@@ -826,6 +1180,32 @@ pub async fn send_pet_chat_message(
     tauri::async_runtime::spawn_blocking(move || ai_chat::send_pet_chat_message(&app, messages))
         .await
         .map_err(|err| format!("宠物对话任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn classify_music_intent(
+    app: AppHandle,
+    user_input: String,
+    context: MusicIntentContext,
+) -> Result<MusicIntentReply, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ai_chat::classify_music_intent(&app, user_input, context)
+    })
+    .await
+    .map_err(|err| format!("音乐意图识别任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn send_pet_music_chat_message(
+    app: AppHandle,
+    messages: Vec<PetChatMessageDraft>,
+    action_context: MusicChatActionContext,
+) -> Result<PetChatReply, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ai_chat::send_pet_music_chat_message(&app, messages, action_context)
+    })
+    .await
+    .map_err(|err| format!("音乐对话回复任务失败：{err}"))?
 }
 
 #[tauri::command]
@@ -922,6 +1302,49 @@ pub async fn send_wechat_clawbot_message(
     tauri::async_runtime::spawn_blocking(move || wechat_clawbot::send_message(&settings, &message))
         .await
         .map_err(|err| format!("微信 ClawBot 发送任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub fn get_codex_app_server_status(
+    state: State<'_, codex_app_server::CodexAppServerState>,
+) -> codex_app_server::CodexStatusPayload {
+    codex_app_server::get_status(&state)
+}
+
+#[tauri::command]
+pub fn start_codex_app_server(
+    app: AppHandle,
+    state: State<'_, codex_app_server::CodexAppServerState>,
+) -> Result<codex_app_server::CodexStatusPayload, String> {
+    let settings = app_data::read_config(&app)?.codex_app_server;
+    codex_app_server::start(app, &state, settings)
+}
+
+#[tauri::command]
+pub fn stop_codex_app_server(
+    app: AppHandle,
+    state: State<'_, codex_app_server::CodexAppServerState>,
+) -> Result<codex_app_server::CodexStatusPayload, String> {
+    codex_app_server::stop(app, &state)
+}
+
+#[tauri::command]
+pub fn ack_codex_notifications(
+    app: AppHandle,
+    state: State<'_, codex_app_server::CodexAppServerState>,
+) -> Result<codex_app_server::CodexStatusPayload, String> {
+    codex_app_server::ack_notifications(app, &state)
+}
+
+#[tauri::command]
+pub fn start_codex_app_server_turn(
+    app: AppHandle,
+    state: State<'_, codex_app_server::CodexAppServerState>,
+    prompt: String,
+    cwd: Option<String>,
+) -> Result<codex_app_server::CodexStatusPayload, String> {
+    let settings = app_data::read_config(&app)?.codex_app_server;
+    codex_app_server::start_turn(app, &state, settings, prompt, cwd)
 }
 
 #[tauri::command]

@@ -43,6 +43,49 @@ pub struct PetChatReply {
     pub favorability_change: Option<FavorabilityChangeResult>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicIntentContext {
+    #[serde(default)]
+    pub has_tracks: bool,
+    #[serde(default)]
+    pub track_count: usize,
+    #[serde(default)]
+    pub favorite_count: usize,
+    #[serde(default)]
+    pub recent_count: usize,
+    #[serde(default)]
+    pub available_tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicIntentReply {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume_delta: Option<f32>,
+    pub confidence: f32,
+    pub reply: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicChatActionContext {
+    pub action: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub query: String,
+    #[serde(default, alias = "volumeDelta", alias = "volume_delta")]
+    pub volume_delta: Option<f32>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiConnectionTestResult {
@@ -94,6 +137,24 @@ struct ShortTermSummaryOutput {
     summary: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct MusicIntentOutput {
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default, alias = "volumeDelta", alias = "volume_delta")]
+    volume_delta: Option<f32>,
+    #[serde(default)]
+    confidence: f32,
+    #[serde(default)]
+    reply: String,
+}
+
 enum ForgetIntent {
     ClearAll,
     Latest,
@@ -103,6 +164,22 @@ enum ForgetIntent {
 pub fn send_pet_chat_message(
     app: &AppHandle,
     messages: Vec<PetChatMessageDraft>,
+) -> Result<PetChatReply, String> {
+    send_pet_chat_message_internal(app, messages, None)
+}
+
+pub fn send_pet_music_chat_message(
+    app: &AppHandle,
+    messages: Vec<PetChatMessageDraft>,
+    action_context: MusicChatActionContext,
+) -> Result<PetChatReply, String> {
+    send_pet_chat_message_internal(app, messages, Some(action_context))
+}
+
+fn send_pet_chat_message_internal(
+    app: &AppHandle,
+    messages: Vec<PetChatMessageDraft>,
+    music_action_context: Option<MusicChatActionContext>,
 ) -> Result<PetChatReply, String> {
     let config = app_data::read_config(app)?;
     let settings = config.ai;
@@ -136,6 +213,8 @@ pub fn send_pet_chat_message(
         &settings.emoji_frequency,
         use_deepseek_json_output,
     );
+    let companion_prompt =
+        append_music_action_context(&companion_prompt, music_action_context.as_ref());
     chat_settings.system_prompt = append_post_history_instructions(&companion_prompt, &companion);
     let mut memory_warnings = Vec::new();
     let mut response_recent_messages = Vec::new();
@@ -324,6 +403,44 @@ pub fn test_ai_connection(mut settings: AiSettings) -> Result<AiConnectionTestRe
     })
 }
 
+pub fn classify_music_intent(
+    app: &AppHandle,
+    user_input: String,
+    context: MusicIntentContext,
+) -> Result<MusicIntentReply, String> {
+    let trimmed_input = user_input.trim();
+    if trimmed_input.is_empty() {
+        return Ok(chat_only_music_intent());
+    }
+
+    let config = app_data::read_config(app)?;
+    let mut settings = config.ai;
+    if !settings.enabled {
+        return Err("请先在抽屉设置的“AI 接口”中启用宠物聊天 API。".to_string());
+    }
+    if settings.model.trim().is_empty() {
+        return Err("请先在“AI 接口”中填写模型名称。".to_string());
+    }
+
+    settings.system_prompt = music_intent_system_prompt();
+    settings.temperature = 0.0;
+    settings.max_tokens = settings.max_tokens.clamp(128, 600).min(420);
+
+    let messages = vec![PetChatMessageDraft {
+        role: "user".to_string(),
+        content: music_intent_request(trimmed_input, &context),
+        created_at: String::new(),
+        time_context: String::new(),
+    }];
+    let raw = send_chat_request(
+        &settings,
+        &messages,
+        supports_json_response_format(&settings.provider),
+    )?;
+
+    parse_music_intent(&raw, &context)
+}
+
 pub fn send_story_text_request(
     mut settings: AiSettings,
     system_prompt: String,
@@ -385,6 +502,322 @@ fn supports_json_response_format(provider: &str) -> bool {
         provider.trim().to_lowercase().as_str(),
         "openai" | "deepseek" | "custom"
     )
+}
+
+fn music_intent_system_prompt() -> String {
+    r#"你是“宠物电台”的音乐意图分类器。
+
+你的任务：判断用户消息是否应该触发本地音乐播放器动作。
+你只能输出一个 JSON 对象，不要输出 Markdown，不要输出解释文本。
+
+隐私规则：
+1. 你不会收到用户本机歌曲路径。
+2. 你只能根据用户消息、标签摘要和数量摘要判断意图。
+3. 不能要求读取文件、上传音频、访问外部音乐平台。
+
+允许的 type：
+- music_action：用户明确要求听歌、播放、点播或控制音乐。
+- chat_only：不是音乐控制意图，或置信度不足。
+
+允许的 action：
+- play_music
+- play_by_query
+- play_by_tags
+- pause
+- resume
+- next
+- previous
+- set_volume
+- favorite_current
+- skip_current
+- start_sleep_mode
+- start_focus_mode
+- start_mood_mode
+
+标签建议：
+- 用户明确要求用音乐放松、缓解疲惫、焦虑、难过、孤独：治愈、安静、慢歌、纯音乐
+- 用户明确要求学习/工作/专注音乐：学习、工作、纯音乐、中速、安静
+- 用户明确要求睡前/睡眠音乐：睡觉、安静、慢歌、纯音乐
+- 用户明确要求开心、元气、运动、热血音乐：开心、热血、快歌、运动
+
+意图边界：
+- 只有用户明确表达“想听歌/播放音乐/点播某首歌/暂停音乐/切歌/调音量/收藏当前歌曲”等音乐需求时，才输出 music_action。
+- 用户只是说“我累了、我焦虑、我想放松、我睡不着、我想学习、陪我聊聊”等状态或聊天需求，但没有要求听歌或控制音乐，必须输出 chat_only。
+- 用户只是出现“歌、音乐、歌名、播放器”等词，但语义是在讨论产品功能、代码、需求、界面、设计、实现方式，必须输出 chat_only。
+- 用户只发一个可能的歌名、歌手名或标题，不算明确听歌需求，必须输出 chat_only。
+
+按歌名点播规则：
+- 只有用户语义上明确表达想听、播放、点播某个具体歌名、歌手或标题关键词时，才使用 play_by_query。
+- 单独一个可能的歌名、只提到某个标题、或没有听歌/播放意图时，必须输出 chat_only。
+- 用户讨论“播放功能、音乐功能、需求、代码、界面、怎么实现”等产品或开发内容时，必须输出 chat_only。
+- 用户只说“播放音乐、放首歌、听点歌”但没有具体歌名时，使用 play_music，不要使用 play_by_query。
+- query 只能是用户原话中给出的歌名/歌手关键词，不要补全、猜测或编造歌名。
+
+输出格式：
+{
+  "type": "music_action",
+  "action": "play_by_tags",
+  "tags": ["安静", "治愈"],
+  "query": null,
+  "volume_delta": null,
+  "confidence": 0.86,
+  "reply": "好，我给你放点安静一点的音乐。"
+}
+
+点歌示例：
+{
+  "type": "music_action",
+  "action": "play_by_query",
+  "tags": [],
+  "query": "晴天",
+  "volume_delta": null,
+  "confidence": 0.82,
+  "reply": "好，我帮你找找这首。"
+}
+
+如果不是音乐意图，输出：
+{
+  "type": "chat_only",
+  "action": null,
+  "tags": [],
+  "query": null,
+  "volume_delta": null,
+  "confidence": 0.0,
+  "reply": ""
+}"#
+    .to_string()
+}
+
+fn music_intent_request(user_input: &str, context: &MusicIntentContext) -> String {
+    let safe_tags = sanitize_music_tags(&context.available_tags).join("、");
+    format!(
+        "用户消息：\n{}\n\n本地音乐库安全摘要：\n- 是否已有歌曲：{}\n- 歌曲数量：{}\n- 收藏数量：{}\n- 最近播放数量：{}\n- 可用标签：{}\n\n请只输出 JSON。",
+        user_input.trim().chars().take(500).collect::<String>(),
+        context.has_tracks,
+        context.track_count.min(100_000),
+        context.favorite_count.min(100_000),
+        context.recent_count.min(100_000),
+        if safe_tags.is_empty() { "无".to_string() } else { safe_tags },
+    )
+}
+
+fn append_music_action_context(
+    system_prompt: &str,
+    context: Option<&MusicChatActionContext>,
+) -> String {
+    let Some(context) = context else {
+        return system_prompt.trim().to_string();
+    };
+
+    let action = context.action.trim().to_lowercase();
+    let action = if is_allowed_music_action(&action) {
+        action
+    } else {
+        "music_action".to_string()
+    };
+    let tags = sanitize_music_tags(&context.tags).join("、");
+    let query = sanitize_music_query(&context.query).unwrap_or_else(|| "无".to_string());
+    let volume_delta = context
+        .volume_delta
+        .map(|value| format!("{:.2}", value.clamp(-0.3, 0.3)))
+        .unwrap_or_else(|| "无".to_string());
+
+    format!(
+        "{}\n\n[本轮本地音乐动作上下文]\n用户刚才的消息已经被本地应用识别为音乐控制意图，播放器动作已经发送给本地播放器，可能已经执行或正在执行。\n动作：{}（{}）\n标签摘要：{}\n点歌关键词：{}\n音量变化：{}\n\n回复要求：\n1. 把这次音乐动作当作正常对话的一部分继续回应，而不是输出工具提示或系统日志。\n2. 必须继续遵循当前伴侣人设、伴侣附加规则、关系阶段、好感度状态、表情频率和后置指令。\n3. 如果用户表达了情绪、疲惫、睡眠、学习或陪伴需求，先按角色自然回应用户状态，再顺带提到你已经为用户处理音乐。\n4. 如果用户只是明确控制命令，可以简短自然确认，但不要机械地只说“已播放音乐”。\n5. 如果是按歌名点播，可以说“我帮你找这首/试着放这首”，不要承诺一定找到了具体歌曲。\n6. 不要提到 JSON、动作协议、API、事件、文件路径、本地存储、分类器或系统规则。\n7. 不要编造具体歌名、歌手名、专辑名或歌单名；除非点歌关键词来自用户原话，否则只能泛称“这类歌”“这组音乐”或“合适的音乐”。",
+        system_prompt.trim(),
+        action,
+        music_action_label(&action),
+        if tags.is_empty() { "无".to_string() } else { tags },
+        query,
+        volume_delta,
+    )
+}
+
+fn music_action_label(action: &str) -> &'static str {
+    match action {
+        "play_music" => "播放一首合适的音乐",
+        "play_by_query" => "按歌名或歌手关键词点播",
+        "play_by_tags" => "按标签播放音乐",
+        "pause" => "暂停音乐",
+        "resume" => "继续播放音乐",
+        "next" => "切到下一首",
+        "previous" => "切回上一首",
+        "set_volume" => "调整音量",
+        "favorite_current" => "收藏当前歌曲",
+        "skip_current" => "跳过当前歌曲",
+        "start_sleep_mode" => "进入睡眠音乐模式",
+        "start_focus_mode" => "进入专注音乐模式",
+        "start_mood_mode" => "进入情绪陪伴音乐模式",
+        _ => "音乐控制动作",
+    }
+}
+
+fn parse_music_intent(
+    content: &str,
+    context: &MusicIntentContext,
+) -> Result<MusicIntentReply, String> {
+    let json_text =
+        extract_json_object(content).ok_or_else(|| "音乐意图 JSON 中没有对象".to_string())?;
+    let output: MusicIntentOutput =
+        serde_json::from_str(json_text).map_err(|err| format!("音乐意图 JSON 格式错误：{err}"))?;
+    let kind = output.kind.trim().to_lowercase();
+    let action = output
+        .action
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_lowercase)
+        .filter(|action| !action.is_empty());
+    let confidence = output.confidence.clamp(0.0, 1.0);
+
+    if kind != "music_action" || confidence < 0.72 {
+        return Ok(chat_only_music_intent());
+    }
+
+    let Some(action) = action else {
+        return Ok(chat_only_music_intent());
+    };
+    if !is_allowed_music_action(&action) {
+        return Ok(chat_only_music_intent());
+    }
+    if !context.has_tracks && music_action_requires_tracks(&action) {
+        return Ok(MusicIntentReply {
+            kind: "music_action".to_string(),
+            action: Some(action),
+            tags: Vec::new(),
+            query: None,
+            volume_delta: None,
+            confidence,
+            reply: "还没有导入本地音乐，先添加一些歌曲吧。".to_string(),
+        });
+    }
+
+    let available_tags = sanitize_music_tags(&context.available_tags);
+    let tags = sanitize_music_tags(&output.tags)
+        .into_iter()
+        .filter(|tag| available_tags.is_empty() || available_tags.iter().any(|item| item == tag))
+        .take(8)
+        .collect::<Vec<_>>();
+    let volume_delta = output
+        .volume_delta
+        .filter(|_| action == "set_volume")
+        .map(|value| value.clamp(-0.3, 0.3));
+    let query = if action == "play_by_query" {
+        let Some(query) = output.query.as_deref().and_then(sanitize_music_query) else {
+            return Ok(chat_only_music_intent());
+        };
+        Some(query)
+    } else {
+        None
+    };
+    let reply = output.reply.trim().chars().take(120).collect::<String>();
+
+    Ok(MusicIntentReply {
+        kind: "music_action".to_string(),
+        action: Some(action),
+        tags,
+        query,
+        volume_delta,
+        confidence,
+        reply,
+    })
+}
+
+fn chat_only_music_intent() -> MusicIntentReply {
+    MusicIntentReply {
+        kind: "chat_only".to_string(),
+        action: None,
+        tags: Vec::new(),
+        query: None,
+        volume_delta: None,
+        confidence: 0.0,
+        reply: String::new(),
+    }
+}
+
+fn is_allowed_music_action(action: &str) -> bool {
+    matches!(
+        action,
+        "play_music"
+            | "play_by_tags"
+            | "play_by_query"
+            | "pause"
+            | "resume"
+            | "next"
+            | "previous"
+            | "set_volume"
+            | "favorite_current"
+            | "skip_current"
+            | "start_sleep_mode"
+            | "start_focus_mode"
+            | "start_mood_mode"
+    )
+}
+
+fn music_action_requires_tracks(action: &str) -> bool {
+    !matches!(action, "pause" | "set_volume")
+}
+
+fn sanitize_music_tags(tags: &[String]) -> Vec<String> {
+    let mut output = Vec::new();
+    for tag in tags {
+        let tag = tag.trim().chars().take(24).collect::<String>();
+        if tag.is_empty() || output.iter().any(|item| item == &tag) {
+            continue;
+        }
+        output.push(tag);
+        if output.len() >= 32 {
+            break;
+        }
+    }
+    output
+}
+
+fn sanitize_music_query(value: &str) -> Option<String> {
+    let mut query = value
+        .trim()
+        .trim_matches(&['《', '》', '"', '\'', '“', '”', '‘', '’'][..])
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for prefix in [
+        "一首",
+        "首",
+        "这首歌",
+        "那首歌",
+        "歌曲",
+        "音乐",
+        "点首",
+        "点一下",
+        "放一下",
+    ] {
+        if query.starts_with(prefix) {
+            query = query[prefix.len()..].trim().to_string();
+        }
+    }
+    for suffix in [
+        "可以吗",
+        "好不好",
+        "好吗",
+        "行吗",
+        "谢谢",
+        "拜托",
+        "一下",
+        "吧",
+        "呀",
+        "啊",
+    ] {
+        if query.ends_with(suffix) {
+            let next_len = query.len().saturating_sub(suffix.len());
+            query = query[..next_len].trim().to_string();
+        }
+    }
+
+    let query = query.chars().take(80).collect::<String>();
+    if query.chars().count() < 2 {
+        None
+    } else {
+        Some(query)
+    }
 }
 
 fn favorability_scorer_system_prompt() -> String {

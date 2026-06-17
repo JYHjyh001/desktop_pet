@@ -2,6 +2,7 @@ mod ai_chat;
 mod ai_memory;
 mod app_data;
 mod clawbot_bridge;
+mod codex_app_server;
 mod commands;
 mod favorability;
 mod feature_flags;
@@ -13,9 +14,12 @@ mod updater;
 mod wechat_clawbot;
 mod windowing;
 
+use tauri::Manager;
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(codex_app_server::CodexAppServerState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_apps,
             commands::upsert_app,
@@ -47,6 +51,7 @@ pub fn run() {
             commands::list_pet_skins,
             commands::get_current_pet_skin,
             commands::set_pet_skin,
+            commands::read_pet_skin_package,
             commands::import_pet_skin,
             commands::update_pet_skin,
             commands::delete_pet_skin,
@@ -62,11 +67,21 @@ pub fn run() {
             commands::hide_drawer,
             commands::show_pet_menu,
             commands::hide_pet_menu,
+            commands::show_pet_bubble,
+            commands::hide_pet_bubble,
+            commands::reposition_pet_bubble,
             commands::show_pet_chat,
             commands::hide_pet_chat,
             commands::show_story,
             commands::hide_story,
+            commands::show_music_player,
+            commands::hide_music_player,
+            commands::list_music_files_in_directory,
+            commands::import_music_files,
+            commands::read_music_metadata,
             commands::send_pet_chat_message,
+            commands::classify_music_intent,
+            commands::send_pet_music_chat_message,
             commands::list_story_saves,
             commands::get_story_save,
             commands::create_story,
@@ -77,6 +92,11 @@ pub fn run() {
             commands::test_wechat_clawbot,
             commands::simulate_wechat_clawbot_message,
             commands::send_wechat_clawbot_message,
+            commands::get_codex_app_server_status,
+            commands::start_codex_app_server,
+            commands::stop_codex_app_server,
+            commands::ack_codex_notifications,
+            commands::start_codex_app_server_turn,
             commands::list_pet_memories,
             commands::add_pet_memory,
             commands::update_pet_memory,
@@ -106,9 +126,30 @@ pub fn run() {
                     eprintln!("ClawBot HTTP Bridge 启动失败：{err}");
                 }
             }
+            start_codex_app_server_on_boot(app);
             tray::create_tray(app.handle())?;
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("failed to run PetDrawer");
+}
+
+fn start_codex_app_server_on_boot(app: &tauri::App) {
+    let app_handle = app.handle().clone();
+    let settings = match app_data::read_config(&app_handle) {
+        Ok(config) => config.codex_app_server,
+        Err(err) => {
+            eprintln!("读取 Codex 自动连接配置失败：{err}");
+            return;
+        }
+    };
+
+    if !settings.enabled || !settings.auto_start {
+        return;
+    }
+
+    let state = app.state::<codex_app_server::CodexAppServerState>();
+    if let Err(err) = codex_app_server::start(app_handle, &state, settings) {
+        eprintln!("Codex 启动时自动连接失败：{err}");
+    }
 }

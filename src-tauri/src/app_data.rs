@@ -87,8 +87,16 @@ pub struct PetSettings {
 pub struct PetAnimationSet {
     pub idle: Option<String>,
     pub hover: Option<String>,
-    pub dragging: Option<String>,
     pub click: Option<String>,
+    pub dragging: Option<String>,
+    pub dragging_left: Option<String>,
+    pub dragging_right: Option<String>,
+    pub waving: Option<String>,
+    pub jumping: Option<String>,
+    pub waiting: Option<String>,
+    pub running: Option<String>,
+    pub review: Option<String>,
+    pub failed: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,6 +118,13 @@ pub struct PetSkinSummary {
     pub animations: PetAnimationSet,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PetSkinPackageDraft {
+    pub name: String,
+    pub animations: PetAnimationSet,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DrawerSettings {
@@ -121,6 +136,8 @@ pub struct DrawerSettings {
     pub chat_typewriter_enabled: bool,
     #[serde(default)]
     pub chat_narration_enabled: bool,
+    #[serde(default = "default_true")]
+    pub chat_music_link_enabled: bool,
     #[serde(default = "default_true")]
     pub always_on_top: bool,
     #[serde(default = "default_categories")]
@@ -274,6 +291,25 @@ pub struct WechatClawbotSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CodexAppServerSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub auto_start: bool,
+    #[serde(default = "default_codex_app_server_mode")]
+    pub mode: String,
+    #[serde(default = "default_codex_command")]
+    pub command: String,
+    #[serde(default)]
+    pub socket_path: String,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default = "default_true")]
+    pub completion_notifications_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompanionRelationshipState {
     pub favorability: i32,
     pub intimacy: i32,
@@ -382,6 +418,20 @@ impl Default for WechatClawbotSettings {
     }
 }
 
+impl Default for CodexAppServerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            auto_start: false,
+            mode: default_codex_app_server_mode(),
+            command: default_codex_command(),
+            socket_path: String::new(),
+            port: 0,
+            completion_notifications_enabled: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PetDrawerConfig {
@@ -394,6 +444,8 @@ pub struct PetDrawerConfig {
     pub ai: AiSettings,
     #[serde(default)]
     pub wechat_clawbot: WechatClawbotSettings,
+    #[serde(default)]
+    pub codex_app_server: CodexAppServerSettings,
     #[serde(default = "default_companions")]
     pub companions: Vec<Companion>,
     #[serde(default = "default_current_companion_id")]
@@ -419,6 +471,7 @@ impl Default for PetDrawerConfig {
                 theme: default_drawer_theme(),
                 chat_typewriter_enabled: true,
                 chat_narration_enabled: false,
+                chat_music_link_enabled: true,
                 always_on_top: true,
                 categories: default_categories(),
                 quick_search_tags: default_quick_search_tags(),
@@ -430,6 +483,7 @@ impl Default for PetDrawerConfig {
             system: SystemSettings::default(),
             ai: AiSettings::default(),
             wechat_clawbot: WechatClawbotSettings::default(),
+            codex_app_server: CodexAppServerSettings::default(),
             companions: default_companions(),
             current_companion_id: default_current_companion_id(),
             companions_initialized: true,
@@ -516,6 +570,25 @@ fn default_clawbot_bridge_port() -> u16 {
 
 fn default_clawbot_bridge_path() -> String {
     "/clawbot/chat".to_string()
+}
+
+fn default_codex_command() -> String {
+    if cfg!(windows) {
+        "codex.cmd".to_string()
+    } else {
+        "codex".to_string()
+    }
+}
+
+fn default_codex_app_server_mode() -> String {
+    #[cfg(windows)]
+    {
+        "sessionLog".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "proxy".to_string()
+    }
 }
 
 fn default_ai_system_prompt() -> String {
@@ -921,6 +994,69 @@ pub fn set_current_pet_skin(app: &AppHandle, skin_id: &str) -> Result<PetSkinSum
     Ok(summary)
 }
 
+pub fn read_pet_skin_package(package_dir: &str) -> Result<PetSkinPackageDraft, String> {
+    let package_dir = Path::new(package_dir);
+    if !package_dir.is_dir() {
+        return Err("请选择有效的宠物包目录".to_string());
+    }
+
+    let manifest_path = package_dir.join("pet.json");
+    if !manifest_path.is_file() {
+        return Err("宠物包目录中未找到 pet.json".to_string());
+    }
+
+    let content = fs::read_to_string(manifest_path).map_err(|err| err.to_string())?;
+    let manifest: PetSkinManifest =
+        serde_json::from_str(&content).map_err(|err| format!("宠物包配置格式错误：{err}"))?;
+
+    let animations = PetAnimationSet {
+        idle: resolve_package_pet_animation(package_dir, manifest.animations.idle.as_deref())?,
+        hover: resolve_package_pet_animation(package_dir, manifest.animations.hover.as_deref())?,
+        click: resolve_package_pet_animation(package_dir, manifest.animations.click.as_deref())?,
+        dragging: resolve_package_pet_animation(
+            package_dir,
+            manifest.animations.dragging.as_deref(),
+        )?,
+        dragging_left: resolve_package_pet_animation(
+            package_dir,
+            manifest.animations.dragging_left.as_deref(),
+        )?,
+        dragging_right: resolve_package_pet_animation(
+            package_dir,
+            manifest.animations.dragging_right.as_deref(),
+        )?,
+        waving: resolve_package_pet_animation(package_dir, manifest.animations.waving.as_deref())?,
+        jumping: resolve_package_pet_animation(
+            package_dir,
+            manifest.animations.jumping.as_deref(),
+        )?,
+        waiting: resolve_package_pet_animation(
+            package_dir,
+            manifest.animations.waiting.as_deref(),
+        )?,
+        running: resolve_package_pet_animation(
+            package_dir,
+            manifest.animations.running.as_deref(),
+        )?,
+        review: resolve_package_pet_animation(package_dir, manifest.animations.review.as_deref())?,
+        failed: resolve_package_pet_animation(package_dir, manifest.animations.failed.as_deref())?,
+    };
+
+    if animations
+        .idle
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .is_none()
+    {
+        return Err("宠物包至少需要包含待机动画".to_string());
+    }
+
+    Ok(PetSkinPackageDraft {
+        name: manifest.name,
+        animations,
+    })
+}
+
 pub fn import_pet_skin(
     app: &AppHandle,
     name: &str,
@@ -941,13 +1077,46 @@ pub fn import_pet_skin(
     let imported = PetAnimationSet {
         idle: Some(copy_pet_animation(app, &skin_id, "idle", idle_source)?),
         hover: copy_optional_pet_animation(app, &skin_id, "hover", animations.hover.as_deref())?,
+        click: copy_optional_pet_animation(app, &skin_id, "click", animations.click.as_deref())?,
         dragging: copy_optional_pet_animation(
             app,
             &skin_id,
             "dragging",
             animations.dragging.as_deref(),
         )?,
-        click: copy_optional_pet_animation(app, &skin_id, "click", animations.click.as_deref())?,
+        dragging_left: copy_optional_pet_animation(
+            app,
+            &skin_id,
+            "draggingLeft",
+            animations.dragging_left.as_deref(),
+        )?,
+        dragging_right: copy_optional_pet_animation(
+            app,
+            &skin_id,
+            "draggingRight",
+            animations.dragging_right.as_deref(),
+        )?,
+        waving: copy_optional_pet_animation(app, &skin_id, "waving", animations.waving.as_deref())?,
+        jumping: copy_optional_pet_animation(
+            app,
+            &skin_id,
+            "jumping",
+            animations.jumping.as_deref(),
+        )?,
+        waiting: copy_optional_pet_animation(
+            app,
+            &skin_id,
+            "waiting",
+            animations.waiting.as_deref(),
+        )?,
+        running: copy_optional_pet_animation(
+            app,
+            &skin_id,
+            "running",
+            animations.running.as_deref(),
+        )?,
+        review: copy_optional_pet_animation(app, &skin_id, "review", animations.review.as_deref())?,
+        failed: copy_optional_pet_animation(app, &skin_id, "failed", animations.failed.as_deref())?,
     };
 
     let manifest = PetSkinManifest {
@@ -993,7 +1162,7 @@ pub fn update_pet_skin(
     let previous_animations = manifest.animations.clone();
     let cleared_states = cleared_states
         .into_iter()
-        .filter(|state| matches!(state.as_str(), "hover" | "click" | "dragging"))
+        .filter(|state| is_optional_pet_animation_state(state))
         .collect::<std::collections::HashSet<_>>();
 
     let updated_animations = PetAnimationSet {
@@ -1013,6 +1182,14 @@ pub fn update_pet_skin(
             previous_animations.hover.clone(),
             cleared_states.contains("hover"),
         )?,
+        click: update_pet_animation(
+            app,
+            &skin_id,
+            "click",
+            animations.click.as_deref(),
+            previous_animations.click.clone(),
+            cleared_states.contains("click"),
+        )?,
         dragging: update_pet_animation(
             app,
             &skin_id,
@@ -1021,13 +1198,69 @@ pub fn update_pet_skin(
             previous_animations.dragging.clone(),
             cleared_states.contains("dragging"),
         )?,
-        click: update_pet_animation(
+        dragging_left: update_pet_animation(
             app,
             &skin_id,
-            "click",
-            animations.click.as_deref(),
-            previous_animations.click.clone(),
-            cleared_states.contains("click"),
+            "draggingLeft",
+            animations.dragging_left.as_deref(),
+            previous_animations.dragging_left.clone(),
+            cleared_states.contains("draggingLeft"),
+        )?,
+        dragging_right: update_pet_animation(
+            app,
+            &skin_id,
+            "draggingRight",
+            animations.dragging_right.as_deref(),
+            previous_animations.dragging_right.clone(),
+            cleared_states.contains("draggingRight"),
+        )?,
+        waving: update_pet_animation(
+            app,
+            &skin_id,
+            "waving",
+            animations.waving.as_deref(),
+            previous_animations.waving.clone(),
+            cleared_states.contains("waving"),
+        )?,
+        jumping: update_pet_animation(
+            app,
+            &skin_id,
+            "jumping",
+            animations.jumping.as_deref(),
+            previous_animations.jumping.clone(),
+            cleared_states.contains("jumping"),
+        )?,
+        waiting: update_pet_animation(
+            app,
+            &skin_id,
+            "waiting",
+            animations.waiting.as_deref(),
+            previous_animations.waiting.clone(),
+            cleared_states.contains("waiting"),
+        )?,
+        running: update_pet_animation(
+            app,
+            &skin_id,
+            "running",
+            animations.running.as_deref(),
+            previous_animations.running.clone(),
+            cleared_states.contains("running"),
+        )?,
+        review: update_pet_animation(
+            app,
+            &skin_id,
+            "review",
+            animations.review.as_deref(),
+            previous_animations.review.clone(),
+            cleared_states.contains("review"),
+        )?,
+        failed: update_pet_animation(
+            app,
+            &skin_id,
+            "failed",
+            animations.failed.as_deref(),
+            previous_animations.failed.clone(),
+            cleared_states.contains("failed"),
         )?,
     };
 
@@ -1062,13 +1295,53 @@ pub fn update_pet_skin(
     );
     let _ = remove_replaced_pet_animation(
         app,
+        previous_animations.click.as_deref(),
+        updated_animations.click.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
         previous_animations.dragging.as_deref(),
         updated_animations.dragging.as_deref(),
     );
     let _ = remove_replaced_pet_animation(
         app,
-        previous_animations.click.as_deref(),
-        updated_animations.click.as_deref(),
+        previous_animations.dragging_left.as_deref(),
+        updated_animations.dragging_left.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.dragging_right.as_deref(),
+        updated_animations.dragging_right.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.waving.as_deref(),
+        updated_animations.waving.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.jumping.as_deref(),
+        updated_animations.jumping.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.waiting.as_deref(),
+        updated_animations.waiting.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.running.as_deref(),
+        updated_animations.running.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.review.as_deref(),
+        updated_animations.review.as_deref(),
+    );
+    let _ = remove_replaced_pet_animation(
+        app,
+        previous_animations.failed.as_deref(),
+        updated_animations.failed.as_deref(),
     );
 
     read_pet_skin(app, &skin_id)
@@ -1128,6 +1401,23 @@ fn builtin_pet_skin_order(skin_id: &str) -> u8 {
     }
 }
 
+fn is_optional_pet_animation_state(state: &str) -> bool {
+    matches!(
+        state,
+        "hover"
+            | "click"
+            | "dragging"
+            | "draggingLeft"
+            | "draggingRight"
+            | "waving"
+            | "jumping"
+            | "waiting"
+            | "running"
+            | "review"
+            | "failed"
+    )
+}
+
 fn safe_skin_id(skin_id: &str) -> Result<&str, String> {
     let skin_id = skin_id.trim();
     if skin_id.is_empty() {
@@ -1164,11 +1454,25 @@ fn manifest_to_summary(
     let animations = PetAnimationSet {
         idle: read_optional_pet_animation_data_url(app, manifest.animations.idle.as_deref())?,
         hover: read_optional_pet_animation_data_url(app, manifest.animations.hover.as_deref())?,
+        click: read_optional_pet_animation_data_url(app, manifest.animations.click.as_deref())?,
         dragging: read_optional_pet_animation_data_url(
             app,
             manifest.animations.dragging.as_deref(),
         )?,
-        click: read_optional_pet_animation_data_url(app, manifest.animations.click.as_deref())?,
+        dragging_left: read_optional_pet_animation_data_url(
+            app,
+            manifest.animations.dragging_left.as_deref(),
+        )?,
+        dragging_right: read_optional_pet_animation_data_url(
+            app,
+            manifest.animations.dragging_right.as_deref(),
+        )?,
+        waving: read_optional_pet_animation_data_url(app, manifest.animations.waving.as_deref())?,
+        jumping: read_optional_pet_animation_data_url(app, manifest.animations.jumping.as_deref())?,
+        waiting: read_optional_pet_animation_data_url(app, manifest.animations.waiting.as_deref())?,
+        running: read_optional_pet_animation_data_url(app, manifest.animations.running.as_deref())?,
+        review: read_optional_pet_animation_data_url(app, manifest.animations.review.as_deref())?,
+        failed: read_optional_pet_animation_data_url(app, manifest.animations.failed.as_deref())?,
     };
 
     let preview = animations
@@ -1176,7 +1480,15 @@ fn manifest_to_summary(
         .clone()
         .or_else(|| animations.hover.clone())
         .or_else(|| animations.click.clone())
-        .or_else(|| animations.dragging.clone());
+        .or_else(|| animations.dragging.clone())
+        .or_else(|| animations.dragging_left.clone())
+        .or_else(|| animations.dragging_right.clone())
+        .or_else(|| animations.waving.clone())
+        .or_else(|| animations.jumping.clone())
+        .or_else(|| animations.waiting.clone())
+        .or_else(|| animations.running.clone())
+        .or_else(|| animations.review.clone())
+        .or_else(|| animations.failed.clone());
 
     Ok(PetSkinSummary {
         id: manifest.id,
@@ -1209,6 +1521,30 @@ fn copy_optional_pet_animation(
     };
 
     copy_pet_animation(app, skin_id, state, source_path).map(Some)
+}
+
+fn resolve_package_pet_animation(
+    package_dir: &Path,
+    source_path: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(source_path) = source_path.filter(|value| !value.trim().is_empty()) else {
+        return Ok(None);
+    };
+
+    let source = Path::new(source_path);
+    let full_path = if source.is_absolute() {
+        source.to_path_buf()
+    } else {
+        package_dir.join(source)
+    };
+
+    if !full_path.is_file() {
+        return Err(format!("宠物包动画文件不存在：{}", source_path));
+    }
+
+    pet_animation_extension(&full_path)?;
+
+    Ok(Some(full_path.to_string_lossy().to_string()))
 }
 
 fn update_pet_animation(
@@ -1299,10 +1635,19 @@ pub fn import_executable_icon(app: &AppHandle, source_path: &str) -> Result<Stri
 
     let source = Path::new(source_path);
     if !source.is_file() {
-        return Err("请选择有效的软件路径".to_string());
+        return Err("请选择有效的软件或图标文件".to_string());
     }
 
-    let relative = PathBuf::from("icons").join(format!("auto_icon_{}.ico", now_millis()));
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_lowercase())
+        .ok_or_else(|| "软件或图标文件缺少扩展名".to_string())?;
+    if !matches!(extension.as_str(), "exe" | "lnk" | "ico") {
+        return Err("仅支持从 exe、lnk、ico 提取软件图标".to_string());
+    }
+
+    let relative = PathBuf::from("icons").join(format!("auto_icon_{}.png", now_millis()));
     let target = resolve_safe_relative_path(app, &relative)?;
 
     extract_associated_icon(source, &target)?;
@@ -1414,20 +1759,282 @@ fn extract_associated_icon(source: &Path, target: &Path) -> Result<(), String> {
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-    let script = r#"
-Add-Type -AssemblyName System.Drawing
-$source = $args[0]
-$target = $args[1]
-$icon = [System.Drawing.Icon]::ExtractAssociatedIcon($source)
-if ($null -eq $icon) { exit 2 }
-$stream = [System.IO.File]::Open($target, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
-try {
-  $icon.Save($stream)
-} finally {
-  $stream.Dispose()
-  $icon.Dispose()
+    let script = r##"
+param([string]$source, [string]$target)
+$ErrorActionPreference = 'Stop'
+
+function Resolve-IconSource {
+    param([string]$Path)
+
+    $resolved = [pscustomobject]@{
+        OriginalPath = $Path
+        IconPath = $Path
+        TargetPath = $Path
+        Index = 0
+    }
+
+    if ([System.IO.Path]::GetExtension($Path).ToLowerInvariant() -ne '.lnk') {
+        return $resolved
+    }
+
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($Path)
+    $targetPath = [Environment]::ExpandEnvironmentVariables($shortcut.TargetPath)
+    $iconLocation = $shortcut.IconLocation
+
+    if (-not [string]::IsNullOrWhiteSpace($targetPath)) {
+        $resolved.TargetPath = $targetPath
+        $resolved.IconPath = $targetPath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($iconLocation)) {
+        $iconPath = $iconLocation
+        $iconIndex = 0
+        if ($iconLocation -match '^(.*),(-?\d+)$') {
+            $iconPath = $Matches[1].Trim('"')
+            $iconIndex = [int]$Matches[2]
+        }
+        $iconPath = [Environment]::ExpandEnvironmentVariables($iconPath)
+        if ([string]::IsNullOrWhiteSpace($iconPath) -and -not [string]::IsNullOrWhiteSpace($targetPath)) {
+            $iconPath = $targetPath
+        }
+        if (-not [System.IO.Path]::IsPathRooted($iconPath) -and -not [string]::IsNullOrWhiteSpace($shortcut.WorkingDirectory)) {
+            $iconPath = Join-Path $shortcut.WorkingDirectory $iconPath
+        }
+        if (Test-Path -LiteralPath $iconPath) {
+            $resolved.IconPath = $iconPath
+            $resolved.Index = $iconIndex
+            return $resolved
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($targetPath) -and (Test-Path -LiteralPath $targetPath)) {
+        $resolved.IconPath = $targetPath
+        $resolved.Index = 0
+    }
+
+    return $resolved
 }
-"#;
+
+$code = @"
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+
+public static class PetDrawerIconExtractor
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct SHFILEINFO
+    {
+        public IntPtr hIcon;
+        public int iIcon;
+        public uint dwAttributes;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+        public string szDisplayName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 80)]
+        public string szTypeName;
+    }
+
+    [ComImport]
+    [Guid("46EB5926-582E-4017-9FDF-E8998DAA0950")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IImageList
+    {
+        [PreserveSig] int Add(IntPtr hbmImage, IntPtr hbmMask, ref int pi);
+        [PreserveSig] int ReplaceIcon(int i, IntPtr hicon, ref int pi);
+        [PreserveSig] int SetOverlayImage(int iImage, int iOverlay);
+        [PreserveSig] int Replace(int i, IntPtr hbmImage, IntPtr hbmMask);
+        [PreserveSig] int AddMasked(IntPtr hbmImage, int crMask, ref int pi);
+        [PreserveSig] int Draw(ref IMAGELISTDRAWPARAMS pimldp);
+        [PreserveSig] int Remove(int i);
+        [PreserveSig] int GetIcon(int i, int flags, ref IntPtr picon);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IMAGELISTDRAWPARAMS
+    {
+        public int cbSize;
+        public IntPtr himl;
+        public int i;
+        public IntPtr hdcDst;
+        public int x;
+        public int y;
+        public int cx;
+        public int cy;
+        public int xBitmap;
+        public int yBitmap;
+        public int rgbBk;
+        public int rgbFg;
+        public int fStyle;
+        public int dwRop;
+        public int fState;
+        public int Frame;
+        public int crEffect;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int PrivateExtractIcons(string szFileName, int nIconIndex, int cxIcon, int cyIcon, IntPtr[] phicon, int[] piconid, int nIcons, int flags);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void SHCreateItemFromParsingName(
+        [MarshalAs(UnmanagedType.LPWStr)] string pszPath,
+        IntPtr pbc,
+        ref Guid riid,
+        [MarshalAs(UnmanagedType.Interface)] out IShellItemImageFactory ppv);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+
+    [DllImport("shell32.dll", EntryPoint = "#727")]
+    private static extern int SHGetImageList(int iImageList, ref Guid riid, out IImageList ppv);
+
+    [DllImport("user32.dll")]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(IntPtr hObject);
+
+    [ComImport]
+    [Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItemImageFactory
+    {
+        void GetImage(SIZE size, int flags, out IntPtr phbm);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SIZE
+    {
+        public int cx;
+        public int cy;
+    }
+
+    private const int SIIGBF_RESIZETOFIT = 0x00;
+    private const int SIIGBF_BIGGERSIZEOK = 0x01;
+    private const int SIIGBF_ICONONLY = 0x04;
+
+    private static Bitmap BitmapFromIconHandle(IntPtr iconHandle)
+    {
+        if (iconHandle == IntPtr.Zero) throw new InvalidOperationException("No icon handle was returned.");
+        try
+        {
+            using (Icon icon = Icon.FromHandle(iconHandle))
+            {
+                return icon.ToBitmap();
+            }
+        }
+        finally
+        {
+            DestroyIcon(iconHandle);
+        }
+    }
+
+    private static Bitmap GetShellItemBitmap(string path)
+    {
+        Guid guid = typeof(IShellItemImageFactory).GUID;
+        IShellItemImageFactory factory;
+        SHCreateItemFromParsingName(path, IntPtr.Zero, ref guid, out factory);
+        IntPtr bitmapHandle;
+        factory.GetImage(new SIZE { cx = 256, cy = 256 }, SIIGBF_BIGGERSIZEOK | SIIGBF_ICONONLY | SIIGBF_RESIZETOFIT, out bitmapHandle);
+        if (bitmapHandle == IntPtr.Zero) throw new InvalidOperationException("No shell item bitmap was found.");
+
+        try
+        {
+            using (Bitmap bitmap = Image.FromHbitmap(bitmapHandle))
+            {
+                Bitmap clone = new Bitmap(bitmap.Width, bitmap.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                using (Graphics graphics = Graphics.FromImage(clone))
+                {
+                    graphics.Clear(Color.Transparent);
+                    graphics.DrawImage(bitmap, 0, 0, bitmap.Width, bitmap.Height);
+                }
+                return clone;
+            }
+        }
+        finally
+        {
+            DeleteObject(bitmapHandle);
+        }
+    }
+
+    private static Bitmap GetResourceIcon(string path, int index)
+    {
+        IntPtr[] handles = new IntPtr[1];
+        int[] ids = new int[1];
+        int count = PrivateExtractIcons(path, index, 256, 256, handles, ids, 1, 0);
+        if (count <= 0 || handles[0] == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("No resource icon was found.");
+        }
+        return BitmapFromIconHandle(handles[0]);
+    }
+
+    private static Bitmap GetShellIcon(string path)
+    {
+        const uint SHGFI_SYSICONINDEX = 0x000004000;
+        const uint SHGFI_LARGEICON = 0x000000000;
+        const int SHIL_JUMBO = 0x4;
+        const int ILD_TRANSPARENT = 0x1;
+
+        SHFILEINFO info = new SHFILEINFO();
+        SHGetFileInfo(path, 0, ref info, (uint)Marshal.SizeOf(info), SHGFI_SYSICONINDEX | SHGFI_LARGEICON);
+
+        Guid imageListGuid = typeof(IImageList).GUID;
+        IImageList imageList;
+        int result = SHGetImageList(SHIL_JUMBO, ref imageListGuid, out imageList);
+        if (result != 0) throw new InvalidOperationException("Unable to access the Windows jumbo icon list.");
+
+        IntPtr iconHandle = IntPtr.Zero;
+        imageList.GetIcon(info.iIcon, ILD_TRANSPARENT, ref iconHandle);
+        return BitmapFromIconHandle(iconHandle);
+    }
+
+    public static Bitmap Get(string iconPath, int index, string targetPath, string originalPath)
+    {
+        try
+        {
+            return GetResourceIcon(iconPath, index);
+        }
+        catch
+        {
+            try
+            {
+                return GetShellItemBitmap(iconPath);
+            }
+            catch
+            {
+                try
+                {
+                    return GetShellIcon(iconPath);
+                }
+                catch
+                {
+                    try
+                    {
+                        return GetShellItemBitmap(targetPath);
+                    }
+                    catch
+                    {
+                        return GetShellItemBitmap(originalPath);
+                    }
+                }
+            }
+        }
+    }
+}
+"@
+
+$iconSource = Resolve-IconSource -Path $source
+Add-Type -TypeDefinition $code -ReferencedAssemblies System.Drawing
+$bitmap = [PetDrawerIconExtractor]::Get($iconSource.IconPath, $iconSource.Index, $iconSource.TargetPath, $iconSource.OriginalPath)
+try {
+    $bitmap.Save($target, [System.Drawing.Imaging.ImageFormat]::Png)
+}
+finally {
+    $bitmap.Dispose()
+}
+"##;
+    let command = format!("& {{\n{script}\n}}");
 
     let output = Command::new("powershell.exe")
         .args([
@@ -1435,7 +2042,7 @@ try {
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            script,
+            &command,
         ])
         .arg(source)
         .arg(target)

@@ -57,8 +57,82 @@ type MessageDeleteRequest = {
 }
 
 type WechatForwardRole = 'user' | 'assistant'
+type MusicActionType =
+  | 'play_music'
+  | 'play_by_query'
+  | 'play_by_tags'
+  | 'pause'
+  | 'resume'
+  | 'next'
+  | 'previous'
+  | 'set_volume'
+  | 'favorite_current'
+  | 'skip_current'
+  | 'start_sleep_mode'
+  | 'start_focus_mode'
+  | 'start_mood_mode'
+
+interface MusicActionRequest {
+  type: 'music_action'
+  action: MusicActionType
+  tags?: string[]
+  query?: string
+  volume?: number
+  volumeDelta?: number
+  source: 'pet_chat'
+}
+
+interface MusicChatIntent {
+  action: MusicActionRequest
+  reply: string
+}
+
+interface MusicIntentContext {
+  hasTracks: boolean
+  trackCount: number
+  favoriteCount: number
+  recentCount: number
+  availableTags: string[]
+}
+
+interface MusicIntentReply {
+  type: 'music_action' | 'chat_only'
+  action?: MusicActionType | null
+  tags?: string[]
+  query?: string | null
+  volumeDelta?: number | null
+  confidence: number
+  reply?: string
+}
 
 const WECHAT_INTEGRATION_ENABLED: boolean = false
+const MUSIC_TRACKS_STORAGE_KEY = 'pet-drawer-music-tracks'
+const MUSIC_INTENT_TAGS = [
+  '开心',
+  '难过',
+  '治愈',
+  '热血',
+  '安静',
+  '孤独',
+  '学习',
+  '工作',
+  '睡觉',
+  '运动',
+  '聊天',
+  '游戏',
+  '慢歌',
+  '中速',
+  '快歌',
+  '中文',
+  '英文',
+  '日文',
+  '纯音乐',
+  '收藏',
+  '喜欢',
+  '常听',
+  '跳过',
+  '不喜欢',
+]
 const chatWindow = getCurrentWindow()
 const messages = ref<ChatMessage[]>([
   {
@@ -78,6 +152,7 @@ const chatSettingsError = ref('')
 const chatSettingsDraft = ref({
   typewriterEnabled: true,
   narrationEnabled: false,
+  musicLinkEnabled: true,
 })
 const sending = ref(false)
 const errorMessage = ref('')
@@ -104,6 +179,7 @@ let unlistenChatOpened: (() => void) | null = null
 let unlistenThemeChanged: (() => void) | null = null
 let unlistenChatDisplayChanged: (() => void) | null = null
 let unlistenChatNarrationChanged: (() => void) | null = null
+let unlistenChatMusicLinkChanged: (() => void) | null = null
 let unlistenCompanionChanged: (() => void) | null = null
 let typewriterTimer: number | null = null
 let activeTypewriterMessageId: string | null = null
@@ -123,6 +199,7 @@ const narrationDelimiters: NarrationDelimiter[] = [
 const aiEnabled = computed(() => Boolean(config.value?.ai?.enabled))
 const typewriterEnabled = computed(() => config.value?.drawer.chatTypewriterEnabled !== false)
 const narrationEnabled = computed(() => config.value?.drawer.chatNarrationEnabled === true)
+const chatMusicLinkEnabled = computed(() => config.value?.drawer.chatMusicLinkEnabled !== false)
 const drawerTheme = computed<DrawerTheme>(() =>
   config.value?.drawer.theme === 'animal-island' ? 'animal-island' : 'light',
 )
@@ -196,6 +273,11 @@ onMounted(async () => {
       config.value.drawer.chatNarrationEnabled = event.payload
     }
   })
+  unlistenChatMusicLinkChanged = await listen<boolean>('ui-chat-music-link-changed', (event) => {
+    if (config.value) {
+      config.value.drawer.chatMusicLinkEnabled = event.payload
+    }
+  })
   unlistenCompanionChanged = await listen('companion-changed', () => {
     finishTypewriter()
     void Promise.all([loadConfig(), loadConversation(), loadCurrentPetSkin(), loadCompanionStatus()])
@@ -207,6 +289,7 @@ onBeforeUnmount(() => {
   unlistenThemeChanged?.()
   unlistenChatDisplayChanged?.()
   unlistenChatNarrationChanged?.()
+  unlistenChatMusicLinkChanged?.()
   unlistenCompanionChanged?.()
   clearTypewriterTimer()
 })
@@ -341,6 +424,7 @@ function syncChatSettingsDraft() {
   chatSettingsDraft.value = {
     typewriterEnabled: config.value?.drawer.chatTypewriterEnabled !== false,
     narrationEnabled: config.value?.drawer.chatNarrationEnabled === true,
+    musicLinkEnabled: config.value?.drawer.chatMusicLinkEnabled !== false,
   }
 }
 
@@ -366,11 +450,13 @@ async function saveChatSettings() {
     const updatedConfig = await invoke<PetDrawerConfig>('save_chat_display_preferences', {
       chatTypewriterEnabled: chatSettingsDraft.value.typewriterEnabled,
       chatNarrationEnabled: chatSettingsDraft.value.narrationEnabled,
+      chatMusicLinkEnabled: chatSettingsDraft.value.musicLinkEnabled,
     })
     config.value = updatedConfig
     await Promise.all([
       emitEvent('ui-chat-display-changed', updatedConfig.drawer.chatTypewriterEnabled ?? true),
       emitEvent('ui-chat-narration-changed', updatedConfig.drawer.chatNarrationEnabled ?? false),
+      emitEvent('ui-chat-music-link-changed', updatedConfig.drawer.chatMusicLinkEnabled ?? true),
     ])
     chatSettingsVisible.value = false
   } catch (err) {
@@ -601,6 +687,50 @@ function requestMessages() {
       timeContext: formatMessageContextTime(message.createdAt),
     }))
     .filter((message) => message.content.length > 0)
+}
+
+function currentMessageMemoryIds() {
+  return new Set(
+    messages.value
+      .map((message) => message.memoryId)
+      .filter((messageId): messageId is number => typeof messageId === 'number'),
+  )
+}
+
+async function displayPetChatReply(
+  reply: PetChatReply,
+  previousMessageIds: Set<number>,
+  fallbackIdSuffix = 'assistant',
+) {
+  await loadConversation()
+  const assistantMessage =
+    [...messages.value]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === 'assistant' &&
+          typeof message.memoryId === 'number' &&
+          !previousMessageIds.has(message.memoryId),
+      ) ??
+    ({
+      id: `${Date.now()}-${fallbackIdSuffix}`,
+      role: 'assistant',
+      content: stripInternalTimeLabels(reply.message),
+      createdAt: nowSeconds(),
+      local: true,
+    } satisfies ChatMessage)
+  if (assistantMessage.local) {
+    messages.value.push(assistantMessage)
+  }
+  startTypewriter(assistantMessage.id)
+  void forwardWechatClawbotMessage('assistant', reply.message)
+  if (reply.favorabilityChange?.status) {
+    companionStatus.value = reply.favorabilityChange.status
+    manualFavorabilityDraft.value = reply.favorabilityChange.status.favorability
+  }
+  if (reply.memoryWarning) {
+    errorMessage.value = `本次回复已生成，但部分本机状态未能保存：${reply.memoryWarning}`
+  }
 }
 
 function safeInteger(value: number, fallback: number) {
@@ -978,6 +1108,194 @@ function startTypewriter(messageId: string) {
   revealNext()
 }
 
+async function musicChatIntentFromAi(input: string): Promise<MusicChatIntent | null> {
+  if (!input.trim()) {
+    return null
+  }
+
+  try {
+    const result = await invoke<MusicIntentReply>('classify_music_intent', {
+      userInput: input,
+      context: buildMusicIntentContext(),
+    })
+    if (result.type !== 'music_action' || !isMusicActionType(result.action)) {
+      return null
+    }
+    const query = normalizeMusicQuery(result.query)
+    if (result.action === 'play_by_query' && !query) {
+      return null
+    }
+
+    return {
+      action: {
+        type: 'music_action',
+        action: result.action,
+        tags: normalizeMusicIntentTags(result.tags),
+        query,
+        volumeDelta: typeof result.volumeDelta === 'number' ? result.volumeDelta : undefined,
+        source: 'pet_chat',
+      },
+      reply: result.reply?.trim() || defaultMusicIntentReply(result.action),
+    }
+  } catch {
+    return null
+  }
+}
+
+function buildMusicIntentContext(): MusicIntentContext {
+  const storedTracks = readStoredMusicTracks()
+  const availableTags = normalizeMusicIntentTags([
+    ...MUSIC_INTENT_TAGS,
+    ...storedTracks.flatMap((track) => normalizeMusicIntentTags(track.tags)),
+  ])
+
+  return {
+    hasTracks: storedTracks.length > 0,
+    trackCount: storedTracks.length,
+    favoriteCount: storedTracks.filter((track) => Boolean(track.favorite)).length,
+    recentCount: storedTracks.filter((track) => typeof track.lastPlayedAt === 'string' && track.lastPlayedAt).length,
+    availableTags,
+  }
+}
+
+function readStoredMusicTracks() {
+  try {
+    const raw = localStorage.getItem(MUSIC_TRACKS_STORAGE_KEY)
+    if (!raw) {
+      return []
+    }
+
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed)
+        ? parsed.map((track) => ({
+          title: typeof track?.title === 'string' ? track.title : '',
+          artist: typeof track?.artist === 'string' ? track.artist : '',
+          album: typeof track?.album === 'string' ? track.album : '',
+          tags: Array.isArray(track?.tags) ? track.tags : [],
+          favorite: Boolean(track?.favorite),
+          lastPlayedAt: typeof track?.lastPlayedAt === 'string' ? track.lastPlayedAt : '',
+        }))
+      : []
+  } catch {
+    return []
+  }
+}
+
+function normalizeMusicQuery(value?: unknown) {
+  return String(value ?? '')
+    .trim()
+    .replace(/^[《"'“‘]+|[》"'”’]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:一首|首|这首歌|那首歌|歌曲|音乐|点首|点一下|放一下)/, '')
+    .replace(/(?:可以吗|好不好|好吗|行吗|谢谢|拜托|一下|吧|呀|啊)$/g, '')
+    .trim()
+    .slice(0, 80)
+}
+
+function normalizeMusicIntentTags(value?: unknown) {
+  const rawTags = Array.isArray(value) ? value : []
+  const tags: string[] = []
+  for (const rawTag of rawTags) {
+    const tag = String(rawTag ?? '').trim().slice(0, 24)
+    if (!tag || tags.includes(tag)) {
+      continue
+    }
+    tags.push(tag)
+    if (tags.length >= 32) {
+      break
+    }
+  }
+
+  return tags
+}
+
+function isMusicActionType(value: unknown): value is MusicActionType {
+  return (
+    value === 'play_music' ||
+    value === 'play_by_query' ||
+    value === 'play_by_tags' ||
+    value === 'pause' ||
+    value === 'resume' ||
+    value === 'next' ||
+    value === 'previous' ||
+    value === 'set_volume' ||
+    value === 'favorite_current' ||
+    value === 'skip_current' ||
+    value === 'start_sleep_mode' ||
+    value === 'start_focus_mode' ||
+    value === 'start_mood_mode'
+  )
+}
+
+function defaultMusicIntentReply(action: MusicActionType) {
+  if (action === 'pause') {
+    return '好，音乐先暂停。'
+  }
+  if (action === 'resume') {
+    return '好，继续播放。'
+  }
+  if (action === 'next' || action === 'skip_current') {
+    return '好，我帮你换一首。'
+  }
+  if (action === 'previous') {
+    return '好，切回上一首。'
+  }
+  if (action === 'favorite_current') {
+    return '已帮你收藏当前歌曲。'
+  }
+  if (action === 'set_volume') {
+    return '好，我调整一下音量。'
+  }
+  if (action === 'play_by_query') {
+    return '我帮你找找这首歌。'
+  }
+
+  return '好，我帮你放点合适的音乐。'
+}
+
+function musicChatIntent(
+  action: MusicActionType,
+  reply: string,
+  options: Pick<MusicActionRequest, 'tags' | 'query' | 'volumeDelta'> = {},
+): MusicChatIntent {
+  return {
+    action: {
+      type: 'music_action',
+      action,
+      source: 'pet_chat',
+      ...options,
+    },
+    reply,
+  }
+}
+
+async function executeMusicChatIntent(intent: MusicChatIntent) {
+  try {
+    await invoke('show_music_player')
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 80))
+    await emitEvent('music-action-requested', intent.action)
+  } catch (err) {
+    throw new Error(`音乐控制失败：${String(err)}`)
+  }
+
+  try {
+    const previousMessageIds = currentMessageMemoryIds()
+    const reply = await invoke<PetChatReply>('send_pet_music_chat_message', {
+      messages: requestMessages(),
+      actionContext: {
+        action: intent.action.action,
+        tags: intent.action.tags ?? [],
+        query: intent.action.query,
+        volumeDelta: intent.action.volumeDelta,
+      },
+    })
+    await displayPetChatReply(reply, previousMessageIds, 'assistant-music')
+  } catch (err) {
+    await loadConversation()
+    throw new Error(`音乐已执行，但 AI 回复失败：${String(err)}`)
+  }
+}
+
 async function sendMessage() {
   const content = inputText.value.trim()
   if (!content || sending.value) {
@@ -1000,46 +1318,28 @@ async function sendMessage() {
     createdAt: nowSeconds(),
   })
   void forwardWechatClawbotMessage('user', stripInternalTimeLabels(outgoingContent))
-  const previousMessageIds = new Set(
-    messages.value
-      .map((message) => message.memoryId)
-      .filter((messageId): messageId is number => typeof messageId === 'number'),
-  )
+  const userMessageContent = stripInternalTimeLabels(outgoingContent)
+  sending.value = true
+  const musicIntent = chatMusicLinkEnabled.value ? await musicChatIntentFromAi(userMessageContent) : null
+  if (musicIntent) {
+    try {
+      await executeMusicChatIntent(musicIntent)
+    } catch (err) {
+      errorMessage.value = String(err)
+    } finally {
+      sending.value = false
+    }
+    return
+  }
+
+  const previousMessageIds = currentMessageMemoryIds()
   sending.value = true
 
   try {
     const reply = await invoke<PetChatReply>('send_pet_chat_message', {
       messages: requestMessages(),
     })
-    await loadConversation()
-    const assistantMessage =
-      [...messages.value]
-        .reverse()
-        .find(
-          (message) =>
-            message.role === 'assistant' &&
-            typeof message.memoryId === 'number' &&
-            !previousMessageIds.has(message.memoryId),
-        ) ??
-      ({
-        id: `${Date.now()}-assistant`,
-        role: 'assistant',
-        content: stripInternalTimeLabels(reply.message),
-        createdAt: nowSeconds(),
-        local: true,
-      } satisfies ChatMessage)
-    if (assistantMessage.local) {
-      messages.value.push(assistantMessage)
-    }
-    startTypewriter(assistantMessage.id)
-    void forwardWechatClawbotMessage('assistant', reply.message)
-    if (reply.favorabilityChange?.status) {
-      companionStatus.value = reply.favorabilityChange.status
-      manualFavorabilityDraft.value = reply.favorabilityChange.status.favorability
-    }
-    if (reply.memoryWarning) {
-      errorMessage.value = `本次回复已生成，但部分本机状态未能保存：${reply.memoryWarning}`
-    }
+    await displayPetChatReply(reply, previousMessageIds)
   } catch (err) {
     await loadConversation()
     errorMessage.value = String(err)
@@ -1477,7 +1777,7 @@ async function insertTwemoji(item: TwemojiItem) {
         <header>
           <div>
             <h2>对话设置</h2>
-            <p>这些设置只影响聊天窗口的显示方式。</p>
+            <p>这些设置只影响聊天窗口的本机显示和联动行为。</p>
           </div>
           <button type="button" title="关闭设置" @click="closeChatSettings">×</button>
         </header>
@@ -1494,6 +1794,13 @@ async function insertTwemoji(item: TwemojiItem) {
             <small>开启后，括号、【】或 *动作* 中的内容会作为旁白显示；关闭后只显示双方对话。</small>
           </span>
           <input v-model="chatSettingsDraft.narrationEnabled" type="checkbox" />
+        </label>
+        <label class="pet-chat-settings-toggle">
+          <span>
+            <strong>对话音乐联动</strong>
+            <small>开启后，AI 明确判断你想听歌或控制音乐时才会操作播放器；关闭后只保留普通聊天。</small>
+          </span>
+          <input v-model="chatSettingsDraft.musicLinkEnabled" type="checkbox" />
         </label>
         <p v-if="chatSettingsError" class="pet-chat-error">{{ chatSettingsError }}</p>
         <footer>
