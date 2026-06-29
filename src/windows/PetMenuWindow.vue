@@ -2,10 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import type { DrawerTheme, PetDrawerConfig } from '../types/app'
 
 const drawerTheme = ref<DrawerTheme>('light')
 const themeClass = computed(() => `theme-${drawerTheme.value}`)
+const { windowOpenAnimationClass } = useWindowOpenAnimation('menu')
 let unlistenThemeChanged: (() => void) | null = null
 
 onMounted(async () => {
@@ -62,7 +64,7 @@ async function hideMenu() {
 </script>
 
 <template>
-  <main class="pet-menu-window" :class="themeClass" @mouseleave="hideMenu">
+  <main class="pet-menu-window" :class="[themeClass, windowOpenAnimationClass]" @mouseleave="hideMenu">
     <button type="button" @click="runAction('chat')">对话</button>
     <button type="button" @click="runAction('story')">故事模式</button>
     <button type="button" @click="runAction('drawer')">打开抽屉</button>

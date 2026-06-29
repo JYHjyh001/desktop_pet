@@ -18,11 +18,11 @@ use crate::{
     app_data::{
         self, AiConnectionProfile, AiSettings, AppDraft, CodexAppServerSettings, Companion,
         CompanionDraft, PetAnimationSet, PetApp, PetDrawerConfig, PetPosition, PetSkinPackageDraft,
-        PetSkinSummary, StorageSettings, WechatClawbotSettings,
+        PetSkinSummary, ShortcutSettings, StorageSettings, WechatClawbotSettings,
     },
     clawbot_bridge, codex_app_server,
     favorability::{self, CompanionStatus, FavorabilityLog},
-    launcher, startup,
+    launcher, netease_music, startup,
     story_mode::{self, StoryCreateDraft, StorySave, StoryTurnReply},
     updater, wechat_clawbot, windowing,
 };
@@ -51,11 +51,37 @@ pub struct DrawerPreferencesDraft {
     #[serde(default = "default_true")]
     pub auto_favorite_enabled: bool,
     #[serde(default)]
+    pub shortcut: ShortcutSettingsDraft,
+    #[serde(default)]
     pub ai: AiSettingsDraft,
     #[serde(default)]
     pub wechat_clawbot: WechatClawbotSettingsDraft,
     #[serde(default)]
     pub codex_app_server: CodexAppServerSettingsDraft,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutSettingsDraft {
+    #[serde(default = "default_toggle_drawer_shortcut")]
+    pub toggle_drawer: String,
+    #[serde(default = "default_pet_single_click_action")]
+    pub pet_single_click: String,
+    #[serde(default = "default_pet_double_click_action")]
+    pub pet_double_click: String,
+    #[serde(default = "default_pet_right_click_action")]
+    pub pet_right_click: String,
+}
+
+impl Default for ShortcutSettingsDraft {
+    fn default() -> Self {
+        Self {
+            toggle_drawer: default_toggle_drawer_shortcut(),
+            pet_single_click: default_pet_single_click_action(),
+            pet_double_click: default_pet_double_click_action(),
+            pet_right_click: default_pet_right_click_action(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,6 +224,14 @@ pub struct MusicMetadataResult {
     duration: Option<u64>,
     source: String,
     confidence: f32,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLyricsResult {
+    content: String,
+    source: String,
     warnings: Vec<String>,
 }
 
@@ -497,6 +531,7 @@ pub fn save_drawer_preferences(
     config.pet.always_on_top = preferences.pet_always_on_top;
     config.system.start_on_boot = preferences.start_on_boot;
     config.system.auto_favorite_enabled = preferences.auto_favorite_enabled;
+    config.shortcut = normalize_shortcut_settings(preferences.shortcut);
     config.ai = normalize_ai_settings(preferences.ai);
     config.wechat_clawbot = normalize_wechat_clawbot_settings(preferences.wechat_clawbot);
     config.codex_app_server = normalize_codex_app_server_settings(preferences.codex_app_server);
@@ -538,6 +573,22 @@ fn normalize_unique_list(items: Vec<String>, max_items: usize) -> Vec<String> {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_toggle_drawer_shortcut() -> String {
+    "Ctrl+Space".to_string()
+}
+
+fn default_pet_single_click_action() -> String {
+    "smartCodexOrDrawer".to_string()
+}
+
+fn default_pet_double_click_action() -> String {
+    "toggleDrawer".to_string()
+}
+
+fn default_pet_right_click_action() -> String {
+    "petMenu".to_string()
 }
 
 fn default_pet_size() -> u32 {
@@ -601,6 +652,39 @@ fn normalize_wechat_clawbot_settings(
             format!("/{bridge_path}")
         },
         bridge_token: settings.bridge_token.trim().to_string(),
+    }
+}
+
+fn normalize_shortcut_settings(settings: ShortcutSettingsDraft) -> ShortcutSettings {
+    ShortcutSettings {
+        toggle_drawer: {
+            let value = settings.toggle_drawer.trim();
+            if value.is_empty() {
+                default_toggle_drawer_shortcut()
+            } else {
+                value.to_string()
+            }
+        },
+        pet_single_click: normalize_pet_action(
+            &settings.pet_single_click,
+            &default_pet_single_click_action(),
+        ),
+        pet_double_click: normalize_pet_action(
+            &settings.pet_double_click,
+            &default_pet_double_click_action(),
+        ),
+        pet_right_click: normalize_pet_action(
+            &settings.pet_right_click,
+            &default_pet_right_click_action(),
+        ),
+    }
+}
+
+fn normalize_pet_action(value: &str, fallback: &str) -> String {
+    match value.trim() {
+        "smartCodexOrDrawer" | "toggleDrawer" | "showDrawer" | "petMenu" | "petChat" | "story"
+        | "music" | "none" => value.trim().to_string(),
+        _ => fallback.to_string(),
     }
 }
 
@@ -1045,6 +1129,155 @@ pub fn read_music_metadata(path: String) -> Result<MusicMetadataResult, String> 
     })
 }
 
+#[tauri::command]
+pub fn read_music_lyrics(
+    path: String,
+    source_path: Option<String>,
+) -> Result<Option<MusicLyricsResult>, String> {
+    let music_path = PathBuf::from(path.trim());
+    if !music_path.is_file() || !is_supported_music_file(&music_path) {
+        return Err("请选择有效的音频文件".to_string());
+    }
+
+    let mut warnings = Vec::new();
+    let mut candidates = vec![music_path.clone()];
+    if let Some(source) = source_path {
+        let source = PathBuf::from(source.trim());
+        if source.is_file() && source != music_path {
+            candidates.push(source);
+        }
+    }
+
+    for candidate in candidates {
+        let Some(stem) = candidate.file_stem().and_then(|item| item.to_str()) else {
+            continue;
+        };
+        let Some(parent) = candidate.parent() else {
+            continue;
+        };
+
+        if let Some(result) = read_music_lyrics_next_to_file(parent, stem, &mut warnings)? {
+            return Ok(Some(result));
+        }
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
+pub async fn create_netease_qr_login(
+    app: AppHandle,
+) -> Result<netease_music::NeteaseQrLogin, String> {
+    tauri::async_runtime::spawn_blocking(move || netease_music::create_qr_login(&app))
+        .await
+        .map_err(|err| format!("网易云二维码创建任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn check_netease_qr_login(
+    app: AppHandle,
+    key: String,
+) -> Result<netease_music::NeteaseQrCheckResult, String> {
+    tauri::async_runtime::spawn_blocking(move || netease_music::check_qr_login(&app, key))
+        .await
+        .map_err(|err| format!("网易云登录检查任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_netease_login_status(
+    app: AppHandle,
+) -> Result<netease_music::NeteaseLoginStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || netease_music::login_status(&app))
+        .await
+        .map_err(|err| format!("网易云登录状态读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn clear_netease_login(
+    app: AppHandle,
+) -> Result<netease_music::NeteaseLoginStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || netease_music::clear_login(&app))
+        .await
+        .map_err(|err| format!("网易云登录清除任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn list_netease_playlists(
+    app: AppHandle,
+) -> Result<Vec<netease_music::NeteasePlaylistSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || netease_music::list_playlists(&app))
+        .await
+        .map_err(|err| format!("网易云歌单读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_netease_playlist_detail(
+    app: AppHandle,
+    playlist_id: u64,
+) -> Result<netease_music::NeteasePlaylistDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || netease_music::playlist_detail(&app, playlist_id))
+        .await
+        .map_err(|err| format!("网易云歌单详情读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn read_netease_lyrics(
+    app: AppHandle,
+    song_id: u64,
+) -> Result<netease_music::NeteaseLyricsResult, String> {
+    tauri::async_runtime::spawn_blocking(move || netease_music::song_lyrics(&app, song_id))
+        .await
+        .map_err(|err| format!("网易云歌词读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_netease_song_playback_url(
+    app: AppHandle,
+    song_id: u64,
+    level: Option<String>,
+) -> Result<netease_music::NeteasePlaybackUrl, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        netease_music::song_playback_url(&app, song_id, level)
+    })
+    .await
+    .map_err(|err| format!("网易云播放链接获取任务失败：{err}"))?
+}
+
+fn read_music_lyrics_next_to_file(
+    parent: &Path,
+    stem: &str,
+    warnings: &mut Vec<String>,
+) -> Result<Option<MusicLyricsResult>, String> {
+    for extension in ["lrc", "txt"] {
+        let lyrics_path = parent.join(format!("{stem}.{extension}"));
+        if !lyrics_path.is_file() {
+            continue;
+        }
+
+        let metadata =
+            fs::metadata(&lyrics_path).map_err(|err| format!("无法读取歌词文件信息：{err}"))?;
+        if metadata.len() > 512 * 1024 {
+            warnings.push("歌词文件过大，已跳过读取".to_string());
+            continue;
+        }
+
+        let bytes = fs::read(&lyrics_path).map_err(|err| format!("无法读取歌词文件：{err}"))?;
+        let content = String::from_utf8_lossy(&bytes).to_string();
+        if content.trim().is_empty() {
+            warnings.push("歌词文件为空".to_string());
+            continue;
+        }
+
+        return Ok(Some(MusicLyricsResult {
+            content,
+            source: extension.to_string(),
+            warnings: warnings.clone(),
+        }));
+    }
+
+    Ok(None)
+}
+
 fn collect_music_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
     let entries = fs::read_dir(directory)
         .map_err(|err| format!("无法读取文件夹 {}：{err}", directory.to_string_lossy()))?;
@@ -1345,6 +1578,126 @@ pub fn start_codex_app_server_turn(
 ) -> Result<codex_app_server::CodexStatusPayload, String> {
     let settings = app_data::read_config(&app)?.codex_app_server;
     codex_app_server::start_turn(app, &state, settings, prompt, cwd)
+}
+
+#[tauri::command]
+pub fn open_codex_window() -> Result<(), String> {
+    focus_codex_window()
+}
+
+#[cfg(windows)]
+fn focus_codex_window() -> Result<(), String> {
+    use std::collections::HashSet;
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE, LPARAM},
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+        UI::WindowsAndMessaging::{
+            EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowThreadProcessId,
+            IsWindowVisible, SetForegroundWindow, ShowWindowAsync, GW_OWNER, SW_RESTORE,
+        },
+    };
+
+    struct CodexWindowSearch {
+        hwnd: HWND,
+        codex_process_ids: HashSet<u32>,
+        last_error: Option<String>,
+    }
+
+    unsafe extern "system" fn enum_codex_windows(hwnd: HWND, lparam: LPARAM) -> i32 {
+        let search = &mut *(lparam as *mut CodexWindowSearch);
+        if !is_candidate_top_level_window(hwnd) {
+            return 1;
+        }
+
+        let mut process_id = 0_u32;
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+        if process_id == 0 {
+            return 1;
+        }
+
+        if search.codex_process_ids.contains(&process_id) {
+            search.hwnd = hwnd;
+            return 0;
+        }
+
+        1
+    }
+
+    unsafe fn is_candidate_top_level_window(hwnd: HWND) -> bool {
+        IsWindowVisible(hwnd) != 0
+            && GetWindow(hwnd, GW_OWNER).is_null()
+            && GetWindowTextLengthW(hwnd) > 0
+    }
+
+    unsafe fn codex_process_ids() -> Result<HashSet<u32>, String> {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err("无法读取 Windows 进程列表。".to_string());
+        }
+
+        let mut ids = HashSet::new();
+        let mut entry = std::mem::zeroed::<PROCESSENTRY32W>();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        if Process32FirstW(snapshot, &mut entry) != 0 {
+            loop {
+                if process_entry_name(&entry).eq_ignore_ascii_case("Codex.exe") {
+                    ids.insert(entry.th32ProcessID);
+                }
+
+                if Process32NextW(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+
+        let _ = CloseHandle(snapshot);
+        Ok(ids)
+    }
+
+    fn process_entry_name(entry: &PROCESSENTRY32W) -> String {
+        let len = entry
+            .szExeFile
+            .iter()
+            .position(|item| *item == 0)
+            .unwrap_or(entry.szExeFile.len());
+        String::from_utf16_lossy(&entry.szExeFile[..len])
+    }
+
+    let codex_process_ids = unsafe { codex_process_ids()? };
+    if codex_process_ids.is_empty() {
+        return Err("未找到已启动的 Codex 进程。".to_string());
+    }
+
+    let mut search = CodexWindowSearch {
+        hwnd: std::ptr::null_mut(),
+        codex_process_ids,
+        last_error: None,
+    };
+
+    unsafe {
+        EnumWindows(Some(enum_codex_windows), &mut search as *mut _ as LPARAM);
+        if search.hwnd.is_null() {
+            return Err(search
+                .last_error
+                .unwrap_or_else(|| "未找到已打开的 Codex 窗口。".to_string()));
+        }
+
+        ShowWindowAsync(search.hwnd, SW_RESTORE);
+        if SetForegroundWindow(search.hwnd) == 0 {
+            return Err("找到 Codex 窗口，但无法将它切到前台。".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn focus_codex_window() -> Result<(), String> {
+    Err("当前仅支持在 Windows 下聚焦已打开的 Codex 窗口。".to_string())
 }
 
 #[tauri::command]

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import type { DrawerTheme } from '../types/app'
 
 type PetBubbleKind = 'bubble' | 'badge' | 'completion'
@@ -28,6 +29,9 @@ const message = ref('')
 const theme = ref<DrawerTheme>('light')
 const placement = ref<PetBubblePlacement>('top')
 const tailX = ref(150)
+const { windowOpenAnimationClass } = useWindowOpenAnimation('bubble')
+const bubbleHorizontalPadding = 8
+const bubbleTailEdgePadding = 18
 let unlistenBubbleUpdate: (() => void) | null = null
 let unlistenBubblePlacement: (() => void) | null = null
 
@@ -36,10 +40,17 @@ const windowClass = computed(() => [
   `theme-${theme.value}`,
   `kind-${kind.value}`,
   `placement-${placement.value}`,
+  windowOpenAnimationClass.value,
 ])
-const bubbleStyle = computed(() => ({
-  '--tail-x': `${tailX.value}px`,
-}))
+const bubbleStyle = computed(() => {
+  const tailPosition = Math.round(tailX.value - bubbleHorizontalPadding)
+  return {
+    '--tail-x':
+      kind.value === 'bubble'
+        ? `clamp(${bubbleTailEdgePadding}px, ${tailPosition}px, calc(100% - ${bubbleTailEdgePadding}px))`
+        : `${tailX.value}px`,
+  }
+})
 
 onMounted(async () => {
   unlistenBubbleUpdate = await listen<PetBubbleRenderPayload>('pet-bubble-updated', (event) => {

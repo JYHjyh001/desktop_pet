@@ -4,9 +4,11 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import Pet from '../components/Pet.vue'
+import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import type {
   CodexAppServerStatus,
   DrawerTheme,
+  PetActionBinding,
   PetAnimationKey,
   PetDrawerConfig,
   PetSkinSummary,
@@ -31,7 +33,20 @@ interface PetBubbleWindowPayload {
   theme: DrawerTheme
 }
 
+interface PetActionBindings {
+  petSingleClick: PetActionBinding
+  petDoubleClick: PetActionBinding
+  petRightClick: PetActionBinding
+}
+
+interface PetActionContext {
+  x?: number
+  y?: number
+  playClick?: boolean
+}
+
 const petState = ref<PetAnimationKey>('idle')
+const { windowOpenAnimationClass } = useWindowOpenAnimation('pet')
 const currentPetSkin = ref<PetSkinSummary | null>(null)
 const drawerTheme = ref<DrawerTheme>('light')
 const pointerDown = ref(false)
@@ -46,11 +61,16 @@ const codexBubbleState = ref<CodexBubbleState>('connected')
 const codexBubbleVisible = ref(false)
 const codexCompletionHoldActive = ref(false)
 const codexCompletionCount = ref(0)
+const codexActivityPetState = ref<PetAnimationKey | null>(null)
+const latestCodexStatus = ref<CodexAppServerStatus | null>(null)
+const petActionBindings = ref<PetActionBindings>(defaultPetActionBindings())
 const CLICK_ANIMATION_MS = 1200
+const SINGLE_CLICK_DELAY_MS = 260
 const DRAG_DIRECTION_THRESHOLD_PX = 2
 let stateTimer: number | null = null
 let dragWatchTimer: number | null = null
 let codexBubbleTimer: number | null = null
+let pendingClickTimer: number | null = null
 let codexStatusRequestId = 0
 let codexBubbleFromHover = false
 let suppressNextCodexAckStatus = false
@@ -59,6 +79,7 @@ let unlistenPetImage: (() => void) | null = null
 let unlistenPetAnimationState: (() => void) | null = null
 let unlistenCodexStatus: (() => void) | null = null
 let unlistenThemeChanged: (() => void) | null = null
+let unlistenPetActionBindingsChanged: (() => void) | null = null
 let preloadedPetMedia: Array<HTMLImageElement | HTMLVideoElement> = []
 
 const appWindow = getCurrentWindow()
@@ -88,6 +109,9 @@ onMounted(async () => {
     }
 
     const fallback = isPetAnimationKey(event.payload?.fallback) ? event.payload.fallback : 'idle'
+    if (isCodexActivityState(state)) {
+      codexActivityPetState.value = state
+    }
     if (state === 'jumping' && codexCompletionHoldActive.value) {
       void holdCodexCompletionAnimation()
       return
@@ -101,6 +125,12 @@ onMounted(async () => {
     drawerTheme.value = normalizeDrawerTheme(event.payload)
     void syncPetBubbleWindow()
   })
+  unlistenPetActionBindingsChanged = await listen<PetDrawerConfig['shortcut']>(
+    'pet-action-bindings-changed',
+    (event) => {
+      syncPetActionBindings(event.payload)
+    },
+  )
 })
 
 onBeforeUnmount(() => {
@@ -108,6 +138,7 @@ onBeforeUnmount(() => {
   unlistenPetAnimationState?.()
   unlistenCodexStatus?.()
   unlistenThemeChanged?.()
+  unlistenPetActionBindingsChanged?.()
   if (stateTimer !== null) {
     window.clearTimeout(stateTimer)
   }
@@ -116,6 +147,9 @@ onBeforeUnmount(() => {
   }
   if (codexBubbleTimer !== null) {
     window.clearTimeout(codexBubbleTimer)
+  }
+  if (pendingClickTimer !== null) {
+    window.clearTimeout(pendingClickTimer)
   }
   void hidePetBubbleWindow()
   clearPreloadedPetMedia()
@@ -130,13 +164,50 @@ async function loadTheme() {
   try {
     const config = await invoke<PetDrawerConfig>('get_config')
     drawerTheme.value = normalizeDrawerTheme(config.drawer.theme)
+    syncPetActionBindings(config.shortcut)
   } catch {
     drawerTheme.value = 'light'
+    petActionBindings.value = defaultPetActionBindings()
   }
 }
 
 function normalizeDrawerTheme(value?: string | null): DrawerTheme {
   return value === 'animal-island' ? 'animal-island' : 'light'
+}
+
+function defaultPetActionBindings(): PetActionBindings {
+  return {
+    petSingleClick: 'smartCodexOrDrawer',
+    petDoubleClick: 'toggleDrawer',
+    petRightClick: 'petMenu',
+  }
+}
+
+function syncPetActionBindings(shortcut?: PetDrawerConfig['shortcut'] | null) {
+  petActionBindings.value = {
+    petSingleClick: normalizePetActionBinding(shortcut?.petSingleClick, 'smartCodexOrDrawer'),
+    petDoubleClick: normalizePetActionBinding(shortcut?.petDoubleClick, 'toggleDrawer'),
+    petRightClick: normalizePetActionBinding(shortcut?.petRightClick, 'petMenu'),
+  }
+}
+
+function normalizePetActionBinding(
+  value: string | null | undefined,
+  fallback: PetActionBinding,
+): PetActionBinding {
+  switch (value) {
+    case 'smartCodexOrDrawer':
+    case 'toggleDrawer':
+    case 'showDrawer':
+    case 'petMenu':
+    case 'petChat':
+    case 'story':
+    case 'music':
+    case 'none':
+      return value
+    default:
+      return fallback
+  }
 }
 
 function isPetAnimationKey(value: unknown): value is PetAnimationKey {
@@ -196,7 +267,9 @@ function clearPreloadedPetMedia() {
 }
 
 function handleCodexStatus(status: CodexAppServerStatus) {
+  latestCodexStatus.value = status
   const shouldSuppressBubble = consumeSuppressedCodexAckStatus(status)
+  updateCodexActivityPetState(status)
   updateCodexCompletionReminder(status)
 
   if (shouldSuppressBubble) {
@@ -323,6 +396,22 @@ function shouldAcknowledgeCodexCompletionStatus(status: CodexAppServerStatus) {
   )
 }
 
+function hasUnreadCodexCompletionReminder() {
+  return codexCompletionHoldActive.value || codexCompletionCount.value > 0
+}
+
+function stopCodexCompletionHoldAnimation() {
+  codexCompletionHoldActive.value = false
+
+  if (petState.value === 'jumping') {
+    if (stateTimer !== null) {
+      window.clearTimeout(stateTimer)
+      stateTimer = null
+    }
+    protectedUntil.value = 0
+  }
+}
+
 function clearCodexCompletionReminder(options: { resetAnimation?: boolean } = {}) {
   codexCompletionHoldActive.value = false
   codexCompletionCount.value = 0
@@ -386,6 +475,8 @@ async function showCurrentCodexBubbleOnHover() {
     if (requestId !== codexStatusRequestId || !petHovered.value) {
       return
     }
+    latestCodexStatus.value = status
+    updateCodexActivityPetState(status)
     showCodexBubble(status, { respectNotify: false, keepWhileHovered: true })
   } catch (err) {
     console.error(err)
@@ -496,6 +587,40 @@ function isCodexActivityState(state: PetAnimationKey = petState.value) {
   return state === 'running' || state === 'review' || state === 'waiting'
 }
 
+function updateCodexActivityPetState(status: CodexAppServerStatus) {
+  const summary = status.summary
+  if (summary) {
+    if (summary.waitingCount > 0) {
+      codexActivityPetState.value = 'waiting'
+    } else if (summary.runningCount > 0) {
+      codexActivityPetState.value = 'running'
+    } else if (summary.reviewCount > 0) {
+      codexActivityPetState.value = 'review'
+    } else {
+      codexActivityPetState.value = null
+    }
+    return
+  }
+
+  const state = normalizeCodexBubbleState(status.state)
+  codexActivityPetState.value = codexBubbleStateToPetActivityState(state)
+}
+
+function codexBubbleStateToPetActivityState(state: CodexBubbleState): PetAnimationKey | null {
+  switch (state) {
+    case 'running':
+    case 'review':
+    case 'waiting':
+      return state
+    default:
+      return null
+  }
+}
+
+function clickAnimationFallbackState(): PetAnimationKey {
+  return codexActivityPetState.value ?? 'idle'
+}
+
 function canUseHoverState() {
   return !isStateProtected() && !isCodexActivityState()
 }
@@ -555,18 +680,11 @@ async function showState(
 
 function handleMouseEnter() {
   petHovered.value = true
-  const shouldAcknowledgeCompletion =
-    codexCompletionHoldActive.value || codexCompletionCount.value > 0
-  if (shouldAcknowledgeCompletion) {
-    clearCodexCompletionReminder({ resetAnimation: true })
+  if (codexCompletionHoldActive.value) {
+    stopCodexCompletionHoldAnimation()
   }
 
-  const bubbleRequest = showCurrentCodexBubbleOnHover()
-  if (shouldAcknowledgeCompletion) {
-    void bubbleRequest.finally(() => {
-      void acknowledgeCodexCompletionReminder()
-    })
-  }
+  void showCurrentCodexBubbleOnHover()
 
   if (canUseHoverState()) {
     petState.value = 'hover'
@@ -646,6 +764,9 @@ function startPointer(event: PointerEvent) {
   dragStarted.value = false
   pointerDownAt.value = Date.now()
   pointerStart.value = { x: event.clientX, y: event.clientY }
+  if (isCodexActivityState()) {
+    codexActivityPetState.value = petState.value
+  }
   void showState(dragStateForDirection())
   protectedUntil.value = Number.MAX_SAFE_INTEGER
   void invoke('hide_pet_menu')
@@ -702,7 +823,7 @@ async function finishPointer(event: PointerEvent) {
     return
   }
 
-  await toggleDrawer()
+  schedulePetClickAction()
 }
 
 function cancelPointer() {
@@ -713,9 +834,122 @@ function cancelPointer() {
   }
 }
 
-async function toggleDrawer() {
-  await showState('click', CLICK_ANIMATION_MS)
+function schedulePetClickAction() {
+  const clickContext = currentPointerActionContext(true)
+  if (pendingClickTimer !== null) {
+    window.clearTimeout(pendingClickTimer)
+    pendingClickTimer = null
+    void runConfiguredPetAction(petActionBindings.value.petDoubleClick, clickContext)
+    return
+  }
 
+  pendingClickTimer = window.setTimeout(() => {
+    pendingClickTimer = null
+    void runConfiguredPetAction(petActionBindings.value.petSingleClick, clickContext)
+  }, SINGLE_CLICK_DELAY_MS)
+}
+
+function currentPointerActionContext(playClick = false): PetActionContext {
+  return {
+    x: pointerStart.value.x,
+    y: pointerStart.value.y,
+    playClick,
+  }
+}
+
+async function runConfiguredPetAction(action: PetActionBinding, context: PetActionContext = {}) {
+  const normalizedAction = normalizePetActionBinding(action, 'smartCodexOrDrawer')
+
+  if (context.playClick) {
+    void showState('click', CLICK_ANIMATION_MS, clickAnimationFallbackState())
+  }
+
+  switch (normalizedAction) {
+    case 'smartCodexOrDrawer':
+      await runSmartCodexOrDrawerAction()
+      return
+    case 'toggleDrawer':
+      await toggleDrawerWindow()
+      return
+    case 'showDrawer':
+      await showDrawerWindow()
+      return
+    case 'petMenu':
+      await showPetMenuAt(context)
+      return
+    case 'petChat':
+      await showWindowCommand('show_pet_chat')
+      return
+    case 'story':
+      await showWindowCommand('show_story')
+      return
+    case 'music':
+      await showWindowCommand('show_music_player')
+      return
+    case 'none':
+      return
+  }
+}
+
+async function runSmartCodexOrDrawerAction() {
+  if (
+    hasUnreadCodexCompletionReminder() &&
+    (await shouldOpenCodexWindowFromCompletion()) &&
+    (await openCodexWindowFromCompletion())
+  ) {
+    return
+  }
+
+  await toggleDrawerWindow()
+}
+
+async function shouldOpenCodexWindowFromCompletion() {
+  const cachedStatus = latestCodexStatus.value
+  if (cachedStatus) {
+    updateCodexCompletionReminder(cachedStatus)
+    return isCodexCompletionReadyToOpen(cachedStatus)
+  }
+
+  try {
+    const status = await invoke<CodexAppServerStatus>('get_codex_app_server_status')
+    latestCodexStatus.value = status
+    updateCodexCompletionReminder(status)
+    return isCodexCompletionReadyToOpen(status)
+  } catch (err) {
+    console.error(err)
+    return false
+  }
+}
+
+function isCodexCompletionReadyToOpen(status: CodexAppServerStatus) {
+  const summary = status.summary
+  if (!summary) {
+    return normalizeCodexBubbleState(status.state) === 'completed'
+  }
+
+  return (
+    normalizeCodexBubbleState(summary.state) === 'completed' &&
+    summary.unreadCompletedCount > 0 &&
+    summary.activeCount <= 0 &&
+    summary.waitingCount <= 0 &&
+    summary.unreadFailedCount <= 0
+  )
+}
+
+async function openCodexWindowFromCompletion() {
+  try {
+    await invoke('hide_pet_menu')
+    await invoke('open_codex_window')
+    clearCodexCompletionReminder({ resetAnimation: true })
+    await acknowledgeCodexCompletionReminder()
+    return true
+  } catch (err) {
+    console.info('Codex 窗口未打开，改为打开抽屉。', err)
+    return false
+  }
+}
+
+async function toggleDrawerWindow() {
   try {
     await invoke('hide_pet_menu')
     await invoke('toggle_drawer')
@@ -724,11 +958,41 @@ async function toggleDrawer() {
   }
 }
 
+async function showDrawerWindow() {
+  try {
+    await invoke('hide_pet_menu')
+    await invoke('show_drawer')
+  } catch (err) {
+    console.error(err)
+  }
+}
+
+async function showWindowCommand(command: 'show_pet_chat' | 'show_story' | 'show_music_player') {
+  try {
+    await invoke('hide_pet_menu')
+    await invoke(command)
+  } catch (err) {
+    console.error(err)
+  }
+}
+
+async function showPetMenuAt(context: PetActionContext) {
+  try {
+    await invoke('show_pet_menu', {
+      x: Math.round(context.x ?? pointerStart.value.x),
+      y: Math.round(context.y ?? pointerStart.value.y),
+    })
+  } catch (err) {
+    console.error(err)
+  }
+}
+
 async function openMenu(event: MouseEvent) {
   event.preventDefault()
-  await invoke('show_pet_menu', {
-    x: Math.round(event.clientX),
-    y: Math.round(event.clientY),
+  await runConfiguredPetAction(petActionBindings.value.petRightClick, {
+    x: event.clientX,
+    y: event.clientY,
+    playClick: false,
   })
 }
 </script>
@@ -736,7 +1000,7 @@ async function openMenu(event: MouseEvent) {
 <template>
   <main
     class="pet-window"
-    :class="themeClass"
+    :class="[themeClass, windowOpenAnimationClass]"
     @mouseenter="handleMouseEnter"
     @mouseleave="handleMouseLeave"
     @contextmenu="openMenu"

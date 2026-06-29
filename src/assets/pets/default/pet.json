@@ -1,12 +1,20 @@
 {
   "id": "default",
   "name": "凯蒂",
-  "description": "内置默认宠物，包含待机眨眼、选中惊讶、点击微笑爱心、拖动悬挂摆动四种动画。",
+  "description": "内置默认宠物，包含待机、选中、点击、拖动和多状态回退动画。",
   "preview": "preview.svg",
   "animations": {
     "idle": "idle.svg",
     "hover": "hover.svg",
     "click": "click.svg",
-    "dragging": "dragging.svg"
+    "dragging": "dragging.svg",
+    "draggingLeft": "dragging.svg",
+    "draggingRight": "dragging.svg",
+    "waving": "hover.svg",
+    "jumping": "click.svg",
+    "waiting": "idle.svg",
+    "running": "hover.svg",
+    "review": "idle.svg",
+    "failed": "click.svg"
   }
 }

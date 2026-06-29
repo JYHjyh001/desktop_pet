@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { emit as emitEvent, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -7,6 +7,7 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import AppCard from '../components/AppCard.vue'
 import CategoryList from '../components/CategoryList.vue'
 import SearchBar from '../components/SearchBar.vue'
+import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import { useAppStore } from '../stores/appStore'
 import type {
   AiConnectionProfile,
@@ -21,6 +22,7 @@ import type {
   DrawerTheme,
   PetMemory,
   PetMemoryDraft,
+  PetActionBinding,
   PetAnimationKey,
   PetAnimationSet,
   PetApp,
@@ -54,6 +56,7 @@ type ImportantConfirmation = {
 }
 
 const store = useAppStore()
+const { windowOpenAnimationClass } = useWindowOpenAnimation('drawer')
 const modalVisible = ref(false)
 const saving = ref(false)
 const iconLoading = ref(false)
@@ -81,6 +84,7 @@ const tagDisplayMode = ref<'compact' | 'detailed'>('compact')
 const drawerTheme = ref<DrawerTheme>('light')
 const displayModeSaving = ref(false)
 const settingsSaving = ref(false)
+const settingsLoading = ref(false)
 const settingsError = ref('')
 const updateChecking = ref(false)
 const updateInfo = ref<UpdateCheckResult | null>(null)
@@ -185,6 +189,7 @@ const memoryDraft = reactive({
 type SettingsSectionId =
   | 'entries'
   | 'system'
+  | 'actions'
   | 'appearance'
   | 'companion'
   | 'ai'
@@ -200,6 +205,7 @@ type SettingsSectionId =
 const allSettingsSections: Array<{ id: SettingsSectionId; label: string; description: string }> = [
   { id: 'entries', label: '入口管理', description: '分类和快捷搜索' },
   { id: 'system', label: '系统', description: '自启和常用规则' },
+  { id: 'actions', label: '操作', description: '宠物按键绑定' },
   { id: 'appearance', label: '外观', description: '界面主题风格' },
   { id: 'companion', label: '伴侣', description: '角色与切换' },
   { id: 'ai', label: 'AI 接口', description: '宠物聊天 API' },
@@ -418,6 +424,25 @@ const themeOptions: Array<{
   },
 ]
 
+const petActionOptions: Array<{
+  value: PetActionBinding
+  label: string
+  description: string
+}> = [
+  {
+    value: 'smartCodexOrDrawer',
+    label: '完成时 Codex，否则抽屉',
+    description: 'Codex 任务已完成且窗口存在时聚焦 Codex，其他情况打开抽屉。',
+  },
+  { value: 'toggleDrawer', label: '切换抽屉', description: '抽屉打开时关闭，关闭时打开。' },
+  { value: 'showDrawer', label: '打开抽屉', description: '只打开抽屉，不执行关闭。' },
+  { value: 'petMenu', label: '宠物菜单', description: '打开右键菜单。' },
+  { value: 'petChat', label: '宠物聊天', description: '打开宠物聊天窗口。' },
+  { value: 'story', label: '故事模式', description: '打开故事模式窗口。' },
+  { value: 'music', label: '音乐播放器', description: '打开音乐播放器。' },
+  { value: 'none', label: '无操作', description: '保留点击动画，不打开任何窗口。' },
+]
+
 const chatEmojiFrequencyOptions: Array<{
   value: ChatEmojiFrequency
   label: string
@@ -465,6 +490,10 @@ const settingsDraft = reactive({
   startOnBoot: false,
   autoFavoriteEnabled: true,
   drawerTheme: 'light' as DrawerTheme,
+  shortcutToggleDrawer: 'Ctrl+Space',
+  petSingleClickAction: 'smartCodexOrDrawer' as PetActionBinding,
+  petDoubleClickAction: 'toggleDrawer' as PetActionBinding,
+  petRightClickAction: 'petMenu' as PetActionBinding,
   chatTypewriterEnabled: true,
   chatNarrationEnabled: false,
   chatMusicLinkEnabled: true,
@@ -508,6 +537,15 @@ const settingsDraft = reactive({
   storageMemoryDir: '',
   storagePetAssetsDir: '',
   storageIconsDir: '',
+})
+
+const petSizeRangeStyle = computed<Record<string, string>>(() => {
+  const value = normalizePetSize(settingsDraft.petSize)
+  const progress = ((value - petSizeMin) / (petSizeMax - petSizeMin)) * 100
+
+  return {
+    '--range-progress': `${Math.round(progress * 100) / 100}%`,
+  }
 })
 
 const selectedAiProfile = computed(() =>
@@ -627,6 +665,7 @@ function applyQuickSearchTag(tag: string) {
 
 async function openSettings() {
   settingsModalVisible.value = true
+  settingsLoading.value = true
   settingsError.value = ''
   updateError.value = ''
   aiTestError.value = ''
@@ -639,15 +678,27 @@ async function openSettings() {
   runtimeInfoError.value = ''
   codexActionError.value = ''
   activeSettingsSection.value = 'entries'
-  await Promise.all([
-    loadDrawerSettings(),
-    loadStorageSettings(),
-    loadCompanions(),
-    loadPetMemories(),
-    loadRuntimeInfo(),
-    loadCodexStatus(),
-  ])
-  checkForUpdate()
+  await nextTick()
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+
+  try {
+    await Promise.all([
+      loadDrawerSettings(),
+      loadStorageSettings(),
+      loadCompanions(),
+      loadPetMemories(),
+      loadRuntimeInfo(),
+      loadCodexStatus(),
+    ])
+  } finally {
+    settingsLoading.value = false
+  }
+  void checkForUpdate()
+}
+
+function closeSettings() {
+  settingsModalVisible.value = false
+  settingsLoading.value = false
 }
 
 function applyDrawerConfig(config: PetDrawerConfig) {
@@ -683,6 +734,19 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.newQuickTag = ''
   settingsDraft.tagDisplayMode = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
   settingsDraft.drawerTheme = normalizeDrawerTheme(config.drawer.theme)
+  settingsDraft.shortcutToggleDrawer = config.shortcut?.toggleDrawer || 'Ctrl+Space'
+  settingsDraft.petSingleClickAction = normalizePetActionBinding(
+    config.shortcut?.petSingleClick,
+    'smartCodexOrDrawer',
+  )
+  settingsDraft.petDoubleClickAction = normalizePetActionBinding(
+    config.shortcut?.petDoubleClick,
+    'toggleDrawer',
+  )
+  settingsDraft.petRightClickAction = normalizePetActionBinding(
+    config.shortcut?.petRightClick,
+    'petMenu',
+  )
   settingsDraft.chatTypewriterEnabled = config.drawer.chatTypewriterEnabled ?? true
   settingsDraft.chatNarrationEnabled = config.drawer.chatNarrationEnabled ?? false
   settingsDraft.petSize = normalizePetSize(config.pet.size)
@@ -761,6 +825,19 @@ function normalizeChatEmojiFrequency(value?: string | null): ChatEmojiFrequency 
   return chatEmojiFrequencyOptions.some((option) => option.value === value)
     ? (value as ChatEmojiFrequency)
     : 'normal'
+}
+
+function normalizePetActionBinding(
+  value: string | null | undefined,
+  fallback: PetActionBinding,
+): PetActionBinding {
+  return petActionOptions.some((option) => option.value === value)
+    ? (value as PetActionBinding)
+    : fallback
+}
+
+function petActionDescription(value: PetActionBinding) {
+  return petActionOptions.find((option) => option.value === value)?.description ?? ''
 }
 
 function normalizeAiProvider(value?: string | null): AiProvider {
@@ -962,6 +1039,7 @@ async function saveSettings() {
     void emitEvent('ui-chat-display-changed', config.drawer.chatTypewriterEnabled ?? true)
     void emitEvent('ui-chat-narration-changed', config.drawer.chatNarrationEnabled ?? false)
     void emitEvent('ui-chat-music-link-changed', config.drawer.chatMusicLinkEnabled ?? true)
+    void emitEvent('pet-action-bindings-changed', config.shortcut)
     settingsModalVisible.value = false
   } catch (err) {
     settingsError.value = String(err)
@@ -990,6 +1068,12 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
     drawerAlwaysOnTop: settingsDraft.drawerAlwaysOnTop,
     startOnBoot: settingsDraft.startOnBoot,
     autoFavoriteEnabled: settingsDraft.autoFavoriteEnabled,
+    shortcut: {
+      toggleDrawer: settingsDraft.shortcutToggleDrawer,
+      petSingleClick: settingsDraft.petSingleClickAction,
+      petDoubleClick: settingsDraft.petDoubleClickAction,
+      petRightClick: settingsDraft.petRightClickAction,
+    },
     ai: {
       enabled: settingsDraft.aiEnabled,
       memoryEnabled: settingsDraft.aiMemoryEnabled,
@@ -2493,7 +2577,7 @@ async function openStoryMode() {
 </script>
 
 <template>
-  <main class="drawer-window" :class="`theme-${previewDrawerTheme}`">
+  <main class="drawer-window" :class="[`theme-${previewDrawerTheme}`, windowOpenAnimationClass]">
     <header class="drawer-header" @pointerdown="startDrawerDrag">
       <div class="drawer-titlebar">
         <h1>PetDrawer</h1>
@@ -2875,15 +2959,15 @@ async function openStoryMode() {
     <div
       v-if="settingsModalVisible"
       class="modal-backdrop"
-      @click.self="settingsModalVisible = false"
+      @click.self="closeSettings"
     >
-      <section class="settings-modal">
+      <section class="settings-modal" :class="{ 'settings-modal-loading': settingsLoading }">
         <header>
           <div>
             <h2>设置</h2>
             <p>管理入口、伴侣档案、AI 接口、宠物记忆、软件更新、运行诊断和开源许可。</p>
           </div>
-          <button type="button" class="window-close" @click="settingsModalVisible = false">
+          <button type="button" class="window-close" @click="closeSettings">
             ×
           </button>
         </header>
@@ -2964,6 +3048,54 @@ async function openStoryMode() {
               <p class="settings-empty">
                 关闭自动加入常用后，程序仍会记录打开次数，但不会再根据打开频率自动新增或移出“常用”。
               </p>
+            </section>
+
+            <section v-show="activeSettingsSection === 'actions'" class="settings-section">
+              <h3>宠物操作绑定</h3>
+              <p class="settings-empty">
+                单击、双击和右键只保存动作类型；Codex 动作只会尝试聚焦已打开的 Codex 窗口。
+              </p>
+              <div class="settings-form-grid">
+                <label class="settings-field">
+                  单击宠物
+                  <select v-model="settingsDraft.petSingleClickAction">
+                    <option
+                      v-for="option in petActionOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                  <small>{{ petActionDescription(settingsDraft.petSingleClickAction) }}</small>
+                </label>
+                <label class="settings-field">
+                  双击宠物
+                  <select v-model="settingsDraft.petDoubleClickAction">
+                    <option
+                      v-for="option in petActionOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                  <small>{{ petActionDescription(settingsDraft.petDoubleClickAction) }}</small>
+                </label>
+                <label class="settings-field">
+                  右键宠物
+                  <select v-model="settingsDraft.petRightClickAction">
+                    <option
+                      v-for="option in petActionOptions"
+                      :key="option.value"
+                      :value="option.value"
+                    >
+                      {{ option.label }}
+                    </option>
+                  </select>
+                  <small>{{ petActionDescription(settingsDraft.petRightClickAction) }}</small>
+                </label>
+              </div>
             </section>
 
             <section v-show="activeSettingsSection === 'appearance'" class="settings-section">
@@ -4022,19 +4154,24 @@ async function openStoryMode() {
                 <div class="settings-range-row">
                   <input
                     v-model.number="settingsDraft.petSize"
+                    class="settings-range-input"
                     type="range"
                     :min="petSizeMin"
                     :max="petSizeMax"
                     :step="petSizeStep"
+                    :style="petSizeRangeStyle"
                   />
                   <input
                     v-model.number="settingsDraft.petSize"
+                    class="settings-range-number"
                     type="number"
                     :min="petSizeMin"
                     :max="petSizeMax"
                     :step="petSizeStep"
                   />
-                  <span>{{ normalizePetSize(settingsDraft.petSize) }} px</span>
+                  <span class="settings-range-value">
+                    {{ normalizePetSize(settingsDraft.petSize) }} px
+                  </span>
                 </div>
                 <small>保存设置后立即调整宠物窗口大小，范围 {{ petSizeMin }}-{{ petSizeMax }} px。</small>
               </label>
@@ -4152,10 +4289,20 @@ async function openStoryMode() {
           </div>
         </div>
 
+        <Transition name="settings-loading">
+          <div v-if="settingsLoading" class="settings-loading-layer" role="status" aria-live="polite">
+            <div class="settings-loading-card">
+              <span class="settings-loading-spinner" aria-hidden="true"></span>
+              <strong>正在加载设置</strong>
+              <small>读取本机配置、伴侣和记忆数据...</small>
+            </div>
+          </div>
+        </Transition>
+
         <p v-if="settingsError" class="form-error">{{ settingsError }}</p>
 
         <footer>
-          <button type="button" @click="settingsModalVisible = false">取消</button>
+          <button type="button" @click="closeSettings">取消</button>
           <button class="primary-button" type="button" :disabled="settingsSaving" @click="saveSettings">
             {{ settingsSaving ? '保存中...' : '保存设置' }}
           </button>

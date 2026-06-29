@@ -7,6 +7,7 @@ mod commands;
 mod favorability;
 mod feature_flags;
 mod launcher;
+mod netease_music;
 mod startup;
 mod story_mode;
 mod tray;
@@ -79,6 +80,15 @@ pub fn run() {
             commands::list_music_files_in_directory,
             commands::import_music_files,
             commands::read_music_metadata,
+            commands::read_music_lyrics,
+            commands::create_netease_qr_login,
+            commands::check_netease_qr_login,
+            commands::get_netease_login_status,
+            commands::clear_netease_login,
+            commands::list_netease_playlists,
+            commands::get_netease_playlist_detail,
+            commands::read_netease_lyrics,
+            commands::get_netease_song_playback_url,
             commands::send_pet_chat_message,
             commands::classify_music_intent,
             commands::send_pet_music_chat_message,
@@ -97,6 +107,7 @@ pub fn run() {
             commands::stop_codex_app_server,
             commands::ack_codex_notifications,
             commands::start_codex_app_server_turn,
+            commands::open_codex_window,
             commands::list_pet_memories,
             commands::add_pet_memory,
             commands::update_pet_memory,

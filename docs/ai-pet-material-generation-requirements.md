@@ -17,7 +17,7 @@
 
 - [x] PetDrawer 支持规范化宠物形象库。
 - [x] 当前宠物形象由 `pet.json` 描述。
-- [x] 当前项目内置默认宠物包含 `idle`、`hover`、`click`、`dragging` 四种动画状态。
+- [x] 当前项目内置默认宠物已包含多状态动画字段；新增状态当前可使用内置基础动画作为回退资源。
 - [x] 本地导入宠物时，至少需要选择 `idle` 待机动画。
 - [x] 导入后的宠物素材会复制到用户本机应用数据目录，不应提交到仓库。
 - [x] 支持导入 `png`、`jpg`、`jpeg`、`webp`、`gif`、`ico`、`webm`、`mp4` 等素材格式。
@@ -32,8 +32,8 @@
 ### 主要差异
 
 - `hatch-pet` 生成的是 Codex pet atlas，包含 9 行动作状态和完整 spritesheet。
-- PetDrawer 当前运行时只直接使用 4 个状态：`idle`、`hover`、`click`、`dragging`。
-- 因此后续不能直接把 `hatch-pet` 的完整输出当作 PetDrawer 皮肤使用，必须先设计转换或状态映射。
+- PetDrawer 当前运行时已支持 `idle`、`hover`、`click`、`dragging`、`draggingLeft`、`draggingRight`、`waving`、`jumping`、`waiting`、`running`、`review`、`failed`。
+- 因此后续重点不再是扩展基础状态模型，而是把 `hatch-pet` 的 atlas、row strip 或生成目录稳定转换成 PetDrawer 可导入的多状态素材包。
 
 ## hatch-pet 输出规格
 
@@ -92,7 +92,15 @@ PetDrawer 当前自定义宠物 `pet.json` 的核心结构应继续保持简洁�
     "idle": "idle.gif",
     "hover": "hover.gif",
     "click": "click.gif",
-    "dragging": "dragging.gif"
+    "dragging": "dragging.gif",
+    "draggingLeft": "dragging-left.gif",
+    "draggingRight": "dragging-right.gif",
+    "waving": "waving.gif",
+    "jumping": "jumping.gif",
+    "waiting": "waiting.gif",
+    "running": "running.gif",
+    "review": "review.gif",
+    "failed": "failed.gif"
   },
   "createdAt": "占位时间"
 }
@@ -100,14 +108,22 @@ PetDrawer 当前自定义宠物 `pet.json` 的核心结构应继续保持简洁�
 
 ### 状态映射建议
 
-MVP 阶段先把 `hatch-pet` 的 9 个状态转换成 PetDrawer 当前 4 个状态：
+MVP 阶段优先把 `hatch-pet` 的 9 个状态转换成 PetDrawer 已支持的多状态字段：
 
 - `idle` -> `idle`
 - `waving` 或 `review` -> `hover`
 - `jumping` 或 `waving` -> `click`
 - `running-right` -> `dragging`
+- `running-left` -> `draggingLeft`
+- `running-right` -> `draggingRight`
+- `waving` -> `waving`
+- `jumping` -> `jumping`
+- `waiting` -> `waiting`
+- `running` -> `running`
+- `review` -> `review`
+- `failed` -> `failed`
 
-后续增强阶段再考虑扩展 PetDrawer 的宠物运行状态，让 `waiting`、`running`、`review`、`failed` 能和 AI 对话、音乐播放、任务状态联动。
+如果缺少某个可选状态，转换器应在摘要中说明并依赖 PetDrawer 现有回退规则，不让导入流程失败。AI 对话和音乐播放的状态联动仍是后续运行时接入工作。
 
 ## 功能目标
 
@@ -118,7 +134,7 @@ MVP 阶段先把 `hatch-pet` 的 9 个状态转换成 PetDrawer 当前 4 个状�
 - [ ] 用户提供参考图片或文字描述。
 - [ ] 使用 `hatch-pet` 生成基础宠物和动作行。
 - [ ] 生成完成后得到 contact sheet、motion preview、spritesheet 和检查结果。
-- [ ] 增加转换流程，把 Codex pet atlas 转换为 PetDrawer 当前需要的 4 个动画文件。
+- [ ] 增加转换流程，把 Codex pet atlas 转换为 PetDrawer 当前可读取的多状态动画文件，至少必须包含 `idle`。
 - [ ] 生成本机可导入的 `pet.json`。
 - [ ] 用户通过现有“导入宠物”入口选择生成后的动画素材。
 - [ ] 所有生成素材只保存在用户本机目录，不写入源码目录。
@@ -152,14 +168,14 @@ MVP 阶段先把 `hatch-pet` 的 9 个状态转换成 PetDrawer 当前 4 个状�
 
 目标：让完整 9 状态 atlas 真正服务桌宠行为。
 
-- [ ] 扩展 PetDrawer 的宠物状态模型。
+- [x] 扩展 PetDrawer 的宠物状态模型。
 - [ ] 支持 AI 聊天等待时显示 `waiting`。
 - [ ] 支持 AI 请求处理中显示 `running`。
 - [ ] 支持 AI 回复完成或结果检查时显示 `review`。
 - [ ] 支持请求失败、取消或阻塞时显示 `failed`。
-- [ ] 支持拖动方向区分 `running-left` 和 `running-right`。
+- [x] 支持拖动方向区分 `running-left` 和 `running-right`。
 - [ ] 支持音乐播放或节奏模式映射到 `jumping` 或其他动作。
-- [ ] 保持旧版 4 状态宠物素材可继续使用。
+- [x] 保持旧版 4 状态宠物素材可继续使用。
 
 ## 隐私和安全要求
 
@@ -178,7 +194,7 @@ MVP 阶段先把 `hatch-pet` 的 9 个状态转换成 PetDrawer 当前 4 个状�
 - 风格选择：自动、像素、贴纸、毛绒、黏土、扁平矢量、3D 玩具等。
 - 生成输出目录选择。
 - 生成进度状态：准备中、生成基础形象、生成动作、转换中、完成、失败。
-- 结果预览：待机、悬停、点击、拖动四个 PetDrawer 状态。
+- 结果预览：PetDrawer 已支持的多状态动画，至少包含待机状态。
 - 错误提示：缺少参考图、生成失败、转换失败、导入失败。
 - 隐私提示：素材和路径只保存在本机。
 
@@ -205,6 +221,7 @@ MVP 阶段先把 `hatch-pet` 的 9 个状态转换成 PetDrawer 当前 4 个状�
 - `hover.gif` 或 `hover.webp`
 - `click.gif` 或 `click.webp`
 - `dragging.gif` 或 `dragging.webp`
+- 可选的 `draggingLeft`、`draggingRight`、`waving`、`jumping`、`waiting`、`running`、`review`、`failed` 动画文件
 - PetDrawer 兼容 `pet.json`
 - 可选预览图或 contact sheet
 
@@ -228,7 +245,7 @@ MVP 阶段先把 `hatch-pet` 的 9 个状态转换成 PetDrawer 当前 4 个状�
 ### MVP 实现阶段
 
 - [ ] 能从一张参考图或文字描述生成宠物素材。
-- [ ] 能把生成结果转换成 PetDrawer 当前 4 状态格式。
+- [ ] 能把生成结果转换成 PetDrawer 当前多状态格式。
 - [ ] 能通过现有导入入口导入并使用。
 - [ ] 不把用户图片、生成素材、本机路径、API Key 或 token 写入仓库。
 - [ ] 生成失败和转换失败都有清晰错误提示。
@@ -242,12 +259,14 @@ MVP 阶段先把 `hatch-pet` 的 9 个状态转换成 PetDrawer 当前 4 个状�
 
 ## 建议下一步
 
-1. 先实现一个离线转换器，把 `hatch-pet` 的 atlas 或 row strips 转成 PetDrawer 的 4 个动画文件。
+1. 先实现一个离线转换器，把 `hatch-pet` 的 atlas 或 row strips 转成 PetDrawer 的多状态动画文件。
 2. 用一组临时测试素材验证转换器，不提交用户素材。
 3. 再把转换器接入现有“导入宠物”流程，减少手动选择动画的步骤。
-4. 最后再考虑应用内 AI 生成入口和 9 状态宠物联动。
+4. 最后再考虑应用内 AI 生成入口、AI 聊天状态联动和音乐状态联动。
 
 ## 本次实施计划：银月宠物素材和多状态动画
+
+当前对照状态：PetDrawer 多状态结构、拖动方向播放、导入编辑预览和旧包回退已完成；银月素材本身、`hatch-pet` 输出转换器和应用内生成入口仍未完成。
 
 本次目标是根据用户提供的银月参考图生成一套可用于 PetDrawer 的宠物形象和动画，并根据生成结果调整宠物动画状态数量。参考图的真实本机路径不写入本文档和源码。
 
@@ -269,7 +288,7 @@ MVP 阶段先把 `hatch-pet` 的 9 个状态转换成 PetDrawer 当前 4 个状�
 
 ### 动画状态策略
 
-本次允许从当前 4 状态扩展到 10 状态。PetDrawer 状态优先从 `hatch-pet` 状态映射而来：
+本次已允许从旧版基础状态扩展到多状态。PetDrawer 状态优先从 `hatch-pet` 状态映射而来：
 
 - `idle`：待机。
 - `hover`：选中或鼠标悬停。

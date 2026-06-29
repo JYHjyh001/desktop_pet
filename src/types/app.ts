@@ -96,6 +96,15 @@ export interface StorageSettings {
 export type AiProvider = 'openai' | 'deepseek' | 'anthropic' | 'gemini' | 'ollama' | 'custom'
 export type DrawerTheme = 'light' | 'animal-island'
 export type ChatEmojiFrequency = 'none' | 'low' | 'normal' | 'high'
+export type PetActionBinding =
+  | 'smartCodexOrDrawer'
+  | 'toggleDrawer'
+  | 'showDrawer'
+  | 'petMenu'
+  | 'petChat'
+  | 'story'
+  | 'music'
+  | 'none'
 
 export interface AiConnectionProfile {
   id: string
@@ -504,6 +513,9 @@ export interface PetDrawerConfig {
   }
   shortcut: {
     toggleDrawer: string
+    petSingleClick?: PetActionBinding | string
+    petDoubleClick?: PetActionBinding | string
+    petRightClick?: PetActionBinding | string
   }
   system?: {
     startOnBoot: boolean

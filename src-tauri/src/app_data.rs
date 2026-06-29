@@ -151,7 +151,14 @@ pub struct DrawerSettings {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShortcutSettings {
+    #[serde(default = "default_toggle_drawer_shortcut")]
     pub toggle_drawer: String,
+    #[serde(default = "default_pet_single_click_action")]
+    pub pet_single_click: String,
+    #[serde(default = "default_pet_double_click_action")]
+    pub pet_double_click: String,
+    #[serde(default = "default_pet_right_click_action")]
+    pub pet_right_click: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -432,11 +439,23 @@ impl Default for CodexAppServerSettings {
     }
 }
 
+impl Default for ShortcutSettings {
+    fn default() -> Self {
+        Self {
+            toggle_drawer: default_toggle_drawer_shortcut(),
+            pet_single_click: default_pet_single_click_action(),
+            pet_double_click: default_pet_double_click_action(),
+            pet_right_click: default_pet_right_click_action(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PetDrawerConfig {
     pub pet: PetSettings,
     pub drawer: DrawerSettings,
+    #[serde(default)]
     pub shortcut: ShortcutSettings,
     #[serde(default)]
     pub system: SystemSettings,
@@ -478,7 +497,7 @@ impl Default for PetDrawerConfig {
                 tag_display_mode: default_tag_display_mode(),
             },
             shortcut: ShortcutSettings {
-                toggle_drawer: "Ctrl+Space".to_string(),
+                ..ShortcutSettings::default()
             },
             system: SystemSettings::default(),
             ai: AiSettings::default(),
@@ -505,6 +524,22 @@ pub fn normalize_pet_size(size: u32) -> u32 {
 
 fn default_drawer_theme() -> String {
     "light".to_string()
+}
+
+fn default_toggle_drawer_shortcut() -> String {
+    "Ctrl+Space".to_string()
+}
+
+fn default_pet_single_click_action() -> String {
+    "smartCodexOrDrawer".to_string()
+}
+
+fn default_pet_double_click_action() -> String {
+    "toggleDrawer".to_string()
+}
+
+fn default_pet_right_click_action() -> String {
+    "petMenu".to_string()
 }
 
 fn default_true() -> bool {

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { emit as emitEvent, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import type {
   Companion,
   CompanionStatus,
@@ -134,6 +135,7 @@ const MUSIC_INTENT_TAGS = [
   '不喜欢',
 ]
 const chatWindow = getCurrentWindow()
+const { windowOpenAnimationClass } = useWindowOpenAnimation('panel')
 const messages = ref<ChatMessage[]>([
   {
     id: 'welcome',
@@ -1384,7 +1386,7 @@ async function insertTwemoji(item: TwemojiItem) {
 </script>
 
 <template>
-  <main class="pet-chat-window" :class="`theme-${drawerTheme}`" @click="closeFloatingPanels">
+  <main class="pet-chat-window" :class="[`theme-${drawerTheme}`, windowOpenAnimationClass]" @click="closeFloatingPanels">
     <header class="pet-chat-header" @pointerdown="startDrag">
       <div>
         <h1>和 {{ currentCompanion?.name || '宠物' }} 对话</h1>

@@ -42,6 +42,17 @@ Codex App Server 是自定义客户端与 Codex 会话通信的协议入口。Wi
 
 如果本机未安装 Codex CLI，或 `codex app-server proxy` 无法连接当前 Codex 控制 socket，应展示可理解的错误提示，不影响桌宠其他功能。
 
+## 当前实现状态
+
+本次文档对照代码后的状态如下：
+
+- [x] 已提供 `proxy`、`managed`、`sessionLog` 三种连接模式和对应设置项。
+- [x] 已提供 Codex 运行时状态、Tauri 状态查询/启动/停止/测试任务命令和 `codex-status-updated` 事件广播。
+- [x] 已提供会话日志监听的脱敏解析、完成/失败/等待/运行状态映射和重复完成事件去重逻辑。
+- [x] 宠物窗口已接入 `waiting`、`running`、`review`、`failed`、完成动画和悬浮状态气泡。
+- [x] 抽屉设置区已显示当前状态、连接方式、模式、错误摘要、更新时间、聚合任务数和脱敏最近任务列表。
+- [ ] 仍需用真实 Codex Desktop/CLI 环境分别回归 `proxy` control socket、`managed` WebSocket 测试任务和 Windows `sessionLog` 监听链路。
+
 ## 功能清单
 
 ### 后端

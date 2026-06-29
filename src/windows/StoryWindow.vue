@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import type {
   Companion,
   DrawerTheme,
@@ -14,6 +15,7 @@ import type {
 } from '../types/app'
 
 const storyWindow = getCurrentWindow()
+const { windowOpenAnimationClass } = useWindowOpenAnimation('panel')
 const config = ref<PetDrawerConfig | null>(null)
 const companions = ref<Companion[]>([])
 const storySaves = ref<StorySave[]>([])
@@ -390,7 +392,7 @@ function storyTimeText(timestamp: number) {
 </script>
 
 <template>
-  <main class="story-window" :class="[`theme-${drawerTheme}`, { 'story-window-fullscreen': storyFullscreen }]">
+  <main class="story-window" :class="[`theme-${drawerTheme}`, windowOpenAnimationClass, { 'story-window-fullscreen': storyFullscreen }]">
     <header class="story-header" @pointerdown="startDrag">
       <div>
         <h1>故事模式</h1>

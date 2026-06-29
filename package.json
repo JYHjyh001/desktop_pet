@@ -1,13 +1,13 @@
 {
   "name": "pet-drawer",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "create-icon": "powershell -ExecutionPolicy Bypass -File scripts/create-icon.ps1",
     "pretauri:dev": "powershell -ExecutionPolicy Bypass -File scripts/create-icon.ps1",
     "pretauri:build": "powershell -ExecutionPolicy Bypass -File scripts/create-icon.ps1",
-    "dev": "vite --host 127.0.0.1 --port 1420",
+    "dev": "vite --host 127.0.0.1 --port 1421 --strictPort",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
