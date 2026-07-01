@@ -8,8 +8,9 @@ export interface MusicLyricsTrack {
   title: string
   artist: string
   duration: number | null
-  source?: 'local' | 'netease'
+  source?: 'local' | 'netease' | 'kugou'
   neteaseSongId?: number
+  kugouSongHash?: string
 }
 
 export interface MusicLyricLine {
@@ -89,6 +90,13 @@ export function useMusicLyrics() {
           ? await invoke<MusicLyricsResult | null>('read_netease_lyrics', {
               songId: track.neteaseSongId,
             })
+          : track.source === 'kugou' && track.kugouSongHash
+            ? await invoke<MusicLyricsResult | null>('read_kugou_lyrics', {
+                hash: track.kugouSongHash,
+                name: track.title,
+                artist: track.artist,
+                durationMs: track.duration ? Math.round(track.duration * 1000) : null,
+              })
           : await invoke<MusicLyricsResult | null>('read_music_lyrics', {
               path: track.path,
               sourcePath: track.sourcePath ?? track.path,
@@ -516,9 +524,9 @@ function fallbackLyrics(
   }
 
   const current = track.title
-  const previous =
-    status === 'loading' ? (track.source === 'netease' ? '正在读取在线歌词' : '正在读取本机歌词') : ''
-  const next = track.artist || (track.source === 'netease' ? '未找到在线歌词' : '未找到同名歌词文件')
+  const onlineTrack = track.source === 'netease' || track.source === 'kugou'
+  const previous = status === 'loading' ? (onlineTrack ? '正在读取在线歌词' : '正在读取本机歌词') : ''
+  const next = track.artist || (onlineTrack ? '未找到在线歌词' : '未找到同名歌词文件')
 
   return {
     previous,

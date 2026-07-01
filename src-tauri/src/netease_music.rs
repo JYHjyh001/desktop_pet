@@ -28,6 +28,8 @@ const QR_CHECK_ENDPOINT: &str = "https://music.163.com/api/login/qrcode/client/l
 const ACCOUNT_STATUS_ENDPOINT: &str = "https://music.163.com/api/w/nuser/account/get";
 const USER_PLAYLIST_ENDPOINT: &str = "https://music.163.com/api/user/playlist";
 const PLAYLIST_DETAIL_ENDPOINT: &str = "https://music.163.com/api/v6/playlist/detail";
+const SONG_SEARCH_ENDPOINT: &str = "https://music.163.com/api/search/get/web";
+const SONG_DETAIL_ENDPOINT: &str = "https://music.163.com/api/song/detail";
 const SONG_LYRIC_ENDPOINT: &str = "https://music.163.com/api/song/lyric";
 const SONG_PLAYBACK_URL_ENDPOINT: &str = "https://music.163.com/api/song/enhance/player/url/v1";
 const NETEASE_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -36,7 +38,8 @@ const NETEASE_EAPI_KEY: &str = "e82ckenh8dichen8";
 const QR_EXPIRE_SECONDS: u64 = 180;
 const PLAYLIST_PAGE_LIMIT: usize = 100;
 const MAX_NETEASE_PLAYLISTS: usize = 500;
-const MAX_NETEASE_TRACKS: usize = 300;
+const MAX_NETEASE_PLAYLIST_TRACK_PAGE_LIMIT: u64 = 300;
+const MAX_NETEASE_SEARCH_LIMIT: u64 = 50;
 const MAX_NETEASE_LYRIC_CHARS: usize = 80_000;
 const CREDENTIAL_DIR_NAME: &str = "music-platforms";
 const CREDENTIAL_FILE_NAME: &str = "netease-cloud.json";
@@ -44,10 +47,21 @@ const PENDING_FILE_NAME: &str = "netease-cloud-pending.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NeteaseMembershipInfo {
+    pub active: bool,
+    pub status_label: String,
+    pub type_label: Option<String>,
+    pub level_label: Option<String>,
+    pub expire_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NeteaseLoginProfile {
     pub user_id: u64,
     pub nickname: String,
     pub avatar_url: Option<String>,
+    pub membership: Option<NeteaseMembershipInfo>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,6 +126,15 @@ pub struct NeteasePlaylistDetail {
     pub tracks: Vec<NeteasePlaylistTrack>,
     pub total_track_count: u64,
     pub truncated: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NeteaseSearchResult {
+    pub keyword: String,
+    pub tracks: Vec<NeteasePlaylistTrack>,
+    pub total: u64,
     pub message: String,
 }
 
@@ -428,16 +451,21 @@ pub fn list_playlists(app: &AppHandle) -> Result<Vec<NeteasePlaylistSummary>, St
     Ok(playlists)
 }
 
-pub fn playlist_detail(app: &AppHandle, playlist_id: u64) -> Result<NeteasePlaylistDetail, String> {
+pub fn playlist_detail(
+    app: &AppHandle,
+    playlist_id: u64,
+    page: Option<u64>,
+    limit: Option<u64>,
+) -> Result<NeteasePlaylistDetail, String> {
     if playlist_id == 0 {
         return Err("网易云歌单 ID 无效。".to_string());
     }
 
+    let (page, limit, offset) = normalize_playlist_detail_paging(page, limit);
     let mut credential = require_logged_in_credential(app)?;
-    let cookie = cookie_header(&credential.cookies);
+    let mut cookie = cookie_header(&credential.cookies);
     let response = request_playlist_detail(playlist_id, &cookie, &mut credential.cookies)?;
     merge_set_cookies(&mut credential.cookies, &response.set_cookies);
-    write_credential(app, &credential)?;
     ensure_success_code(&response.body, "网易云歌单详情读取")?;
 
     let playlist_value = response
@@ -451,22 +479,76 @@ pub fn playlist_detail(app: &AppHandle, playlist_id: u64) -> Result<NeteasePlayl
         .and_then(Value::as_array)
         .or_else(|| response.body.get("songs").and_then(Value::as_array))
         .ok_or_else(|| "网易云歌单详情响应缺少 tracks 字段。".to_string())?;
-    let total_track_count =
-        value_as_u64(playlist_value.get("trackCount")).unwrap_or_else(|| track_values.len() as u64);
-    let tracks = track_values
+    let track_ids = playlist_value
+        .get("trackIds")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| value_as_u64(item.get("id")))
+                .collect::<Vec<_>>()
+        })
+        .filter(|ids| !ids.is_empty())
+        .unwrap_or_else(|| {
+            track_values
+                .iter()
+                .filter_map(|track| value_as_u64(track.get("id")))
+                .collect::<Vec<_>>()
+        });
+    let total_track_count = value_as_u64(playlist_value.get("trackCount"))
+        .or_else(|| u64::try_from(track_ids.len()).ok())
+        .unwrap_or_else(|| track_values.len() as u64);
+    let end = offset.saturating_add(limit);
+    let tracks = if track_values.len() >= end {
+        track_values[offset..end]
+            .iter()
+            .filter_map(track_summary_from_value)
+            .collect::<Vec<_>>()
+    } else {
+        let page_track_ids = track_ids
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .copied()
+            .collect::<Vec<_>>();
+
+        if page_track_ids.is_empty() {
+            Vec::new()
+        } else {
+            cookie = cookie_header(&credential.cookies);
+            let detail_response =
+                request_song_detail(&page_track_ids, &cookie, &mut credential.cookies)?;
+            merge_set_cookies(&mut credential.cookies, &detail_response.set_cookies);
+            ensure_success_code(&detail_response.body, "网易云歌曲详情读取")?;
+            parse_song_detail_tracks(&detail_response.body, &page_track_ids)
+        }
+    };
+    write_credential(app, &credential)?;
+
+    let page_source_count = track_ids
         .iter()
-        .filter_map(track_summary_from_value)
-        .take(MAX_NETEASE_TRACKS)
-        .collect::<Vec<_>>();
-    let truncated = track_values.len() > tracks.len() || total_track_count > tracks.len() as u64;
+        .skip(offset)
+        .take(limit)
+        .count()
+        .max(tracks.len());
+    let loaded_end = u64::try_from(offset)
+        .unwrap_or(u64::MAX)
+        .saturating_add(u64::try_from(page_source_count).unwrap_or(u64::MAX));
+    let truncated = loaded_end < total_track_count;
     let message = if truncated {
         format!(
-            "已读取 {} / {} 首歌曲摘要，列表过长已截断展示。",
+            "已读取第 {} 页 {} 首歌曲摘要，共 {} 首，可继续加载。",
+            page,
             tracks.len(),
-            total_track_count
+            total_track_count,
         )
     } else {
-        format!("已读取 {} 首歌曲摘要。", tracks.len())
+        format!(
+            "已读取第 {} 页 {} 首歌曲摘要，共 {} 首。",
+            page,
+            tracks.len(),
+            total_track_count,
+        )
     };
 
     Ok(NeteasePlaylistDetail {
@@ -474,6 +556,44 @@ pub fn playlist_detail(app: &AppHandle, playlist_id: u64) -> Result<NeteasePlayl
         tracks,
         total_track_count,
         truncated,
+        message,
+    })
+}
+
+pub fn search_songs(keyword: String, page: u64, limit: u64) -> Result<NeteaseSearchResult, String> {
+    let keyword = normalize_search_keyword(&keyword, 80)?;
+    let page = page.clamp(1, 20);
+    let limit = limit.clamp(1, MAX_NETEASE_SEARCH_LIMIT);
+    let offset = (page - 1) * limit;
+    let response = request_song_search(&keyword, offset, limit)?;
+    ensure_success_code(&response.body, "网易云搜索")?;
+
+    let result = response
+        .body
+        .get("result")
+        .ok_or_else(|| "网易云搜索响应缺少 result 字段。".to_string())?;
+    let total = value_as_u64(result.get("songCount")).unwrap_or_default();
+    let tracks = result
+        .get("songs")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(track_summary_from_value)
+                .take(limit as usize)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let message = if tracks.is_empty() {
+        format!("没有搜索到“{keyword}”。")
+    } else {
+        format!("已搜索到 {} 首网易云歌曲。", tracks.len())
+    };
+
+    Ok(NeteaseSearchResult {
+        keyword,
+        tracks,
+        total,
         message,
     })
 }
@@ -694,6 +814,80 @@ fn request_playlist_detail(
     )
 }
 
+fn normalize_playlist_detail_paging(page: Option<u64>, limit: Option<u64>) -> (u64, usize, usize) {
+    let page = page.unwrap_or(1).clamp(1, 200);
+    let limit = limit
+        .unwrap_or(MAX_NETEASE_PLAYLIST_TRACK_PAGE_LIMIT)
+        .clamp(1, MAX_NETEASE_PLAYLIST_TRACK_PAGE_LIMIT);
+    let offset = page.saturating_sub(1).saturating_mul(limit);
+    (
+        page,
+        usize::try_from(limit).unwrap_or(MAX_NETEASE_PLAYLIST_TRACK_PAGE_LIMIT as usize),
+        usize::try_from(offset).unwrap_or(usize::MAX),
+    )
+}
+
+fn request_song_detail(
+    song_ids: &[u64],
+    cookie: &str,
+    cookies: &mut BTreeMap<String, String>,
+) -> Result<NeteaseResponse, String> {
+    let ids_text = serde_json::to_string(song_ids).map_err(|err| err.to_string())?;
+    let direct = post_form_values(
+        &timestamp_url(SONG_DETAIL_ENDPOINT),
+        &[("ids", ids_text.clone())],
+        Some(cookie),
+    );
+
+    if let Ok(response) = direct {
+        merge_set_cookies(cookies, &response.set_cookies);
+        if ensure_success_code(&response.body, "网易云歌曲详情读取").is_ok()
+            && response.body.get("songs").is_some()
+        {
+            return Ok(response);
+        }
+    }
+
+    post_eapi(
+        "/api/song/detail",
+        json!({
+            "ids": ids_text,
+        }),
+        cookies,
+    )
+}
+
+fn parse_song_detail_tracks(body: &Value, ordered_ids: &[u64]) -> Vec<NeteasePlaylistTrack> {
+    let Some(items) = body.get("songs").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let mut tracks_by_id = BTreeMap::new();
+    for item in items {
+        if let Some(track) = track_summary_from_value(item) {
+            tracks_by_id.insert(track.id, track);
+        }
+    }
+
+    ordered_ids
+        .iter()
+        .filter_map(|id| tracks_by_id.remove(id))
+        .collect()
+}
+
+fn request_song_search(keyword: &str, offset: u64, limit: u64) -> Result<NeteaseResponse, String> {
+    post_form_values(
+        &timestamp_url(SONG_SEARCH_ENDPOINT),
+        &[
+            ("s", keyword.to_string()),
+            ("type", "1".to_string()),
+            ("offset", offset.to_string()),
+            ("limit", limit.to_string()),
+        ],
+        None,
+    )
+}
+
 fn request_song_lyrics(
     song_id: u64,
     cookie: &str,
@@ -817,6 +1011,16 @@ fn normalize_playback_level(value: Option<&str>) -> String {
     }
 }
 
+fn normalize_search_keyword(value: &str, max_chars: usize) -> Result<String, String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
+        return Err("请输入网易云搜索关键词。".to_string());
+    }
+
+    Ok(normalized.chars().take(max_chars).collect())
+}
+
 fn playback_denied_message(item: &Value, code: i64) -> String {
     let message = item
         .get("message")
@@ -899,6 +1103,47 @@ fn artist_names(track: &Value) -> Vec<String> {
 fn safe_http_url(value: Option<&Value>) -> Option<String> {
     trimmed_string(value, 500)
         .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+}
+
+fn find_value_by_keys<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some((_, matched)) = map
+                    .iter()
+                    .find(|(current_key, _)| current_key.eq_ignore_ascii_case(key))
+                {
+                    return Some(matched);
+                }
+            }
+            map.values().find_map(|item| find_value_by_keys(item, keys))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| find_value_by_keys(item, keys)),
+        _ => None,
+    }
+}
+
+fn find_string_by_keys(value: &Value, keys: &[&str], max_chars: usize) -> Option<String> {
+    trimmed_string(find_value_by_keys(value, keys), max_chars)
+}
+
+fn find_u64_by_keys(value: &Value, keys: &[&str]) -> Option<u64> {
+    value_as_u64(find_value_by_keys(value, keys))
+}
+
+fn normalize_epoch_seconds(value: u64) -> Option<String> {
+    if value == 0 {
+        return None;
+    }
+
+    let seconds = if value > 10_000_000_000 {
+        value / 1000
+    } else {
+        value
+    };
+    Some(seconds.to_string())
 }
 
 fn trimmed_string(value: Option<&Value>, max_chars: usize) -> Option<String> {
@@ -1209,6 +1454,97 @@ fn cookie_header(cookies: &BTreeMap<String, String>) -> String {
         .join("; ")
 }
 
+fn extract_membership(body: &Value, profile: &Value) -> NeteaseMembershipInfo {
+    let vip_type = find_u64_by_keys(
+        profile,
+        &[
+            "vipType",
+            "viptype",
+            "vip_type",
+            "vipCode",
+            "redVipType",
+            "redVipCode",
+        ],
+    )
+    .or_else(|| {
+        find_u64_by_keys(
+            body,
+            &[
+                "vipType",
+                "viptype",
+                "vip_type",
+                "vipCode",
+                "redVipType",
+                "redVipCode",
+            ],
+        )
+    });
+    let level = find_u64_by_keys(profile, &["redVipLevel", "vipLevel", "vip_level"])
+    .or_else(|| {
+        find_u64_by_keys(body, &["redVipLevel", "vipLevel", "vip_level"])
+    })
+    .filter(|value| *value > 0);
+    let expire_at = find_u64_by_keys(
+        profile,
+        &[
+            "expireTime",
+            "expire_time",
+            "vipExpireTime",
+            "vipExpire",
+            "redVipExpireTime",
+        ],
+    )
+    .or_else(|| {
+        find_u64_by_keys(
+            body,
+            &[
+                "expireTime",
+                "expire_time",
+                "vipExpireTime",
+                "vipExpire",
+                "redVipExpireTime",
+            ],
+        )
+    })
+    .and_then(normalize_epoch_seconds);
+    let type_name = find_string_by_keys(
+        profile,
+        &["vipName", "vipTypeName", "vip_type_name", "memberName", "redVipName"],
+        40,
+    )
+    .or_else(|| {
+        find_string_by_keys(
+            body,
+            &["vipName", "vipTypeName", "vip_type_name", "memberName", "redVipName"],
+            40,
+        )
+    });
+    let rights_present = find_value_by_keys(profile, &["vipRights", "redVipRights"])
+        .or_else(|| find_value_by_keys(body, &["vipRights", "redVipRights"]))
+        .is_some();
+    let has_membership_field =
+        vip_type.is_some() || level.is_some() || expire_at.is_some() || type_name.is_some();
+    let active = vip_type.unwrap_or_default() > 0 || level.is_some() || rights_present;
+
+    NeteaseMembershipInfo {
+        active,
+        status_label: if active {
+            "已检测到会员".to_string()
+        } else if has_membership_field {
+            "普通账号".to_string()
+        } else {
+            "未检测到会员信息".to_string()
+        },
+        type_label: type_name.or_else(|| {
+            vip_type
+                .filter(|value| *value > 0)
+                .map(|value| format!("VIP 类型 {value}"))
+        }),
+        level_label: level.map(|value| format!("等级 {value}")),
+        expire_at,
+    }
+}
+
 fn extract_profile(body: &Value) -> Option<NeteaseLoginProfile> {
     let profile = body
         .get("profile")
@@ -1237,6 +1573,7 @@ fn extract_profile(body: &Value) -> Option<NeteaseLoginProfile> {
         user_id,
         nickname,
         avatar_url,
+        membership: Some(extract_membership(body, profile)),
     })
 }
 

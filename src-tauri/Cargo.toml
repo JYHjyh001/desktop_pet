@@ -15,9 +15,11 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 base64 = "0.22"
 aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
 cipher = { version = "0.4", features = ["alloc", "block-padding"] }
 ecb = { version = "0.1", features = ["alloc"] }
 md-5 = "0.10"
+num-bigint = "0.4"
 qrcode = "0.14"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

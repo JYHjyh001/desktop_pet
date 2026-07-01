@@ -20,6 +20,7 @@ import type {
   CompanionDraft,
   CodexAppServerStatus,
   DrawerTheme,
+  MusicImmersiveThemePreference,
   PetMemory,
   PetMemoryDraft,
   PetActionBinding,
@@ -424,6 +425,62 @@ const themeOptions: Array<{
   },
 ]
 
+const immersiveThemeOptions: Array<{
+  id: MusicImmersiveThemePreference
+  name: string
+  description: string
+  previewClass: string
+}> = [
+  {
+    id: 'follow',
+    name: '跟随桌宠',
+    description: '沉浸模式随当前桌宠界面主题一起变化。',
+    previewClass: 'preview-follow',
+  },
+  {
+    id: 'light',
+    name: '清爽默认',
+    description: '沉浸模式固定使用默认深色音乐视觉。',
+    previewClass: 'preview-light',
+  },
+  {
+    id: 'animal-island',
+    name: '动物岛',
+    description: '沉浸模式固定使用暖色纸感和岛屿视觉。',
+    previewClass: 'preview-animal-island',
+  },
+  {
+    id: 'cinema',
+    name: '电影暗场',
+    description: '暗场、金色信号线和轻微胶片感，适合沉浸听歌。',
+    previewClass: 'preview-cinema',
+  },
+  {
+    id: 'galaxy',
+    name: '星河电台',
+    description: '青蓝星河粒子和空间感，适合氛围音乐。',
+    previewClass: 'preview-galaxy',
+  },
+  {
+    id: 'neon',
+    name: '霓虹频谱',
+    description: '蓝紫高对比频谱和节拍脉冲，适合电子和快歌。',
+    previewClass: 'preview-neon',
+  },
+  {
+    id: 'sunset',
+    name: '暖色舞台',
+    description: '香槟金、橙红舞台光和柔和玻璃控件。',
+    previewClass: 'preview-sunset',
+  },
+  {
+    id: 'midnight',
+    name: '深夜睡眠',
+    description: '低亮度蓝灰背景和柔和高亮，减少夜间干扰。',
+    previewClass: 'preview-midnight',
+  },
+]
+
 const petActionOptions: Array<{
   value: PetActionBinding
   label: string
@@ -490,6 +547,7 @@ const settingsDraft = reactive({
   startOnBoot: false,
   autoFavoriteEnabled: true,
   drawerTheme: 'light' as DrawerTheme,
+  musicImmersiveTheme: 'follow' as MusicImmersiveThemePreference,
   shortcutToggleDrawer: 'Ctrl+Space',
   petSingleClickAction: 'smartCodexOrDrawer' as PetActionBinding,
   petDoubleClickAction: 'toggleDrawer' as PetActionBinding,
@@ -734,6 +792,7 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.newQuickTag = ''
   settingsDraft.tagDisplayMode = normalizeTagDisplayMode(config.drawer.tagDisplayMode)
   settingsDraft.drawerTheme = normalizeDrawerTheme(config.drawer.theme)
+  settingsDraft.musicImmersiveTheme = normalizeMusicImmersiveTheme(config.drawer.musicImmersiveTheme)
   settingsDraft.shortcutToggleDrawer = config.shortcut?.toggleDrawer || 'Ctrl+Space'
   settingsDraft.petSingleClickAction = normalizePetActionBinding(
     config.shortcut?.petSingleClick,
@@ -819,6 +878,22 @@ function normalizeTagDisplayMode(value?: string | null): 'compact' | 'detailed' 
 
 function normalizeDrawerTheme(value?: string | null): DrawerTheme {
   return value === 'animal-island' ? 'animal-island' : 'light'
+}
+
+function normalizeMusicImmersiveTheme(value?: string | null): MusicImmersiveThemePreference {
+  if (
+    value === 'light' ||
+    value === 'animal-island' ||
+    value === 'cinema' ||
+    value === 'galaxy' ||
+    value === 'neon' ||
+    value === 'sunset' ||
+    value === 'midnight'
+  ) {
+    return value
+  }
+
+  return 'follow'
 }
 
 function normalizeChatEmojiFrequency(value?: string | null): ChatEmojiFrequency {
@@ -1036,6 +1111,7 @@ async function saveSettings() {
     applyDrawerConfig(config)
     await loadRuntimeInfo()
     void emitEvent('ui-theme-changed', config.drawer.theme)
+    void emitEvent('ui-music-immersive-theme-changed', config.drawer.musicImmersiveTheme ?? 'follow')
     void emitEvent('ui-chat-display-changed', config.drawer.chatTypewriterEnabled ?? true)
     void emitEvent('ui-chat-narration-changed', config.drawer.chatNarrationEnabled ?? false)
     void emitEvent('ui-chat-music-link-changed', config.drawer.chatMusicLinkEnabled ?? true)
@@ -1060,6 +1136,7 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
     quickSearchTags: [...settingsDraft.quickSearchTags],
     tagDisplayMode: tagMode,
     theme: settingsDraft.drawerTheme,
+    musicImmersiveTheme: settingsDraft.musicImmersiveTheme,
     chatTypewriterEnabled: settingsDraft.chatTypewriterEnabled,
     chatNarrationEnabled: settingsDraft.chatNarrationEnabled,
     chatMusicLinkEnabled: settingsDraft.chatMusicLinkEnabled,
@@ -3113,6 +3190,33 @@ async function openStoryMode() {
                   role="radio"
                   :aria-checked="settingsDraft.drawerTheme === option.id"
                   @click="settingsDraft.drawerTheme = option.id"
+                >
+                  <span class="theme-choice-preview">
+                    <i></i>
+                    <i></i>
+                    <i></i>
+                  </span>
+                  <strong>{{ option.name }}</strong>
+                  <small>{{ option.description }}</small>
+                </button>
+              </div>
+              <h3>沉浸模式主题</h3>
+              <p class="settings-empty">
+                可单独控制音乐沉浸模式的视觉风格；选择固定主题后不再跟随桌宠界面主题切换。
+              </p>
+              <div class="theme-choice-grid compact" role="radiogroup" aria-label="沉浸模式主题">
+                <button
+                  v-for="option in immersiveThemeOptions"
+                  :key="option.id"
+                  class="theme-choice-card"
+                  :class="{
+                    active: settingsDraft.musicImmersiveTheme === option.id,
+                    [option.previewClass]: true,
+                  }"
+                  type="button"
+                  role="radio"
+                  :aria-checked="settingsDraft.musicImmersiveTheme === option.id"
+                  @click="settingsDraft.musicImmersiveTheme = option.id"
                 >
                   <span class="theme-choice-preview">
                     <i></i>

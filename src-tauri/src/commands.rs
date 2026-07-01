@@ -1,4 +1,6 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use lofty::{
+    picture::PictureType,
     prelude::{Accessor, AudioFile, ItemKey, TaggedFileExt},
     tag::Tag,
 };
@@ -22,7 +24,7 @@ use crate::{
     },
     clawbot_bridge, codex_app_server,
     favorability::{self, CompanionStatus, FavorabilityLog},
-    launcher, netease_music, startup,
+    kugou_music, launcher, netease_music, startup,
     story_mode::{self, StoryCreateDraft, StorySave, StoryTurnReply},
     updater, wechat_clawbot, windowing,
 };
@@ -36,6 +38,8 @@ pub struct DrawerPreferencesDraft {
     pub tag_display_mode: String,
     #[serde(default = "default_drawer_theme")]
     pub theme: String,
+    #[serde(default = "default_music_immersive_theme")]
+    pub music_immersive_theme: String,
     #[serde(default = "default_true")]
     pub chat_typewriter_enabled: bool,
     #[serde(default)]
@@ -221,6 +225,7 @@ pub struct MusicMetadataResult {
     title: Option<String>,
     artist: Option<String>,
     album: Option<String>,
+    cover_img_url: Option<String>,
     duration: Option<u64>,
     source: String,
     confidence: f32,
@@ -514,6 +519,7 @@ pub fn save_drawer_preferences(
         "compact".to_string()
     };
     let theme = normalize_drawer_theme(preferences.theme);
+    let music_immersive_theme = normalize_music_immersive_theme(preferences.music_immersive_theme);
     let pet_size = app_data::normalize_pet_size(preferences.pet_size);
 
     let mut config = app_data::read_config(&app)?;
@@ -523,6 +529,7 @@ pub fn save_drawer_preferences(
     config.drawer.quick_search_tags = quick_search_tags;
     config.drawer.tag_display_mode = tag_display_mode;
     config.drawer.theme = theme;
+    config.drawer.music_immersive_theme = music_immersive_theme;
     config.drawer.chat_typewriter_enabled = preferences.chat_typewriter_enabled;
     config.drawer.chat_narration_enabled = preferences.chat_narration_enabled;
     config.drawer.chat_music_link_enabled = preferences.chat_music_link_enabled;
@@ -541,6 +548,19 @@ pub fn save_drawer_preferences(
     windowing::set_pet_size(&app, pet_size)?;
     windowing::set_pet_always_on_top(&app, preferences.pet_always_on_top)?;
     windowing::set_drawer_always_on_top(&app, preferences.drawer_always_on_top)?;
+
+    Ok(config)
+}
+
+#[tauri::command]
+pub fn save_music_immersive_theme(
+    app: AppHandle,
+    theme: String,
+) -> Result<PetDrawerConfig, String> {
+    let music_immersive_theme = normalize_music_immersive_theme(theme);
+    let mut config = app_data::read_config(&app)?;
+    config.drawer.music_immersive_theme = music_immersive_theme;
+    app_data::write_config(&app, &config)?;
 
     Ok(config)
 }
@@ -605,6 +625,10 @@ fn default_short_memory_compression_trigger_turns() -> usize {
 
 fn default_drawer_theme() -> String {
     "light".to_string()
+}
+
+fn default_music_immersive_theme() -> String {
+    "follow".to_string()
 }
 
 fn normalize_wechat_clawbot_settings(
@@ -722,6 +746,19 @@ fn normalize_drawer_theme(theme: String) -> String {
     match theme.trim().to_lowercase().as_str() {
         "animal-island" => "animal-island".to_string(),
         _ => default_drawer_theme(),
+    }
+}
+
+fn normalize_music_immersive_theme(theme: String) -> String {
+    match theme.trim().to_lowercase().as_str() {
+        "light" => "light".to_string(),
+        "animal-island" => "animal-island".to_string(),
+        "cinema" => "cinema".to_string(),
+        "galaxy" => "galaxy".to_string(),
+        "neon" => "neon".to_string(),
+        "sunset" => "sunset".to_string(),
+        "midnight" => "midnight".to_string(),
+        _ => default_music_immersive_theme(),
     }
 }
 
@@ -1105,6 +1142,7 @@ pub fn read_music_metadata(path: String) -> Result<MusicMetadataResult, String> 
     };
 
     let mut warnings = Vec::new();
+    let cover_img_url = read_music_cover_img_url(tag, &mut warnings);
     if title.is_none() {
         warnings.push("metadata 中没有读取到歌名".to_string());
     }
@@ -1122,6 +1160,7 @@ pub fn read_music_metadata(path: String) -> Result<MusicMetadataResult, String> 
         title,
         artist,
         album,
+        cover_img_url,
         duration,
         source: "metadata".to_string(),
         confidence,
@@ -1214,10 +1253,25 @@ pub async fn list_netease_playlists(
 pub async fn get_netease_playlist_detail(
     app: AppHandle,
     playlist_id: u64,
+    page: Option<u64>,
+    limit: Option<u64>,
 ) -> Result<netease_music::NeteasePlaylistDetail, String> {
-    tauri::async_runtime::spawn_blocking(move || netease_music::playlist_detail(&app, playlist_id))
+    tauri::async_runtime::spawn_blocking(move || {
+        netease_music::playlist_detail(&app, playlist_id, page, limit)
+    })
+    .await
+    .map_err(|err| format!("网易云歌单详情读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn search_netease_songs(
+    keyword: String,
+    page: u64,
+    limit: u64,
+) -> Result<netease_music::NeteaseSearchResult, String> {
+    tauri::async_runtime::spawn_blocking(move || netease_music::search_songs(keyword, page, limit))
         .await
-        .map_err(|err| format!("网易云歌单详情读取任务失败：{err}"))?
+        .map_err(|err| format!("网易云搜索任务失败：{err}"))?
 }
 
 #[tauri::command]
@@ -1241,6 +1295,111 @@ pub async fn get_netease_song_playback_url(
     })
     .await
     .map_err(|err| format!("网易云播放链接获取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn create_kugou_qr_login(app: AppHandle) -> Result<kugou_music::KugouQrLogin, String> {
+    tauri::async_runtime::spawn_blocking(move || kugou_music::create_qr_login(&app))
+        .await
+        .map_err(|err| format!("酷狗二维码登录创建任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn check_kugou_qr_login(
+    app: AppHandle,
+    key: String,
+) -> Result<kugou_music::KugouQrCheckResult, String> {
+    tauri::async_runtime::spawn_blocking(move || kugou_music::check_qr_login(&app, key))
+        .await
+        .map_err(|err| format!("酷狗登录检查任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_kugou_login_status(
+    app: AppHandle,
+) -> Result<kugou_music::KugouLoginStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || kugou_music::login_status(&app))
+        .await
+        .map_err(|err| format!("酷狗登录状态读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn clear_kugou_login(app: AppHandle) -> Result<kugou_music::KugouLoginStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || kugou_music::clear_login(&app))
+        .await
+        .map_err(|err| format!("酷狗登录清除任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn list_kugou_playlists(
+    app: AppHandle,
+) -> Result<Vec<kugou_music::KugouPlaylistSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || kugou_music::list_playlists(&app))
+        .await
+        .map_err(|err| format!("酷狗歌单读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_kugou_playlist_detail(
+    app: AppHandle,
+    list_id: String,
+    page: Option<u64>,
+    limit: Option<u64>,
+) -> Result<kugou_music::KugouPlaylistDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        kugou_music::playlist_detail(&app, list_id, page, limit)
+    })
+    .await
+    .map_err(|err| format!("酷狗歌单歌曲读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn search_kugou_songs(
+    keyword: String,
+    page: u64,
+    limit: u64,
+) -> Result<kugou_music::KugouSearchResult, String> {
+    tauri::async_runtime::spawn_blocking(move || kugou_music::search_songs(keyword, page, limit))
+        .await
+        .map_err(|err| format!("酷狗搜索任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn read_kugou_lyrics(
+    hash: String,
+    name: String,
+    artist: String,
+    duration_ms: Option<u64>,
+) -> Result<kugou_music::KugouLyricsResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        kugou_music::read_lyrics(hash, name, artist, duration_ms)
+    })
+    .await
+    .map_err(|err| format!("酷狗歌词读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_kugou_song_playback_url(
+    app: AppHandle,
+    hash: String,
+    hash_candidates: Option<Vec<String>>,
+    album_audio_id: Option<u64>,
+    audio_id: Option<u64>,
+) -> Result<kugou_music::KugouPlaybackUrl, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        kugou_music::get_song_playback_url(&app, hash, hash_candidates, album_audio_id, audio_id)
+    })
+    .await
+    .map_err(|err| format!("酷狗播放链接获取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_kugou_playback_proxy_status(
+    proxy_url: String,
+) -> Result<kugou_music::KugouPlaybackProxyStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || kugou_music::playback_proxy_status(proxy_url))
+        .await
+        .map_err(|err| format!("酷狗播放代理状态读取任务失败：{err}"))?
 }
 
 fn read_music_lyrics_next_to_file(
@@ -1386,6 +1545,51 @@ fn read_music_artist(tag: &Tag) -> Option<String> {
 fn read_music_album(tag: &Tag) -> Option<String> {
     clean_optional_text(tag.get_string(ItemKey::AlbumTitle))
         .or_else(|| clean_optional_text(tag.album().as_deref()))
+}
+
+fn read_music_cover_img_url(tag: Option<&Tag>, warnings: &mut Vec<String>) -> Option<String> {
+    const MAX_METADATA_COVER_BYTES: usize = 1_000_000;
+
+    let picture = tag.and_then(|tag| {
+        tag.get_picture_type(PictureType::CoverFront)
+            .or_else(|| tag.pictures().first())
+    })?;
+    let data = picture.data();
+    if data.is_empty() {
+        return None;
+    }
+
+    if data.len() > MAX_METADATA_COVER_BYTES {
+        warnings.push("metadata 中的封面图片过大，已跳过封面读取".to_string());
+        return None;
+    }
+
+    let mime = picture
+        .mime_type()
+        .map(|mime| mime.as_str())
+        .or_else(|| infer_image_mime(data))?;
+
+    Some(format!(
+        "data:{mime};base64,{}",
+        BASE64_STANDARD.encode(data)
+    ))
+}
+
+fn infer_image_mime(data: &[u8]) -> Option<&'static str> {
+    if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return Some("image/jpeg");
+    }
+    if data.starts_with(b"\x89PNG\r\n\x1A\n") {
+        return Some("image/png");
+    }
+    if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if data.starts_with(b"BM") {
+        return Some("image/bmp");
+    }
+
+    None
 }
 
 fn clean_joined_texts<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<String> {

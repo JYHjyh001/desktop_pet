@@ -6,6 +6,7 @@ mod codex_app_server;
 mod commands;
 mod favorability;
 mod feature_flags;
+mod kugou_music;
 mod launcher;
 mod netease_music;
 mod startup;
@@ -48,6 +49,7 @@ pub fn run() {
             commands::save_storage_settings,
             commands::set_quick_search_tags,
             commands::save_drawer_preferences,
+            commands::save_music_immersive_theme,
             commands::save_chat_display_preferences,
             commands::list_pet_skins,
             commands::get_current_pet_skin,
@@ -87,8 +89,19 @@ pub fn run() {
             commands::clear_netease_login,
             commands::list_netease_playlists,
             commands::get_netease_playlist_detail,
+            commands::search_netease_songs,
             commands::read_netease_lyrics,
             commands::get_netease_song_playback_url,
+            commands::create_kugou_qr_login,
+            commands::check_kugou_qr_login,
+            commands::get_kugou_login_status,
+            commands::clear_kugou_login,
+            commands::list_kugou_playlists,
+            commands::get_kugou_playlist_detail,
+            commands::search_kugou_songs,
+            commands::read_kugou_lyrics,
+            commands::get_kugou_song_playback_url,
+            commands::get_kugou_playback_proxy_status,
             commands::send_pet_chat_message,
             commands::classify_music_intent,
             commands::send_pet_music_chat_message,

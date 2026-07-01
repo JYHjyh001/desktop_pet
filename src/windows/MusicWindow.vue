@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { LogicalSize } from '@tauri-apps/api/dpi'
-import { listen } from '@tauri-apps/api/event'
+import { emit as emitEvent, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import MusicVisualizerCanvas from '../components/MusicVisualizerCanvas.vue'
+import MusicWebglStarfield from '../components/MusicWebglStarfield.vue'
 import {
   useMusicAudioAnalyzer,
   type MusicEnergyFrame,
@@ -13,13 +14,46 @@ import {
 import { useMusicBeatMapAnalyzer } from '../composables/useMusicBeatMapAnalyzer'
 import { useMusicLyrics } from '../composables/useMusicLyrics'
 import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
-import type { DrawerTheme, PetDrawerConfig } from '../types/app'
+import { DEFAULT_MUSIC_STAGE_TUNING } from '../types/app'
+import type {
+  DrawerTheme,
+  MusicImmersiveTheme,
+  MusicImmersiveThemePreference,
+  MusicLineStyle,
+  MusicRippleStyle,
+  MusicStageTuning,
+  MusicSpectrumStyle,
+  MusicVisualStagePreset,
+  PetDrawerConfig,
+} from '../types/app'
 
 type RepeatMode = 'none' | 'one' | 'all'
 type MusicLibraryView = 'all' | 'favorites' | 'recent' | 'queue'
-type MusicPanelView = 'library' | 'playlists' | 'ai' | 'netease'
+type MusicPanelView = 'library' | 'netease' | 'kugou'
 type MusicRecommendationSource = 'smart' | 'tags' | 'favorites' | 'recent'
 type MusicVisualMode = 'rhythm' | 'dance' | 'focus' | 'sleep'
+type MusicStageTuningMap = Record<MusicVisualStagePreset, MusicStageTuning>
+interface MusicStagePresetOption {
+  value: MusicVisualStagePreset
+  label: string
+  kicker: string
+  description: string
+  mode: MusicVisualMode
+  spectrumStyle: MusicSpectrumStyle
+  lineStyle: MusicLineStyle
+  rippleStyle: MusicRippleStyle
+  swatches: string[]
+  metrics: string[]
+}
+type MusicStageTuningKey = keyof MusicStageTuning
+interface MusicStageTuningOption {
+  key: MusicStageTuningKey
+  label: string
+  min: number
+  max: number
+  step: number
+  ariaLabel: string
+}
 type MusicActionType =
   | 'play_music'
   | 'play_by_query'
@@ -42,8 +76,10 @@ interface MusicTrack {
   album: string
   path: string
   sourcePath: string
-  source?: 'local' | 'netease'
+  source?: 'local' | 'netease' | 'kugou'
+  coverImgUrl?: string | null
   neteaseSongId?: number
+  kugouSongHash?: string
   category: string
   tags: string[]
   url: string
@@ -63,6 +99,7 @@ interface MusicMetadataResult {
   title?: string | null
   artist?: string | null
   album?: string | null
+  coverImgUrl?: string | null
   duration?: number | null
   source: string
   confidence: number
@@ -74,6 +111,7 @@ interface MusicRecognitionCandidate {
   title: string
   artist: string
   album: string
+  coverImgUrl: string
   duration: number | null
   source: string
   confidence: number
@@ -120,10 +158,19 @@ interface MusicActionRequest {
   source?: string
 }
 
+interface PlatformMembershipInfo {
+  active: boolean
+  statusLabel: string
+  typeLabel?: string | null
+  levelLabel?: string | null
+  expireAt?: string | null
+}
+
 interface NeteaseLoginProfile {
   userId: number
   nickname: string
   avatarUrl?: string | null
+  membership?: PlatformMembershipInfo | null
 }
 
 interface NeteaseLoginStatus {
@@ -147,6 +194,36 @@ interface NeteaseQrCheckResult {
   message: string
   loggedIn: boolean
   profile: NeteaseLoginProfile | null
+}
+
+interface KugouLoginProfile {
+  userId: string
+  nickname: string
+  avatarUrl?: string | null
+  membership?: PlatformMembershipInfo | null
+}
+
+interface KugouLoginStatus {
+  loggedIn: boolean
+  profile: KugouLoginProfile | null
+  savedAt: string | null
+  checkedAt: string
+  message: string
+}
+
+interface KugouQrLogin {
+  key: string
+  qrUrl: string
+  qrImage: string
+  expiresAt: string
+}
+
+interface KugouQrCheckResult {
+  code: number
+  status: string
+  message: string
+  loggedIn: boolean
+  profile: KugouLoginProfile | null
 }
 
 interface NeteasePlaylistSummary {
@@ -179,6 +256,13 @@ interface NeteasePlaylistDetail {
   message: string
 }
 
+interface NeteaseSearchResult {
+  keyword: string
+  tracks: NeteasePlaylistTrack[]
+  total: number
+  message: string
+}
+
 interface NeteaseLyricsResult {
   songId: number
   content: string
@@ -201,11 +285,119 @@ interface NeteasePlaybackUrl {
   message: string
 }
 
-type ImmersivePlaylistSource = 'local' | 'netease'
+interface KugouSearchTrack {
+  id: string
+  hash: string
+  hashCandidates?: string[]
+  name: string
+  artists: string[]
+  album?: string | null
+  durationMs?: number | null
+  coverImgUrl?: string | null
+  albumId?: string | null
+  albumAudioId?: number | null
+  audioId?: number | null
+  privilege?: number | null
+  payType?: number | null
+}
+
+interface KugouSearchResult {
+  keyword: string
+  tracks: KugouSearchTrack[]
+  total: number
+  message: string
+}
+
+interface KugouPlaylistSummary {
+  id: string
+  listId: string
+  globalCollectionId?: string | null
+  name: string
+  trackCount: number
+  coverImgUrl?: string | null
+  creatorNickname?: string | null
+  subscribed: boolean
+  updateTime?: number | null
+}
+
+interface KugouPlaylistDetail {
+  playlist: KugouPlaylistSummary
+  tracks: KugouSearchTrack[]
+  totalTrackCount: number
+  truncated: boolean
+  message: string
+}
+
+interface KugouLyricsResult {
+  songId: string
+  content: string
+  lrcContent?: string | null
+  source: string
+  warnings: string[]
+}
+
+interface KugouPlaybackUrl {
+  hash: string
+  url: string
+  bitrate?: number | null
+  durationMs?: number | null
+  fileType?: string | null
+  size?: number | null
+  message: string
+  proxyDiagnostic?: string | null
+  proxyLikelyPreview: boolean
+}
+
+interface KugouPlaybackProxyStatus {
+  ok: boolean
+  message: string
+  probeMessage?: string | null
+  likelyPreview: boolean
+  lastError?: string | null
+  lastRange?: string | null
+  refreshCount: number
+}
+
+type ImmersivePlaylistSource = 'local' | 'netease' | 'kugou'
+type MusicPlaybackContext =
+  | { source: 'local'; trackIds: string[] }
+  | { source: 'netease'; tracks: NeteasePlaylistTrack[] }
+  | { source: 'kugou'; tracks: KugouSearchTrack[] }
+
+interface OnlinePlaybackCacheEntry<T> {
+  playback: T
+  expiresAt: number
+}
+
+type OnlinePlaybackPrefetchCandidate =
+  | { source: 'netease'; track: NeteasePlaylistTrack }
+  | { source: 'kugou'; track: KugouSearchTrack }
+
+interface OnlineUnavailableTrack {
+  reason: string
+  failedAt: number
+  retryAfter: number
+}
+
+interface OnlinePlaybackOptions {
+  autoSkip?: boolean
+}
 
 interface TrackIdentity {
   title: string
   artist: string
+}
+
+interface ImmersiveFreeCameraView {
+  active: boolean
+  locked: boolean
+  x: number
+  y: number
+  z: number
+  yaw: number
+  pitch: number
+  roll: number
+  fov: number
 }
 
 const ALL_CATEGORY = '全部'
@@ -214,17 +406,65 @@ const DEFAULT_CATEGORY = '未分类'
 const MAX_PLAY_HISTORY_PER_TRACK = 30
 const MAX_TRACK_TAGS = 12
 const MAX_TRACK_TAG_LENGTH = 24
-const FULL_MUSIC_WINDOW_SIZE = { width: 520, height: 740 }
+const FULL_MUSIC_WINDOW_SIZE = { width: 860, height: 680 }
 const MINI_MUSIC_WINDOW_SIZE = { width: 344, height: 154 }
 const TRACKS_STORAGE_KEY = 'pet-drawer-music-tracks'
 const SETTINGS_STORAGE_KEY = 'pet-drawer-music-settings'
 const PLAYLISTS_STORAGE_KEY = 'pet-drawer-music-playlists'
+const ONLINE_PLAYBACK_CACHE_TTL_MS = 8 * 60 * 1000
+const ONLINE_UNAVAILABLE_RETRY_AFTER_MS = 10 * 60 * 1000
+const ONLINE_PLAYBACK_PREFETCH_DELAY_MS = 2600
+const IMMERSIVE_CONTENT_PREP_DELAY_MS = 1400
+const PLATFORM_SEARCH_PAGE_SIZE = 50
+const MAX_PLATFORM_SEARCH_PAGE = 20
+const PLATFORM_PLAYLIST_PAGE_SIZE = 300
+const MAX_PLATFORM_PLAYLIST_PAGE = 200
+const PLAYBACK_CONTEXT_PREFETCH_THRESHOLD = 2
+const IMMERSIVE_PLAYLIST_CONTEXT_RADIUS = 50
+const IMMERSIVE_PLAYLIST_FALLBACK_LIMIT = IMMERSIVE_PLAYLIST_CONTEXT_RADIUS * 2 + 1
+const IMMERSIVE_LYRIC_MAIN_MAX_LINES = 4
+const IMMERSIVE_LYRIC_SIDE_MAX_LINES = 2
+const IMMERSIVE_STAGE_MAX_YAW = 22
+const IMMERSIVE_STAGE_MAX_PITCH = 12
+const IMMERSIVE_STAGE_DRAG_YAW_FACTOR = 0.085
+const IMMERSIVE_STAGE_DRAG_PITCH_FACTOR = 0.062
+const IMMERSIVE_FREE_CAMERA_DEFAULT = {
+  x: 0,
+  y: 0.7,
+  z: 8.2,
+  yaw: 0,
+  pitch: -0.08,
+  roll: 0,
+  fov: 46,
+}
+const IMMERSIVE_FREE_CAMERA_MOUSE_FACTOR = 0.00125
+const IMMERSIVE_FREE_CAMERA_BASE_SPEED = 2.35
+const IMMERSIVE_FREE_CAMERA_FAST_SPEED = 6.2
+const IMMERSIVE_FREE_CAMERA_RESET_MS = 620
+const IMMERSIVE_FREE_CAMERA_CONTROL_CODES = new Set([
+  'KeyW',
+  'KeyA',
+  'KeyS',
+  'KeyD',
+  'KeyQ',
+  'KeyE',
+  'Space',
+  'ShiftLeft',
+  'ShiftRight',
+  'ControlLeft',
+  'ControlRight',
+])
+const ONLINE_STALL_RECOVERY_DELAY_MS = 7000
+const ONLINE_STALL_RECOVERY_RETRY_DELAY_MS = 1800
+const ONLINE_STALL_RECOVERY_VERIFY_MS = 9000
+const ONLINE_STALL_RECOVERY_PROGRESS_SECONDS = 0.8
+const MAX_ONLINE_STALL_RECOVERY_ATTEMPTS = 3
 const NETEASE_TRACK_ID_PREFIX = 'netease'
+const KUGOU_TRACK_ID_PREFIX = 'kugou'
 const panelViewOptions: Array<{ value: MusicPanelView; label: string }> = [
   { value: 'library', label: '本地音乐' },
-  { value: 'playlists', label: '歌单' },
-  { value: 'ai', label: 'AI 推荐' },
   { value: 'netease', label: '网易云' },
+  { value: 'kugou', label: '酷狗' },
 ]
 const libraryViewOptions: Array<{ value: MusicLibraryView; label: string }> = [
   { value: 'all', label: '本地' },
@@ -237,6 +477,126 @@ const visualModeOptions: Array<{ value: MusicVisualMode; label: string; descript
   { value: 'dance', label: '跳舞', description: '增强低频和节拍反馈，适合快歌。' },
   { value: 'focus', label: '专注', description: '降低动态强度，适合学习和工作。' },
   { value: 'sleep', label: '睡眠', description: '低亮度慢速动画，适合睡前播放。' },
+]
+const stagePresetOptions: MusicStagePresetOption[] = [
+  {
+    value: 'galaxy',
+    label: '星河漫游',
+    kicker: 'SPACE',
+    description: '高密星尘、星云旋臂和流星轨迹集中在这里，突出宇宙纵深。',
+    mode: 'focus',
+    spectrumStyle: 'particles',
+    lineStyle: 'constellation',
+    rippleStyle: 'halo',
+    swatches: ['#8fe9ff', '#73a7ff', '#fff0b8'],
+    metrics: ['星尘高', '星云深'],
+  },
+  {
+    value: 'dj',
+    label: '地面 DJ',
+    kicker: 'COLUMNS',
+    description: '一列列地面 EQ 柱跟随频段起伏，扫描线和轨迹流保持长播律动。',
+    mode: 'dance',
+    spectrumStyle: 'orbit',
+    lineStyle: 'scan',
+    rippleStyle: 'heartbeat',
+    swatches: ['#00f5d4', '#ff4fd8', '#7df9ff'],
+    metrics: ['柱阵起', '扫描快'],
+  },
+]
+const galaxyStageTuningOptions: MusicStageTuningOption[] = [
+  { key: 'density', label: '星量', min: 0.35, max: 2, step: 0.01, ariaLabel: '星河漫游粒子数量' },
+  { key: 'response', label: '流速', min: 0.25, max: 2.4, step: 0.01, ariaLabel: '星河漫游星尘流速' },
+  { key: 'height', label: '纵深', min: 0.45, max: 2.2, step: 0.01, ariaLabel: '星河漫游空间纵深' },
+  { key: 'layerHeight', label: '层高', min: 0.25, max: 2.8, step: 0.01, ariaLabel: '星河漫游上下分布层高' },
+  { key: 'wave', label: '星云', min: 0.15, max: 2.6, step: 0.01, ariaLabel: '星河漫游星云强度' },
+  { key: 'trigger', label: '闪耀', min: 0.1, max: 2.8, step: 0.01, ariaLabel: '星河漫游星点闪耀强度' },
+  { key: 'camera', label: '视距', min: 0.55, max: 1.75, step: 0.01, ariaLabel: '星河漫游默认视距' },
+]
+const djStageTuningOptions: MusicStageTuningOption[] = [
+  { key: 'height', label: '高度', min: 0.25, max: 2.4, step: 0.01, ariaLabel: '地面 DJ 柱体高度' },
+  { key: 'response', label: '响应', min: 0.2, max: 2.4, step: 0.01, ariaLabel: '地面 DJ 音乐响应速度' },
+  { key: 'density', label: '密度', min: 0.35, max: 1.7, step: 0.01, ariaLabel: '地面 DJ 柱阵密度' },
+  { key: 'wave', label: '波峰', min: 0.2, max: 2.4, step: 0.01, ariaLabel: '地面 DJ 触发点扩散波峰强度' },
+  { key: 'trigger', label: '触发', min: 0.25, max: 2.4, step: 0.01, ariaLabel: '地面 DJ 音乐触发点敏感度' },
+  { key: 'camera', label: '视距', min: 0.55, max: 1.65, step: 0.01, ariaLabel: '地面 DJ 默认视距' },
+]
+const spectrumStyleOptions: Array<{ value: MusicSpectrumStyle; label: string; description: string }> = [
+  { value: 'bars', label: '竖条', description: '经典实时频谱，稳定清晰。' },
+  { value: 'mirror', label: '棱柱', description: '上下镜像频谱，突出低频冲击。' },
+  { value: 'orbit', label: '星盘', description: '环形刻度围绕中心旋转响应。' },
+  { value: 'particles', label: '星辰', description: '粒子星光带柔光光晕，并随节拍、低频和音量明显闪烁。' },
+  { value: 'ribbon', label: '丝带', description: '连续流光曲线表现中高频流动。' },
+  { value: 'none', label: '隐藏', description: '不显示实时频谱层。' },
+]
+const lineStyleOptions: Array<{ value: MusicLineStyle; label: string; description: string }> = [
+  { value: 'wave', label: '柔波', description: '连续波线，适合歌词和低干扰播放。' },
+  { value: 'beam', label: '光束', description: '多层横向光带，带舞台灯效果。' },
+  { value: 'scan', label: '扫描', description: '细扫描线随节奏横向移动。' },
+  { value: 'constellation', label: '星轨', description: '星点连线随节拍、低频和音量明显扩张。' },
+  { value: 'none', label: '隐藏', description: '不显示线条层。' },
+]
+const rippleStyleOptions: Array<{ value: MusicRippleStyle; label: string; description: string }> = [
+  { value: 'rings', label: '圆环', description: '经典扩散波纹。' },
+  { value: 'water', label: '水波', description: '横向水面涟漪，柔和低干扰。' },
+  { value: 'heartbeat', label: '心跳', description: '低频短促冲击波。' },
+  { value: 'halo', label: '光晕', description: '中心柔光随能量呼吸。' },
+  { value: 'none', label: '隐藏', description: '不显示波纹层。' },
+]
+const immersiveThemeOptions: Array<{
+  value: MusicImmersiveThemePreference
+  label: string
+  description: string
+  swatches: string[]
+}> = [
+  {
+    value: 'follow',
+    label: '跟随',
+    description: '沿用桌宠主题色。',
+    swatches: ['#ffcf7a', '#7fb6a6', '#10192a'],
+  },
+  {
+    value: 'light',
+    label: '默认',
+    description: '清爽深色舞台。',
+    swatches: ['#ffcf7a', '#2aa7d9', '#10192a'],
+  },
+  {
+    value: 'animal-island',
+    label: '动物岛',
+    description: '暖纸感岛屿光。',
+    swatches: ['#ffe7ad', '#7fb6a6', '#69522d'],
+  },
+  {
+    value: 'cinema',
+    label: '暗场',
+    description: '胶片金色信号。',
+    swatches: ['#f4d28a', '#ff5367', '#090a0d'],
+  },
+  {
+    value: 'galaxy',
+    label: '星河',
+    description: '青蓝粒子空间。',
+    swatches: ['#9cffdf', '#73a7ff', '#06101d'],
+  },
+  {
+    value: 'neon',
+    label: '霓虹',
+    description: '高对比节拍脉冲。',
+    swatches: ['#00f5d4', '#ff4fd8', '#150b3e'],
+  },
+  {
+    value: 'sunset',
+    label: '暖场',
+    description: '香槟橙红舞台。',
+    swatches: ['#f4d28a', '#ff8a5c', '#2b1115'],
+  },
+  {
+    value: 'midnight',
+    label: '深夜',
+    description: '低亮度蓝灰光。',
+    swatches: ['#9fb7d9', '#b8cdfa', '#050812'],
+  },
 ]
 const musicTagPresetGroups: MusicTagPresetGroup[] = [
   {
@@ -267,10 +627,14 @@ const musicTagPresetGroups: MusicTagPresetGroup[] = [
 ]
 const musicTagPresetOptions = musicTagPresetGroups.flatMap((group) => group.tags)
 const audio = ref<HTMLAudioElement | null>(null)
+const neteasePlaylistDetailSection = ref<HTMLElement | null>(null)
+const kugouPlaylistDetailSection = ref<HTMLElement | null>(null)
 const musicWindow = getCurrentWindow()
 const { windowOpenAnimationClass } = useWindowOpenAnimation('panel')
+const immersiveScene = ref<HTMLElement | null>(null)
 const tracks = ref<MusicTrack[]>([])
 const playQueue = ref<string[]>([])
+const playbackContext = ref<MusicPlaybackContext>({ source: 'local', trackIds: [] })
 const customPlaylists = ref<MusicPlaylist[]>([])
 const currentIndex = ref(-1)
 const activePanelView = ref<MusicPanelView>('library')
@@ -287,15 +651,43 @@ const playlistTrackPickerSelectedIds = ref<string[]>([])
 const importCategory = ref(DEFAULT_CATEGORY)
 const musicStorageDir = ref('')
 const drawerTheme = ref<DrawerTheme>('light')
+const musicImmersiveThemePreference = ref<MusicImmersiveThemePreference>('follow')
+const immersiveThemeSaving = ref(false)
+const immersiveThemeError = ref('')
 const settingsVisible = ref(false)
 const miniPlayerMode = ref(false)
 const immersiveMode = ref(false)
+const immersiveStageOnlyMode = ref(false)
+const listFocusMode = ref(false)
 const immersivePlaylistVisible = ref(true)
 const immersiveRhythmPanelVisible = ref(true)
 const immersivePlaylistSource = ref<ImmersivePlaylistSource>('local')
+const visualStagePreset = ref<MusicVisualStagePreset>('galaxy')
 const visualMode = ref<MusicVisualMode>('rhythm')
+const visualSpectrumStyle = ref<MusicSpectrumStyle>('bars')
+const visualLineStyle = ref<MusicLineStyle>('wave')
+const visualRippleStyle = ref<MusicRippleStyle>('rings')
 const visualIntensity = ref(0.72)
 const visualReducedMotion = ref(false)
+const visualStageTunings = ref<MusicStageTuningMap>(createDefaultMusicStageTunings())
+const stageTuningOptions = computed(() => stageTuningOptionsForPreset(visualStagePreset.value))
+const visualStageTuning = computed(() => visualStageTunings.value[visualStagePreset.value])
+const webglStarfieldUnavailable = ref(false)
+const immersiveStageDragging = ref(false)
+const immersiveStageYaw = ref(0)
+const immersiveStagePitch = ref(0)
+const immersiveStageVelocityYaw = ref(0)
+const immersiveStageVelocityPitch = ref(0)
+const immersiveFreeCameraActive = ref(false)
+const immersiveFreeCameraLocked = ref(false)
+const immersiveFreeCameraResetting = ref(false)
+const immersiveFreeCameraX = ref(IMMERSIVE_FREE_CAMERA_DEFAULT.x)
+const immersiveFreeCameraY = ref(IMMERSIVE_FREE_CAMERA_DEFAULT.y)
+const immersiveFreeCameraZ = ref(IMMERSIVE_FREE_CAMERA_DEFAULT.z)
+const immersiveFreeCameraYaw = ref(IMMERSIVE_FREE_CAMERA_DEFAULT.yaw)
+const immersiveFreeCameraPitch = ref(IMMERSIVE_FREE_CAMERA_DEFAULT.pitch)
+const immersiveFreeCameraRoll = ref(IMMERSIVE_FREE_CAMERA_DEFAULT.roll)
+const immersiveFreeCameraFov = ref(IMMERSIVE_FREE_CAMERA_DEFAULT.fov)
 const lyricOffsetMs = ref(0)
 const neteaseLoginStatus = ref<NeteaseLoginStatus | null>(null)
 const neteaseQrLogin = ref<NeteaseQrLogin | null>(null)
@@ -306,11 +698,18 @@ const neteaseQrStatus = ref<'idle' | 'waiting' | 'scanned' | 'expired' | 'author
 )
 const neteaseLoginNotice = ref('')
 const neteaseLoginError = ref('')
+const neteaseSearchQuery = ref('')
+const neteaseSearchResult = ref<NeteaseSearchResult | null>(null)
+const neteaseSearchLoading = ref(false)
+const neteaseSearchError = ref('')
+const neteaseSearchNotice = ref('')
+const neteaseSearchPage = ref(0)
 const neteasePlaylists = ref<NeteasePlaylistSummary[]>([])
 const neteaseSelectedPlaylistId = ref<number | null>(null)
 const neteasePlaylistDetail = ref<NeteasePlaylistDetail | null>(null)
 const neteasePlaylistsLoading = ref(false)
 const neteasePlaylistDetailLoading = ref(false)
+const neteasePlaylistDetailPage = ref(0)
 const neteasePlaylistError = ref('')
 const neteaseTrackActionId = ref<number | null>(null)
 const neteaseCurrentTrack = ref<MusicTrack | null>(null)
@@ -318,6 +717,39 @@ const neteaseLyricsTrack = ref<NeteasePlaylistTrack | null>(null)
 const neteaseLyricsResult = ref<NeteaseLyricsResult | null>(null)
 const neteaseLyricsLoading = ref(false)
 const neteaseLyricsError = ref('')
+const kugouLoginStatus = ref<KugouLoginStatus | null>(null)
+const kugouQrLogin = ref<KugouQrLogin | null>(null)
+const kugouLoginBusy = ref(false)
+const kugouQrChecking = ref(false)
+const kugouQrStatus = ref<'idle' | 'waiting' | 'scanned' | 'expired' | 'authorized' | 'error'>(
+  'idle',
+)
+const kugouLoginNotice = ref('')
+const kugouLoginError = ref('')
+const kugouPlaylists = ref<KugouPlaylistSummary[]>([])
+const kugouSelectedPlaylistId = ref('')
+const kugouPlaylistDetail = ref<KugouPlaylistDetail | null>(null)
+const kugouPlaylistsLoading = ref(false)
+const kugouPlaylistDetailLoading = ref(false)
+const kugouPlaylistDetailPage = ref(0)
+const kugouPlaylistError = ref('')
+const kugouSearchQuery = ref('')
+const kugouSearchResult = ref<KugouSearchResult | null>(null)
+const kugouSearchLoading = ref(false)
+const kugouSearchError = ref('')
+const kugouSearchNotice = ref('')
+const kugouSearchPage = ref(0)
+const kugouTrackActionHash = ref('')
+const kugouLyricsTrack = ref<KugouSearchTrack | null>(null)
+const kugouLyricsResult = ref<KugouLyricsResult | null>(null)
+const kugouLyricsLoading = ref(false)
+const kugouLyricsError = ref('')
+const neteasePlaybackCache = new Map<number, OnlinePlaybackCacheEntry<NeteasePlaybackUrl>>()
+const kugouPlaybackCache = new Map<string, OnlinePlaybackCacheEntry<KugouPlaybackUrl>>()
+const neteasePlaybackInflight = new Map<number, Promise<NeteasePlaybackUrl>>()
+const kugouPlaybackInflight = new Map<string, Promise<KugouPlaybackUrl>>()
+const neteaseUnavailableTracks = reactive(new Map<number, OnlineUnavailableTrack>())
+const kugouUnavailableTracks = reactive(new Map<string, OnlineUnavailableTrack>())
 const playing = ref(false)
 const currentTime = ref(0)
 const visualPlaybackTime = ref(0)
@@ -366,7 +798,12 @@ const editingTrack = computed(() =>
 )
 const hasTracks = computed(() => tracks.value.length > 0 || Boolean(neteaseCurrentTrack.value))
 const hasQueue = computed(() => playQueue.value.length > 0)
-const themeClass = computed(() => `theme-${drawerTheme.value}`)
+const resolvedImmersiveTheme = computed<MusicImmersiveTheme>(() =>
+  musicImmersiveThemePreference.value === 'follow'
+    ? drawerTheme.value
+    : musicImmersiveThemePreference.value,
+)
+const themeClass = computed(() => `theme-${immersiveMode.value ? resolvedImmersiveTheme.value : drawerTheme.value}`)
 const categoryOptions = computed(() => {
   const categories = tracks.value
     .map((track) => normalizeMusicCategory(track.category))
@@ -450,29 +887,17 @@ const emptyPlaylistTitle = computed(() => {
   return '当前分类暂无音乐'
 })
 const playlistTitle = computed(() => {
-  if (activePanelView.value === 'playlists') {
-    return '歌单'
-  }
-
-  if (activePanelView.value === 'ai') {
-    return 'AI 推荐'
-  }
-
   if (activePanelView.value === 'netease') {
     return '网易云音乐'
+  }
+
+  if (activePanelView.value === 'kugou') {
+    return '酷狗音乐'
   }
 
   return activeLibraryView.value === 'queue' ? '播放队列' : '播放列表'
 })
 const playlistCountLabel = computed(() => {
-  if (activePanelView.value === 'playlists') {
-    return `${customPlaylists.value.length} 个自定义 · 场景歌单规划中`
-  }
-
-  if (activePanelView.value === 'ai') {
-    return '本地推荐基础'
-  }
-
   if (activePanelView.value === 'netease') {
     if (!neteaseLoginStatus.value?.loggedIn) {
       return '等待登录'
@@ -481,6 +906,16 @@ const playlistCountLabel = computed(() => {
     return neteasePlaylists.value.length > 0
       ? `${neteasePlaylists.value.length} 个网易云歌单`
       : '账号已连接'
+  }
+
+  if (activePanelView.value === 'kugou') {
+    if (kugouSearchLoading.value) {
+      return '搜索中'
+    }
+
+    return kugouSearchResult.value
+      ? `${kugouSearchResult.value.tracks.length} 首酷狗结果`
+      : '关键词搜索'
   }
 
   return activeLibraryView.value === 'queue'
@@ -494,7 +929,6 @@ const clearButtonDisabled = computed(() =>
   activeLibraryView.value === 'queue' ? !hasQueue.value : !hasTracks.value,
 )
 const favoriteTrackCount = computed(() => tracks.value.filter((track) => track.favorite).length)
-const recentTrackCount = computed(() => tracks.value.filter((track) => track.lastPlayedAt).length)
 const playlistTrackPickerTarget = computed(
   () =>
     customPlaylists.value.find((playlist) => playlist.id === playlistTrackPickerPlaylistId.value) ??
@@ -515,6 +949,37 @@ const playlistTrackPickerAvailableTracks = computed(() => {
     .sort((left, right) => left.title.localeCompare(right.title))
 })
 const playlistTrackPickerSelectedCount = computed(() => playlistTrackPickerSelectedIds.value.length)
+const leftLocalPlaylistStatusLabel = computed(() =>
+  customPlaylists.value.length > 0
+    ? `${customPlaylists.value.length} 个本地歌单`
+    : '还没有本地歌单',
+)
+const leftNeteasePlaylistStatusLabel = computed(() => {
+  if (!neteaseLoggedIn.value) {
+    return '未登录'
+  }
+
+  if (neteasePlaylistsLoading.value) {
+    return '读取中'
+  }
+
+  return neteasePlaylists.value.length > 0
+    ? `${neteasePlaylists.value.length} 个我的歌单`
+    : '未读取歌单'
+})
+const leftKugouPlaylistStatusLabel = computed(() => {
+  if (!kugouLoggedIn.value) {
+    return '未登录'
+  }
+
+  if (kugouPlaylistsLoading.value) {
+    return '读取中'
+  }
+
+  return kugouPlaylists.value.length > 0
+    ? `${kugouPlaylists.value.length} 个我的歌单`
+    : '未读取歌单'
+})
 const taggedTrackCount = computed(
   () => tracks.value.filter((track) => normalizeTrackTags(track.tags).length > 0).length,
 )
@@ -630,6 +1095,23 @@ const neteasePlaylistStatusLabel = computed(() => {
 
   return '点击读取歌单获取网易云歌单列表。'
 })
+const neteasePlaylistHasMore = computed(() =>
+  Boolean(
+    neteasePlaylistDetail.value?.truncated &&
+      neteasePlaylistDetailPage.value > 0 &&
+      neteasePlaylistDetailPage.value < MAX_PLATFORM_PLAYLIST_PAGE,
+  ),
+)
+const neteasePlaylistLoadedLabel = computed(() => {
+  const detail = neteasePlaylistDetail.value
+  if (!detail) {
+    return '0 首'
+  }
+
+  return detail.totalTrackCount > 0
+    ? `${detail.tracks.length} / ${detail.totalTrackCount} 首`
+    : `${detail.tracks.length} 首`
+})
 const neteaseStatusLabel = computed(() => {
   if (neteaseLoggedIn.value) {
     return '已登录'
@@ -664,6 +1146,37 @@ const neteaseStatusDetail = computed(() => {
 
   return neteaseLoginStatus.value?.message ?? '尚未登录网易云音乐。'
 })
+const neteaseSearchTracks = computed(() => neteaseSearchResult.value?.tracks ?? [])
+const neteaseSearchHasMore = computed(() => {
+  const result = neteaseSearchResult.value
+  return Boolean(
+    result &&
+      result.total > result.tracks.length &&
+      neteaseSearchPage.value > 0 &&
+      neteaseSearchPage.value < MAX_PLATFORM_SEARCH_PAGE,
+  )
+})
+const neteaseSearchLoadedLabel = computed(() => {
+  const result = neteaseSearchResult.value
+  if (!result) {
+    return `${neteaseSearchTracks.value.length} 首`
+  }
+
+  return result.total > 0
+    ? `${result.tracks.length} / ${result.total} 首`
+    : `${result.tracks.length} 首`
+})
+const neteaseSearchStatusDetail = computed(() => {
+  if (neteaseSearchError.value) {
+    return neteaseSearchError.value
+  }
+
+  if (neteaseSearchNotice.value) {
+    return neteaseSearchNotice.value
+  }
+
+  return '输入关键词搜索网易云歌曲；结果只作为当前运行时临时列表。'
+})
 const neteaseQrExpired = computed(() => {
   if (!neteaseQrLogin.value) {
     return false
@@ -676,6 +1189,138 @@ const neteaseQrExpired = computed(() => {
 
   return Date.now() >= expiresAt * 1000
 })
+const kugouLoggedIn = computed(() => Boolean(kugouLoginStatus.value?.loggedIn))
+const kugouProfile = computed(() => kugouLoginStatus.value?.profile ?? null)
+const kugouLoginStatusLabel = computed(() => {
+  if (kugouLoggedIn.value) {
+    return '已登录'
+  }
+
+  if (kugouQrStatus.value === 'scanned') {
+    return '待确认'
+  }
+
+  if (kugouQrStatus.value === 'waiting') {
+    return '等待扫码'
+  }
+
+  if (kugouQrStatus.value === 'expired') {
+    return '已过期'
+  }
+
+  if (kugouQrStatus.value === 'error') {
+    return '连接失败'
+  }
+
+  return '未登录'
+})
+const kugouLoginStatusDetail = computed(() => {
+  if (kugouLoginError.value) {
+    return kugouLoginError.value
+  }
+
+  if (kugouLoginNotice.value) {
+    return kugouLoginNotice.value
+  }
+
+  return kugouLoginStatus.value?.message ?? '尚未登录酷狗音乐；未登录也可以搜索和尝试临时播放。'
+})
+const kugouQrExpired = computed(() => {
+  if (!kugouQrLogin.value) {
+    return false
+  }
+
+  const expiresAt = Number(kugouQrLogin.value.expiresAt)
+  if (!Number.isFinite(expiresAt)) {
+    return false
+  }
+
+  return Date.now() >= expiresAt * 1000
+})
+const kugouSelectedPlaylist = computed(
+  () => kugouPlaylists.value.find((playlist) => playlist.listId === kugouSelectedPlaylistId.value) ?? null,
+)
+const kugouPlaylistStatusLabel = computed(() => {
+  if (kugouPlaylistError.value) {
+    return kugouPlaylistError.value
+  }
+
+  if (!kugouLoggedIn.value) {
+    return '登录后可以读取你的酷狗个人歌单。'
+  }
+
+  if (kugouPlaylistsLoading.value) {
+    return '正在读取个人歌单...'
+  }
+
+  if (kugouPlaylistDetailLoading.value) {
+    return '正在读取歌单歌曲...'
+  }
+
+  if (kugouPlaylistDetail.value) {
+    return kugouPlaylistDetail.value.message
+  }
+
+  if (kugouPlaylists.value.length > 0) {
+    return '选择一个歌单查看歌曲摘要。'
+  }
+
+  return '点击读取歌单获取酷狗个人歌单列表。'
+})
+const kugouPlaylistHasMore = computed(() =>
+  Boolean(
+    kugouPlaylistDetail.value?.truncated &&
+      kugouPlaylistDetailPage.value > 0 &&
+      kugouPlaylistDetailPage.value < MAX_PLATFORM_PLAYLIST_PAGE,
+  ),
+)
+const kugouPlaylistLoadedLabel = computed(() => {
+  const detail = kugouPlaylistDetail.value
+  if (!detail) {
+    return '0 首'
+  }
+
+  return detail.totalTrackCount > 0
+    ? `${detail.tracks.length} / ${detail.totalTrackCount} 首`
+    : `${detail.tracks.length} 首`
+})
+const kugouSearchTracks = computed(() => kugouSearchResult.value?.tracks ?? [])
+const kugouSearchHasMore = computed(() => {
+  const result = kugouSearchResult.value
+  return Boolean(
+    result &&
+      result.total > result.tracks.length &&
+      kugouSearchPage.value > 0 &&
+      kugouSearchPage.value < MAX_PLATFORM_SEARCH_PAGE,
+  )
+})
+const kugouSearchLoadedLabel = computed(() => {
+  const result = kugouSearchResult.value
+  if (!result) {
+    return '输入关键词后搜索'
+  }
+
+  return result.total > 0
+    ? `${result.tracks.length} / ${result.total} 首`
+    : `${result.tracks.length} 首`
+})
+const kugouStatusLabel = computed(() => {
+  return kugouLoginStatusLabel.value
+})
+const kugouStatusDetail = computed(() => {
+  return kugouLoginStatusDetail.value
+})
+const kugouSearchStatusDetail = computed(() => {
+  if (kugouSearchError.value) {
+    return kugouSearchError.value
+  }
+
+  if (kugouSearchNotice.value) {
+    return kugouSearchNotice.value
+  }
+
+  return '输入关键词搜索酷狗歌曲；搜索结果只作为临时播放列表，不写入本机曲库。'
+})
 const repeatModeLabel = computed(() => {
   if (repeatMode.value === 'one') {
     return '单曲循环'
@@ -687,8 +1332,48 @@ const repeatModeLabel = computed(() => {
 
   return '播完停止'
 })
+const repeatModeIcon = computed(() => {
+  if (repeatMode.value === 'one') {
+    return '①'
+  }
+
+  if (repeatMode.value === 'all') {
+    return '↻'
+  }
+
+  return '→'
+})
 const visualModeLabel = computed(
   () => visualModeOptions.find((option) => option.value === visualMode.value)?.label ?? '韵律',
+)
+const visualStagePresetOption = computed(
+  () => stagePresetOptions.find((option) => option.value === visualStagePreset.value) ?? stagePresetOptions[0],
+)
+const visualStagePresetLabel = computed(() => visualStagePresetOption.value.label)
+const visualStagePresetDetail = computed(
+  () => `${visualStagePresetOption.value.kicker} · ${visualStagePresetOption.value.metrics.join(' · ')}`,
+)
+const visualSpectrumStyleLabel = computed(
+  () => spectrumStyleOptions.find((option) => option.value === visualSpectrumStyle.value)?.label ?? '竖条',
+)
+const webglStarfieldActive = computed(
+  () => immersiveMode.value && !webglStarfieldUnavailable.value,
+)
+const canvasSpectrumStyle = computed<MusicSpectrumStyle>(() =>
+  webglStarfieldActive.value ? 'none' : visualSpectrumStyle.value,
+)
+const canvasLineStyle = computed<MusicLineStyle>(() =>
+  webglStarfieldActive.value ? 'none' : visualLineStyle.value,
+)
+const canvasRippleStyle = computed<MusicRippleStyle>(() =>
+  webglStarfieldActive.value ? 'none' : visualRippleStyle.value,
+)
+const canvasForegroundDisabled = computed(() => webglStarfieldActive.value)
+const visualLineStyleLabel = computed(
+  () => lineStyleOptions.find((option) => option.value === visualLineStyle.value)?.label ?? '柔波',
+)
+const visualRippleStyleLabel = computed(
+  () => rippleStyleOptions.find((option) => option.value === visualRippleStyle.value)?.label ?? '圆环',
 )
 const beatMapMatchesCurrentTrack = computed(
   () => Boolean(currentTrack.value && beatMap.value?.trackId === currentTrack.value.id),
@@ -734,31 +1419,54 @@ const visualFrequencyData = computed(() => {
 
   return frequencyData.value
 })
-const currentTrackOnline = computed(() => currentTrack.value?.source === 'netease')
-const immersiveLocalPlaylistTracks = computed(() => {
-  const seenTrackIds = new Set<string>()
-  const playlistTracks: MusicTrack[] = []
-
-  if (currentTrack.value) {
-    playlistTracks.push(currentTrack.value)
-    seenTrackIds.add(currentTrack.value.id)
-  }
-
-  const sourceTracks = playQueue.value.length > 0 ? queuedTracks.value : tracks.value
-  for (const track of sourceTracks) {
-    if (seenTrackIds.has(track.id)) {
-      continue
-    }
-
-    playlistTracks.push(track)
-    seenTrackIds.add(track.id)
-  }
-
-  return playlistTracks.slice(0, 18)
-})
-const immersiveNeteasePlaylistTracks = computed(() =>
-  (neteasePlaylistDetail.value?.tracks ?? []).slice(0, 50),
+const currentTrackOnline = computed(() =>
+  currentTrack.value?.source === 'netease' || currentTrack.value?.source === 'kugou',
 )
+const currentTrackPlatformLabel = computed(() => {
+  if (currentTrack.value?.source === 'netease') {
+    return '网易云在线音乐'
+  }
+
+  if (currentTrack.value?.source === 'kugou') {
+    return '酷狗在线音乐'
+  }
+
+  return '本机音乐'
+})
+const playbackListTrackCount = computed(() => {
+  if (currentTrack.value?.source === 'netease') {
+    return currentNeteasePlaybackTracks().length
+  }
+
+  if (currentTrack.value?.source === 'kugou') {
+    return currentKugouPlaybackTracks().length
+  }
+
+  return localPlaybackTrackIds().length
+})
+const immersiveLocalPlaylistTracks = computed(() => {
+  const sourceTracks = currentLocalImmersiveSourceTracks()
+  const currentTrackId =
+    currentTrack.value?.source === 'local' || !currentTrack.value?.source
+      ? currentTrack.value?.id ?? ''
+      : ''
+  const currentListIndex = sourceTracks.findIndex((track) => track.id === currentTrackId)
+  return centeredPlaybackWindow(sourceTracks, currentListIndex)
+})
+const immersiveNeteasePlaylistTracks = computed(() => {
+  const sourceTracks = currentNeteaseImmersiveSourceTracks()
+  const currentSongId =
+    currentTrack.value?.source === 'netease' ? currentTrack.value.neteaseSongId : null
+  const currentListIndex = sourceTracks.findIndex((track) => track.id === currentSongId)
+  return centeredPlaybackWindow(sourceTracks, currentListIndex)
+})
+const immersiveKugouPlaylistTracks = computed(() => {
+  const sourceTracks = currentKugouImmersiveSourceTracks()
+  const currentHash =
+    currentTrack.value?.source === 'kugou' ? currentTrack.value.kugouSongHash : ''
+  const currentListIndex = sourceTracks.findIndex((track) => track.hash === currentHash)
+  return centeredPlaybackWindow(sourceTracks, currentListIndex)
+})
 const immersivePlaylistCountLabel = computed(() => {
   if (immersivePlaylistSource.value === 'netease') {
     if (!neteaseLoggedIn.value) {
@@ -769,20 +1477,42 @@ const immersivePlaylistCountLabel = computed(() => {
       return '正在读取网易云歌单'
     }
 
-    const playlistName = neteaseSelectedPlaylist.value?.name ?? '网易云歌单'
+    const playlistName =
+      neteaseSearchTracks.value.length > 0
+        ? `网易云搜索：${neteaseSearchResult.value?.keyword ?? ''}`.trim()
+        : neteaseSelectedPlaylist.value?.name ?? '网易云歌单'
     const count = immersiveNeteasePlaylistTracks.value.length
-    return count > 0 ? `${playlistName} · ${count} 首` : '等待读取网易云歌单'
+    const total = currentNeteaseImmersiveSourceTracks().length
+    return count > 0 ? `${playlistName} · 当前附近 ${count} / ${total} 首` : '等待读取网易云歌单'
+  }
+
+  if (immersivePlaylistSource.value === 'kugou') {
+    if (kugouPlaylistDetailLoading.value) {
+      return '正在读取酷狗歌单'
+    }
+
+    if (kugouSearchLoading.value) {
+      return '正在搜索酷狗'
+    }
+
+    const count = immersiveKugouPlaylistTracks.value.length
+    const total = currentKugouImmersiveSourceTracks().length
+    if (count > 0 && kugouPlaylistDetail.value) {
+      return `${kugouPlaylistDetail.value.playlist.name} · 当前附近 ${count} / ${total} 首`
+    }
+
+    return count > 0 ? `酷狗搜索 · 当前附近 ${count} / ${total} 首` : '等待酷狗搜索或歌单'
   }
 
   if (currentTrackOnline.value) {
-    return playQueue.value.length > 0
+    return currentTrack.value?.source === 'netease' && playQueue.value.length > 0
       ? `网易云临时播放 · 队列 ${playQueue.value.length}`
-      : '网易云临时播放'
+      : `${currentTrackPlatformLabel.value}临时播放`
   }
 
-  return playQueue.value.length > 0
-    ? `${playQueue.value.length} 首队列`
-    : `${tracks.value.length} 首本机歌曲`
+  const count = immersiveLocalPlaylistTracks.value.length
+  const total = currentLocalImmersiveSourceTracks().length
+  return count > 0 ? `当前附近 ${count} / ${total} 首` : '等待本机歌曲'
 })
 const immersivePlaylistEmptyLabel = computed(() => {
   if (immersivePlaylistSource.value === 'netease') {
@@ -794,7 +1524,19 @@ const immersivePlaylistEmptyLabel = computed(() => {
       return '正在读取网易云歌单'
     }
 
-    return '先在网易云页读取一个歌单'
+    return '先在网易云页搜索歌曲或读取歌单'
+  }
+
+  if (immersivePlaylistSource.value === 'kugou') {
+    if (kugouPlaylistDetailLoading.value) {
+      return '正在读取酷狗歌单'
+    }
+
+    if (kugouSearchLoading.value) {
+      return '正在搜索酷狗歌曲'
+    }
+
+    return '先在酷狗页搜索歌曲或读取歌单'
   }
 
   return '暂无歌曲'
@@ -827,6 +1569,15 @@ const immersiveLyricsStatusLabel = computed(() => {
 
   return currentTrackOnline.value ? '在线歌词' : '本机歌词'
 })
+const immersiveLyricsLayoutStyle = computed(() => {
+  const nextLine =
+    lyricsStatus.value === 'error' ? lyricsError.value : immersiveLyrics.value.next
+  return resolveImmersiveLyricsLayoutStyle(
+    immersiveLyrics.value.current,
+    immersiveLyrics.value.previous,
+    nextLine,
+  )
+})
 const lyricOffsetLabel = computed(() => {
   const value = Math.round(lyricOffsetMs.value)
   if (value === 0) {
@@ -845,7 +1596,9 @@ const visualizerStatusLabel = computed(() => {
   }
 
   if (beatMapMatchesCurrentTrack.value) {
-    return playing.value ? `${visualModeLabel.value}节奏同步` : '已暂停'
+    return playing.value
+      ? `${visualStagePresetLabel.value} · ${visualStagePresetDetail.value}`
+      : '已暂停'
   }
 
   if (beatMapStatus.value === 'error' && !analyzerReady.value) {
@@ -860,13 +1613,43 @@ const visualizerStatusLabel = computed(() => {
     return '等待音频'
   }
 
-  return playing.value ? `${visualModeLabel.value}响应中` : '已暂停'
+  return playing.value
+    ? `${visualStagePresetLabel.value} · ${visualStagePresetDetail.value}`
+    : '已暂停'
 })
 const visualizerEnergyLabel = computed(() => {
   const energy = visualEnergyFrame.value
   const value = Math.round(clamp((energy.bass * 0.45 + energy.mid * 0.35 + energy.treble * 0.2) * 100, 0, 100))
   return `${value}%`
 })
+const immersiveStageStyle = computed(() => {
+  const energy = visualEnergyFrame.value
+  const motionScale = visualReducedMotion.value ? 0.38 : 1
+  const audioLift = playing.value ? clamp(energy.beat * 0.7 + energy.bass * 0.42, 0, 1) : 0
+  const depth = Math.round(audioLift * 18 * motionScale)
+  const scale = 1 + audioLift * 0.012 * motionScale
+  const glow = 0.42 + clamp(energy.volume * 0.32 + energy.beat * 0.24, 0, 0.46) * motionScale
+  const cssDepthScale = webglStarfieldActive.value ? 0.32 : 1
+
+  return {
+    '--immersive-stage-yaw': `${(immersiveStageYaw.value * cssDepthScale).toFixed(2)}deg`,
+    '--immersive-stage-pitch': `${(immersiveStagePitch.value * cssDepthScale).toFixed(2)}deg`,
+    '--immersive-stage-z': `${depth}px`,
+    '--immersive-stage-scale': scale.toFixed(4),
+    '--immersive-stage-glow': glow.toFixed(3),
+  }
+})
+const immersiveFreeCameraView = computed<ImmersiveFreeCameraView>(() => ({
+  active: immersiveFreeCameraActive.value,
+  locked: immersiveFreeCameraLocked.value || immersiveFreeCameraResetting.value,
+  x: immersiveFreeCameraX.value,
+  y: immersiveFreeCameraY.value,
+  z: immersiveFreeCameraZ.value,
+  yaw: immersiveFreeCameraYaw.value,
+  pitch: immersiveFreeCameraPitch.value,
+  roll: immersiveFreeCameraRoll.value,
+  fov: immersiveFreeCameraFov.value,
+}))
 const visualizerHintLabel = computed(() => {
   if (!currentTrack.value) {
     return '选择音乐后开始可视化。'
@@ -891,13 +1674,39 @@ const visualizerHintLabel = computed(() => {
   return analyzerReady.value ? '实时频谱分析可用。' : '播放后开始本机节奏分析。'
 })
 let unlistenThemeChanged: (() => void) | null = null
+let unlistenMusicImmersiveThemeChanged: (() => void) | null = null
 let unlistenMusicAction: (() => void) | null = null
 let playlistsRestored = false
 let beatMapRequestedTrackId = ''
 let lyricsRequestedTrackId = ''
 let visualClockFrameId: number | null = null
 let lastVisualClockUpdate = 0
+let playbackRequestSerial = 0
+let onlinePlaybackPrefetchTimer: number | null = null
+let onlinePlaybackPrefetchSerial = 0
+let onlineStallRecoveryTimer: number | null = null
+let onlineStallRecoverySerial = 0
+let onlineStallRecoveryAttempts = 0
+let onlineStallStartedAt = 0
+let immersiveContentPrepTimer: number | null = null
+let immersiveContentPrepSerial = 0
+let immersiveStagePointerId: number | null = null
+let immersiveStageLastX = 0
+let immersiveStageLastY = 0
+let immersiveStageMomentumFrameId: number | null = null
+let immersiveFreeCameraFrameId: number | null = null
+let immersiveFreeCameraLastFrame = 0
+let immersiveFreeCameraVelocityX = 0
+let immersiveFreeCameraVelocityY = 0
+let immersiveFreeCameraVelocityZ = 0
+let immersiveFreeCameraPointerSeen = false
+let immersiveFreeCameraPointerX = 0
+let immersiveFreeCameraPointerY = 0
+let immersiveFreeCameraResetStart = 0
+let immersiveFreeCameraResetFrom = { ...IMMERSIVE_FREE_CAMERA_DEFAULT }
+const immersiveFreeCameraKeys = new Set<string>()
 let neteaseQrPollTimer: number | null = null
+let kugouQrPollTimer: number | null = null
 
 onMounted(async () => {
   restoreSettings()
@@ -906,8 +1715,15 @@ onMounted(async () => {
   syncAudioVolume()
   await loadTheme()
   void refreshNeteaseLoginStatus(false)
+  void refreshKugouLoginStatus(false)
+  window.addEventListener('keydown', handleImmersiveFreeCameraKeyDown, true)
+  window.addEventListener('keyup', handleImmersiveFreeCameraKeyUp, true)
+  window.addEventListener('mousemove', handleImmersiveFreeCameraMouseMove, true)
   unlistenThemeChanged = await listen<string>('ui-theme-changed', (event) => {
-    drawerTheme.value = event.payload === 'animal-island' ? 'animal-island' : 'light'
+    drawerTheme.value = normalizeDrawerTheme(event.payload)
+  })
+  unlistenMusicImmersiveThemeChanged = await listen<string>('ui-music-immersive-theme-changed', (event) => {
+    musicImmersiveThemePreference.value = normalizeMusicImmersiveTheme(event.payload)
   })
   unlistenMusicAction = await listen<MusicActionRequest>('music-action-requested', (event) => {
     void handleMusicActionRequest(event.payload)
@@ -916,9 +1732,19 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   unlistenThemeChanged?.()
+  unlistenMusicImmersiveThemeChanged?.()
   unlistenMusicAction?.()
+  window.removeEventListener('keydown', handleImmersiveFreeCameraKeyDown, true)
+  window.removeEventListener('keyup', handleImmersiveFreeCameraKeyUp, true)
+  window.removeEventListener('mousemove', handleImmersiveFreeCameraMouseMove, true)
+  clearOnlinePlaybackPrefetchTimer()
+  clearOnlineStallRecoveryTimer()
+  clearImmersiveContentPrepTimer()
+  clearImmersiveStageMomentum()
+  clearImmersiveFreeCamera()
   stopVisualClock()
   stopNeteaseQrPolling()
+  stopKugouQrPolling()
 })
 
 watch(volume, () => {
@@ -932,7 +1758,11 @@ watch(
     shuffleEnabled,
     musicStorageDir,
     importCategory,
+    visualStagePreset,
     visualMode,
+    visualSpectrumStyle,
+    visualLineStyle,
+    visualRippleStyle,
     visualIntensity,
     visualReducedMotion,
     lyricOffsetMs,
@@ -940,7 +1770,19 @@ watch(
   saveSettings,
 )
 
-watch(currentTrack, () => {
+watch(
+  visualStageTunings,
+  () => {
+    saveSettings()
+  },
+  { deep: true },
+)
+
+watch(() => currentTrack.value?.id ?? '', () => {
+  invalidatePendingPlayback()
+  clearOnlinePlaybackPrefetchTimer()
+  resetOnlineStallRecovery()
+  clearImmersiveContentPrepTimer()
   beatMapRequestedTrackId = ''
   lyricsRequestedTrackId = ''
   visualPlaybackTime.value = 0
@@ -948,13 +1790,13 @@ watch(currentTrack, () => {
   resetBeatMap()
   resetLyrics()
   if (immersiveMode.value && currentTrack.value) {
-    void analyzeCurrentTrackBeatMap()
-    void loadCurrentTrackLyrics()
+    scheduleImmersiveContentPreparation()
   }
 })
 
 watch(activePanelView, (view) => {
   if (view === 'netease') {
+    stopKugouQrPolling()
     void (async () => {
       await refreshNeteaseLoginStatus(false)
       if (
@@ -968,7 +1810,23 @@ watch(activePanelView, (view) => {
     return
   }
 
+  if (view === 'kugou') {
+    void (async () => {
+      await refreshKugouLoginStatus(false)
+      if (
+        kugouLoggedIn.value &&
+        kugouPlaylists.value.length === 0 &&
+        !kugouPlaylistsLoading.value
+      ) {
+        await refreshKugouPlaylists(false)
+      }
+    })()
+    stopNeteaseQrPolling()
+    return
+  }
+
   stopNeteaseQrPolling()
+  stopKugouQrPolling()
 })
 
 watch(playing, (isPlaying) => {
@@ -976,6 +1834,8 @@ watch(playing, (isPlaying) => {
     void prepareImmersiveVisualization()
     startVisualClock()
   } else {
+    clearImmersiveContentPrepTimer()
+    resetImmersiveStageView()
     stopVisualClock()
     syncVisualPlaybackTime()
   }
@@ -1039,9 +1899,15 @@ function restoreSettings() {
       musicStorageDir?: string
       importCategory?: string
       playQueue?: string[]
+      visualStagePreset?: MusicVisualStagePreset
       visualMode?: MusicVisualMode
+      visualSpectrumStyle?: MusicSpectrumStyle
+      visualLineStyle?: MusicLineStyle
+      visualRippleStyle?: MusicRippleStyle
       visualIntensity?: number
       visualReducedMotion?: boolean
+      visualStageTuning?: Partial<MusicStageTuning>
+      visualStageTunings?: Partial<Record<MusicVisualStagePreset, Partial<MusicStageTuning>>>
       lyricOffsetMs?: number
     }
 
@@ -1058,10 +1924,23 @@ function restoreSettings() {
     if (isMusicVisualMode(saved.visualMode)) {
       visualMode.value = saved.visualMode
     }
+    if (isMusicSpectrumStyle(saved.visualSpectrumStyle)) {
+      visualSpectrumStyle.value = saved.visualSpectrumStyle
+    }
+    if (isMusicLineStyle(saved.visualLineStyle)) {
+      visualLineStyle.value = saved.visualLineStyle
+    }
+    if (isMusicRippleStyle(saved.visualRippleStyle)) {
+      visualRippleStyle.value = saved.visualRippleStyle
+    }
+    if (isMusicVisualStagePreset(saved.visualStagePreset)) {
+      applyVisualStagePreset(saved.visualStagePreset)
+    }
     if (typeof saved.visualIntensity === 'number') {
       visualIntensity.value = clamp(saved.visualIntensity, 0.2, 1)
     }
     visualReducedMotion.value = Boolean(saved.visualReducedMotion)
+    visualStageTunings.value = normalizeMusicStageTunings(saved.visualStageTunings, saved.visualStageTuning)
     if (typeof saved.lyricOffsetMs === 'number') {
       lyricOffsetMs.value = clamp(Math.round(saved.lyricOffsetMs), -2000, 2000)
     }
@@ -1084,6 +1963,7 @@ function restoreTracks() {
       title?: string
       artist?: string
       album?: string
+      coverImgUrl?: string | null
       category?: string
       tags?: string[]
       duration?: number | null
@@ -1101,6 +1981,7 @@ function restoreTracks() {
           title?: string
           artist?: string
           album?: string
+          coverImgUrl?: string | null
           category?: string
           tags?: string[]
           duration?: number | null
@@ -1126,6 +2007,7 @@ function restoreTracks() {
             id: item.id,
             artist: restoredIdentity.artist,
             album: normalizeTrackAlbum(item.album),
+            coverImgUrl: normalizeCoverImgUrl(item.coverImgUrl),
             tags: normalizeTrackTags(item.tags),
             duration: sanitizeTrackDuration(item.duration),
             favorite: Boolean(item.favorite),
@@ -1184,9 +2066,14 @@ function saveSettings() {
       musicStorageDir: musicStorageDir.value,
       importCategory: normalizeMusicCategory(importCategory.value),
       playQueue: sanitizeQueueIds(playQueue.value),
+      visualStagePreset: visualStagePreset.value,
       visualMode: visualMode.value,
+      visualSpectrumStyle: visualSpectrumStyle.value,
+      visualLineStyle: visualLineStyle.value,
+      visualRippleStyle: visualRippleStyle.value,
       visualIntensity: clamp(visualIntensity.value, 0.2, 1),
       visualReducedMotion: visualReducedMotion.value,
+      visualStageTunings: normalizeMusicStageTunings(visualStageTunings.value),
       lyricOffsetMs: clamp(Math.round(lyricOffsetMs.value), -2000, 2000),
     }),
   )
@@ -1197,7 +2084,7 @@ function saveTracks() {
     TRACKS_STORAGE_KEY,
     JSON.stringify(
       tracks.value
-        .filter((track) => track.source !== 'netease')
+        .filter((track) => track.source !== 'netease' && track.source !== 'kugou')
         .map((track) => ({
           id: track.id,
           path: track.path,
@@ -1205,6 +2092,7 @@ function saveTracks() {
           title: track.title,
           artist: normalizeTrackArtist(track.artist),
           album: normalizeTrackAlbum(track.album),
+          coverImgUrl: normalizeCoverImgUrl(track.coverImgUrl),
           category: normalizeMusicCategory(track.category),
           tags: normalizeTrackTags(track.tags),
           duration: sanitizeTrackDuration(track.duration),
@@ -1235,9 +2123,54 @@ function savePlaylists() {
 async function loadTheme() {
   try {
     const config = await invoke<PetDrawerConfig>('get_config')
-    drawerTheme.value = config.drawer.theme === 'animal-island' ? 'animal-island' : 'light'
+    drawerTheme.value = normalizeDrawerTheme(config.drawer.theme)
+    musicImmersiveThemePreference.value = normalizeMusicImmersiveTheme(config.drawer.musicImmersiveTheme)
   } catch {
     drawerTheme.value = 'light'
+    musicImmersiveThemePreference.value = 'follow'
+  }
+}
+
+function normalizeDrawerTheme(value?: string | null): DrawerTheme {
+  return value === 'animal-island' ? 'animal-island' : 'light'
+}
+
+function normalizeMusicImmersiveTheme(value?: string | null): MusicImmersiveThemePreference {
+  if (
+    value === 'light' ||
+    value === 'animal-island' ||
+    value === 'cinema' ||
+    value === 'galaxy' ||
+    value === 'neon' ||
+    value === 'sunset' ||
+    value === 'midnight'
+  ) {
+    return value
+  }
+
+  return 'follow'
+}
+
+async function setMusicImmersiveThemePreference(theme: MusicImmersiveThemePreference) {
+  if (immersiveThemeSaving.value || musicImmersiveThemePreference.value === theme) {
+    return
+  }
+
+  const previous = musicImmersiveThemePreference.value
+  immersiveThemeSaving.value = true
+  immersiveThemeError.value = ''
+  musicImmersiveThemePreference.value = theme
+
+  try {
+    const config = await invoke<PetDrawerConfig>('save_music_immersive_theme', { theme })
+    const savedTheme = normalizeMusicImmersiveTheme(config.drawer.musicImmersiveTheme)
+    musicImmersiveThemePreference.value = savedTheme
+    void emitEvent('ui-music-immersive-theme-changed', savedTheme)
+  } catch (err) {
+    musicImmersiveThemePreference.value = previous
+    immersiveThemeError.value = String(err)
+  } finally {
+    immersiveThemeSaving.value = false
   }
 }
 
@@ -1258,6 +2191,7 @@ type MusicTrackPlaybackDraft = Partial<
     | 'id'
     | 'artist'
     | 'album'
+    | 'coverImgUrl'
     | 'tags'
     | 'duration'
     | 'favorite'
@@ -1286,6 +2220,7 @@ function createTrackWithIdentity(
     title,
     artist,
     album: normalizeTrackAlbum(playback?.album),
+    coverImgUrl: normalizeCoverImgUrl(playback?.coverImgUrl),
     path,
     sourcePath,
     source: 'local',
@@ -1318,6 +2253,19 @@ function safeConvertFileSrc(path: string) {
   } catch {
     return path
   }
+}
+
+function normalizeCoverImgUrl(value?: string | null) {
+  const url = value?.trim() ?? ''
+  if (!url) {
+    return null
+  }
+
+  if (url.startsWith('data:image/') || /^https?:\/\//i.test(url)) {
+    return url
+  }
+
+  return null
 }
 
 function trackTitleFromPath(path: string) {
@@ -1676,6 +2624,121 @@ async function clearNeteaseLogin() {
   }
 }
 
+function mergeNeteaseSearchTracks(
+  existingTracks: NeteasePlaylistTrack[],
+  nextTracks: NeteasePlaylistTrack[],
+) {
+  const seenIds = new Set<number>()
+  return [...existingTracks, ...nextTracks].filter((track) => {
+    if (!Number.isFinite(track.id) || seenIds.has(track.id)) {
+      return false
+    }
+
+    seenIds.add(track.id)
+    return true
+  })
+}
+
+function mergeKugouSearchTracks(
+  existingTracks: KugouSearchTrack[],
+  nextTracks: KugouSearchTrack[],
+) {
+  const seenKeys = new Set<string>()
+  return [...existingTracks, ...nextTracks].filter((track) => {
+    const key = track.hash.trim() || track.id.trim()
+    if (!key || seenKeys.has(key)) {
+      return false
+    }
+
+    seenKeys.add(key)
+    return true
+  })
+}
+
+function formatPlatformSearchNotice(
+  platformLabel: string,
+  keyword: string,
+  loadedCount: number,
+  total: number,
+) {
+  if (loadedCount === 0) {
+    return `没有搜索到“${keyword}”。`
+  }
+
+  return total > 0
+    ? `已加载 ${loadedCount} / ${total} 首${platformLabel}歌曲。`
+    : `已加载 ${loadedCount} 首${platformLabel}歌曲。`
+}
+
+function formatPlatformPlaylistNotice(
+  platformLabel: string,
+  playlistName: string,
+  loadedCount: number,
+  total: number,
+  hasMore: boolean,
+) {
+  const prefix = total > 0
+    ? `已加载《${playlistName}》${loadedCount} / ${total} 首${platformLabel}歌单歌曲`
+    : `已加载《${playlistName}》${loadedCount} 首${platformLabel}歌单歌曲`
+  return hasMore ? `${prefix}，可继续加载。` : `${prefix}。`
+}
+
+async function searchNeteaseSongs(loadMore = false) {
+  const keyword = loadMore
+    ? (neteaseSearchResult.value?.keyword ?? neteaseSearchQuery.value).trim()
+    : neteaseSearchQuery.value.trim()
+  if (!keyword) {
+    neteaseSearchError.value = '请输入网易云搜索关键词。'
+    return
+  }
+
+  neteaseSearchLoading.value = true
+  neteaseSearchError.value = ''
+  const nextPage = loadMore ? neteaseSearchPage.value + 1 : 1
+  neteaseSearchNotice.value = loadMore
+    ? `正在加载“${keyword}”的更多网易云结果...`
+    : `正在搜索“${keyword}”...`
+
+  try {
+    const result = await invoke<NeteaseSearchResult>('search_netease_songs', {
+      keyword,
+      page: nextPage,
+      limit: PLATFORM_SEARCH_PAGE_SIZE,
+    })
+    if (loadMore && neteaseSearchResult.value?.keyword === result.keyword) {
+      const mergedTracks = mergeNeteaseSearchTracks(
+        neteaseSearchResult.value.tracks,
+        result.tracks,
+      )
+      neteaseSearchResult.value = {
+        ...result,
+        tracks: mergedTracks,
+        total: result.total || neteaseSearchResult.value.total,
+      }
+    } else {
+      neteaseSearchResult.value = result
+    }
+    neteaseSearchPage.value = nextPage
+    neteaseSearchNotice.value = formatPlatformSearchNotice(
+      '网易云',
+      result.keyword,
+      neteaseSearchResult.value.tracks.length,
+      neteaseSearchResult.value.total,
+    )
+    if (immersiveMode.value) {
+      immersivePlaylistSource.value = 'netease'
+    }
+  } catch (err) {
+    if (!loadMore) {
+      neteaseSearchResult.value = null
+      neteaseSearchPage.value = 0
+    }
+    neteaseSearchError.value = `网易云搜索失败：${String(err)}`
+  } finally {
+    neteaseSearchLoading.value = false
+  }
+}
+
 async function refreshNeteasePlaylists(showStatus = true) {
   if (!neteaseLoggedIn.value) {
     neteasePlaylistError.value = '请先登录网易云音乐。'
@@ -1692,6 +2755,7 @@ async function refreshNeteasePlaylists(showStatus = true) {
     const playlists = await invoke<NeteasePlaylistSummary[]>('list_netease_playlists')
     neteasePlaylists.value = playlists
     neteasePlaylistDetail.value = null
+    neteasePlaylistDetailPage.value = 0
     neteaseSelectedPlaylistId.value = playlists[0]?.id ?? null
     if (playlists[0]) {
       await loadNeteasePlaylistDetail(playlists[0], false)
@@ -1707,50 +2771,370 @@ async function refreshNeteasePlaylists(showStatus = true) {
   }
 }
 
-async function loadNeteasePlaylistDetail(playlist: NeteasePlaylistSummary, showStatus = true) {
+async function loadNeteasePlaylistDetail(
+  playlist: NeteasePlaylistSummary,
+  showStatus = true,
+  loadMore = false,
+) {
+  const isSamePlaylist = neteasePlaylistDetail.value?.playlist.id === playlist.id
+  const nextPage = loadMore && isSamePlaylist ? neteasePlaylistDetailPage.value + 1 : 1
   neteaseSelectedPlaylistId.value = playlist.id
   neteasePlaylistDetailLoading.value = true
   neteasePlaylistError.value = ''
+  if (!loadMore || !isSamePlaylist) {
+    neteasePlaylistDetail.value = null
+    neteasePlaylistDetailPage.value = 0
+  }
   if (showStatus) {
-    neteaseLoginNotice.value = `正在读取《${playlist.name}》...`
+    neteaseLoginNotice.value = loadMore
+      ? `正在加载《${playlist.name}》的更多歌曲...`
+      : `正在读取《${playlist.name}》...`
   }
 
   try {
-    neteasePlaylistDetail.value = await invoke<NeteasePlaylistDetail>(
+    const result = await invoke<NeteasePlaylistDetail>(
       'get_netease_playlist_detail',
-      { playlistId: playlist.id },
+      {
+        playlistId: playlist.id,
+        page: nextPage,
+        limit: PLATFORM_PLAYLIST_PAGE_SIZE,
+      },
     )
+    if (loadMore && isSamePlaylist && neteasePlaylistDetail.value) {
+      const mergedTracks = mergeNeteaseSearchTracks(
+        neteasePlaylistDetail.value.tracks,
+        result.tracks,
+      )
+      neteasePlaylistDetail.value = {
+        ...result,
+        tracks: mergedTracks,
+        totalTrackCount: result.totalTrackCount || neteasePlaylistDetail.value.totalTrackCount,
+        message: formatPlatformPlaylistNotice(
+          '网易云',
+          result.playlist.name,
+          mergedTracks.length,
+          result.totalTrackCount || neteasePlaylistDetail.value.totalTrackCount,
+          result.truncated,
+        ),
+      }
+    } else {
+      neteasePlaylistDetail.value = {
+        ...result,
+        message: formatPlatformPlaylistNotice(
+          '网易云',
+          result.playlist.name,
+          result.tracks.length,
+          result.totalTrackCount,
+          result.truncated,
+        ),
+      }
+    }
+    neteasePlaylistDetailPage.value = nextPage
     if (showStatus) {
       neteaseLoginNotice.value = neteasePlaylistDetail.value.message
     }
   } catch (err) {
-    neteasePlaylistDetail.value = null
+    if (!loadMore) {
+      neteasePlaylistDetail.value = null
+      neteasePlaylistDetailPage.value = 0
+    }
     neteasePlaylistError.value = `网易云歌单歌曲读取失败：${String(err)}`
   } finally {
     neteasePlaylistDetailLoading.value = false
   }
 }
 
-async function playNeteaseTrack(track: NeteasePlaylistTrack) {
+async function loadMoreNeteasePlaylistTracks() {
+  const playlist = neteaseSelectedPlaylist.value
+  if (!playlist || !neteasePlaylistHasMore.value || neteasePlaylistDetailLoading.value) {
+    return
+  }
+
+  await loadNeteasePlaylistDetail(playlist, true, true)
+}
+
+async function openNeteaseLoginFromLeft() {
+  activePanelView.value = 'netease'
+  await startNeteaseQrLogin()
+}
+
+async function refreshNeteasePlaylistsFromLeft() {
+  activePanelView.value = 'netease'
+  await refreshNeteasePlaylists(true)
+}
+
+function scrollElementIntoView(element: HTMLElement | null) {
+  if (!element) {
+    return
+  }
+
+  const prefersReducedMotion =
+    typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false
+
+  element.scrollIntoView({
+    behavior: prefersReducedMotion ? 'auto' : 'smooth',
+    block: 'start',
+    inline: 'nearest',
+  })
+}
+
+async function scrollPlaylistDetailIntoView(source: 'netease' | 'kugou') {
+  await nextTick()
+  await new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve())
+  })
+
+  scrollElementIntoView(
+    source === 'netease'
+      ? neteasePlaylistDetailSection.value
+      : kugouPlaylistDetailSection.value,
+  )
+}
+
+async function openNeteasePlaylistFromLeft(playlist: NeteasePlaylistSummary) {
+  activePanelView.value = 'netease'
+  await loadNeteasePlaylistDetail(playlist)
+  await scrollPlaylistDetailIntoView('netease')
+}
+
+function readOnlinePlaybackCache<T, K>(
+  cache: Map<K, OnlinePlaybackCacheEntry<T>>,
+  key: K,
+) {
+  const entry = cache.get(key)
+  if (!entry) {
+    return null
+  }
+
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key)
+    return null
+  }
+
+  return entry.playback
+}
+
+function writeOnlinePlaybackCache<T, K>(
+  cache: Map<K, OnlinePlaybackCacheEntry<T>>,
+  key: K,
+  playback: T,
+) {
+  cache.set(key, {
+    playback,
+    expiresAt: Date.now() + ONLINE_PLAYBACK_CACHE_TTL_MS,
+  })
+}
+
+function normalizeOnlinePlaybackFailureReason(err: unknown) {
+  const message = String(err)
+    .replace(/^Error:\s*/i, '')
+    .replace(/^InvokeError:\s*/i, '')
+    .replace(/^网易云在线播放失败：/, '')
+    .replace(/^酷狗在线播放失败：/, '')
+    .trim()
+  return message || '平台没有返回可播放链接。'
+}
+
+function normalizeOnlineStallRecoveryFailureReason(err: unknown) {
+  return normalizeOnlinePlaybackFailureReason(err)
+    .replace(/https?:\/\/\S+/gi, '播放链接')
+    .slice(0, 180)
+    .trim() || '长时间无数据，刷新播放链路后仍未恢复。'
+}
+
+function isUnavailableOnlinePlaybackFailure(err: unknown) {
+  const message = normalizeOnlinePlaybackFailureReason(err)
+  return [
+    '暂不能播放',
+    '暂无版权',
+    '版权',
+    '资源不可用',
+    '需要会员',
+    '会员',
+    '地区',
+    '付费',
+    '播放链接为空',
+    '没有返回播放链接',
+    '未返回可访问音频链接',
+    '没有拿到完整播放授权',
+    '只拿到试听片段',
+    '试听片段',
+    '该音质不可用',
+    '设备注册未通过',
+  ].some((keyword) => message.includes(keyword))
+}
+
+function unavailableTrackEntry<K>(cache: Map<K, OnlineUnavailableTrack>, key: K) {
+  const entry = cache.get(key)
+  if (!entry) {
+    return null
+  }
+
+  if (entry.retryAfter <= Date.now()) {
+    cache.delete(key)
+    return null
+  }
+
+  return entry
+}
+
+function markOnlineTrackUnavailable<K>(
+  cache: Map<K, OnlineUnavailableTrack>,
+  key: K,
+  reason: string,
+) {
+  cache.set(key, {
+    reason,
+    failedAt: Date.now(),
+    retryAfter: Date.now() + ONLINE_UNAVAILABLE_RETRY_AFTER_MS,
+  })
+}
+
+function neteaseTrackUnavailableReason(track: NeteasePlaylistTrack) {
+  return unavailableTrackEntry(neteaseUnavailableTracks, track.id)?.reason ?? ''
+}
+
+function kugouTrackUnavailableReason(track: KugouSearchTrack) {
+  const key = kugouPlaybackCacheKey(track)
+  return key ? unavailableTrackEntry(kugouUnavailableTracks, key)?.reason ?? '' : ''
+}
+
+function clearNeteaseTrackUnavailable(track: NeteasePlaylistTrack) {
+  neteaseUnavailableTracks.delete(track.id)
+}
+
+function clearKugouTrackUnavailable(track: KugouSearchTrack) {
+  const key = kugouPlaybackCacheKey(track)
+  if (key) {
+    kugouUnavailableTracks.delete(key)
+  }
+}
+
+function getCachedNeteasePlayback(track: NeteasePlaylistTrack) {
+  return readOnlinePlaybackCache(neteasePlaybackCache, track.id)
+}
+
+function cacheNeteasePlayback(track: NeteasePlaylistTrack, playback: NeteasePlaybackUrl) {
+  writeOnlinePlaybackCache(neteasePlaybackCache, track.id, playback)
+}
+
+function fetchNeteasePlayback(track: NeteasePlaylistTrack) {
+  const existing = neteasePlaybackInflight.get(track.id)
+  if (existing) {
+    return existing
+  }
+
+  const request = invoke<NeteasePlaybackUrl>('get_netease_song_playback_url', {
+    songId: track.id,
+    level: 'standard',
+  }).finally(() => {
+    neteasePlaybackInflight.delete(track.id)
+  })
+  neteasePlaybackInflight.set(track.id, request)
+  return request
+}
+
+async function resolveNeteaseTrackPlayback(track: NeteasePlaylistTrack) {
+  const cached = getCachedNeteasePlayback(track)
+  if (cached) {
+    return { playback: cached, cached: true }
+  }
+
+  const playback = await fetchNeteasePlayback(track)
+  cacheNeteasePlayback(track, playback)
+  return { playback, cached: false }
+}
+
+function kugouPlaybackCacheKey(track: KugouSearchTrack) {
+  return track.hash.trim()
+}
+
+function getCachedKugouPlayback(track: KugouSearchTrack) {
+  const key = kugouPlaybackCacheKey(track)
+  return key ? readOnlinePlaybackCache(kugouPlaybackCache, key) : null
+}
+
+function cacheKugouPlayback(track: KugouSearchTrack, playback: KugouPlaybackUrl) {
+  const key = kugouPlaybackCacheKey(track)
+  if (key) {
+    writeOnlinePlaybackCache(kugouPlaybackCache, key, playback)
+  }
+}
+
+function fetchKugouPlayback(track: KugouSearchTrack) {
+  const key = kugouPlaybackCacheKey(track)
+  if (!key) {
+    return Promise.reject(new Error('酷狗歌曲缺少 hash，无法获取播放地址。'))
+  }
+
+  const existing = kugouPlaybackInflight.get(key)
+  if (existing) {
+    return existing
+  }
+
+  const request = invoke<KugouPlaybackUrl>('get_kugou_song_playback_url', {
+    hash: track.hash,
+    hashCandidates: track.hashCandidates ?? [track.hash],
+    albumAudioId: track.albumAudioId ?? null,
+    audioId: track.audioId ?? null,
+  }).finally(() => {
+    kugouPlaybackInflight.delete(key)
+  })
+  kugouPlaybackInflight.set(key, request)
+  return request
+}
+
+async function resolveKugouTrackPlayback(track: KugouSearchTrack) {
+  const cached = getCachedKugouPlayback(track)
+  if (cached) {
+    return { playback: cached, cached: true }
+  }
+
+  const playback = await fetchKugouPlayback(track)
+  cacheKugouPlayback(track, playback)
+  return { playback, cached: false }
+}
+
+function invalidateCurrentOnlinePlaybackCache() {
+  const track = currentTrack.value
+  if (track?.source === 'netease' && track.neteaseSongId) {
+    neteasePlaybackCache.delete(track.neteaseSongId)
+    neteasePlaybackInflight.delete(track.neteaseSongId)
+    return
+  }
+
+  if (track?.source === 'kugou' && track.kugouSongHash) {
+    kugouPlaybackCache.delete(track.kugouSongHash)
+    kugouPlaybackInflight.delete(track.kugouSongHash)
+  }
+}
+
+async function playNeteaseTrack(
+  track: NeteasePlaylistTrack,
+  contextTracks?: NeteasePlaylistTrack[],
+  options: OnlinePlaybackOptions = {},
+) {
   if (!neteaseLoggedIn.value) {
     neteasePlaylistError.value = '请先登录网易云音乐。'
     return
   }
 
+  const sourceTracks = resolveNeteasePlaybackTracks(track, contextTracks)
   neteaseTrackActionId.value = track.id
   neteasePlaylistError.value = ''
   playerError.value = ''
   playerStatus.value = `正在获取《${track.name}》的在线播放地址...`
 
   try {
-    const playback = await invoke<NeteasePlaybackUrl>('get_netease_song_playback_url', {
-      songId: track.id,
-      level: 'standard',
-    })
+    const { playback, cached } = await resolveNeteaseTrackPlayback(track)
+    clearNeteaseTrackUnavailable(track)
     const onlineTrack = createNeteaseMusicTrack(track, playback)
     pausePlayback()
     currentIndex.value = -1
     neteaseCurrentTrack.value = onlineTrack
+    playbackContext.value = { source: 'netease', tracks: sourceTracks }
     if (immersiveMode.value) {
       immersivePlaylistSource.value = 'netease'
     }
@@ -1760,12 +3144,22 @@ async function playNeteaseTrack(track: NeteasePlaylistTrack) {
     await nextTick()
     await playCurrent(true)
     if (!playerError.value) {
-      playerStatus.value = `正在在线播放网易云《${track.name}》。`
+      playerStatus.value = cached
+        ? `正在在线播放网易云《${track.name}》，已复用预取播放地址。`
+        : `正在在线播放网易云《${track.name}》。`
       void showNeteaseLyrics(track, false)
+      scheduleOnlinePlaybackPrefetch()
     }
   } catch (err) {
+    const reason = normalizeOnlinePlaybackFailureReason(err)
+    if (isUnavailableOnlinePlaybackFailure(err)) {
+      markOnlineTrackUnavailable(neteaseUnavailableTracks, track.id, reason)
+      if (options.autoSkip && await skipUnavailableNeteaseTrack(track, sourceTracks, reason)) {
+        return
+      }
+    }
     playerStatus.value = ''
-    playerError.value = `网易云在线播放失败：${String(err)}`
+    playerError.value = `网易云在线播放失败：${reason}`
   } finally {
     neteaseTrackActionId.value = null
   }
@@ -1810,6 +3204,7 @@ function resetNeteasePlaylistState() {
   neteasePlaylists.value = []
   neteaseSelectedPlaylistId.value = null
   neteasePlaylistDetail.value = null
+  neteasePlaylistDetailPage.value = 0
   neteasePlaylistsLoading.value = false
   neteasePlaylistDetailLoading.value = false
   neteasePlaylistError.value = ''
@@ -1817,13 +3212,448 @@ function resetNeteasePlaylistState() {
 }
 
 function resetNeteasePlaybackState() {
-  if (neteaseCurrentTrack.value) {
+  if (neteaseCurrentTrack.value?.source === 'netease') {
     pausePlayback()
     neteaseCurrentTrack.value = null
     currentTime.value = 0
     visualPlaybackTime.value = 0
     duration.value = 0
   }
+}
+
+async function refreshKugouLoginStatus(showStatus = true) {
+  kugouLoginError.value = ''
+  if (showStatus) {
+    kugouLoginNotice.value = '正在检查酷狗登录状态...'
+  }
+
+  try {
+    const status = await invoke<KugouLoginStatus>('get_kugou_login_status')
+    kugouLoginStatus.value = status
+    if (!status.loggedIn) {
+      resetKugouPlaylistState()
+    }
+    if (showStatus) {
+      kugouLoginNotice.value = status.message
+    }
+  } catch (err) {
+    kugouLoginError.value = `酷狗状态读取失败：${String(err)}`
+  }
+}
+
+async function startKugouQrLogin() {
+  stopKugouQrPolling()
+  kugouLoginBusy.value = true
+  kugouLoginError.value = ''
+  kugouLoginNotice.value = '正在生成酷狗登录二维码...'
+  kugouQrStatus.value = 'idle'
+
+  try {
+    kugouQrLogin.value = await invoke<KugouQrLogin>('create_kugou_qr_login')
+    kugouQrStatus.value = 'waiting'
+    kugouLoginNotice.value = '等待酷狗音乐 App 扫码。'
+    startKugouQrPolling()
+  } catch (err) {
+    kugouQrLogin.value = null
+    kugouQrStatus.value = 'error'
+    kugouLoginError.value = `酷狗二维码生成失败：${String(err)}`
+  } finally {
+    kugouLoginBusy.value = false
+  }
+}
+
+function cancelKugouQrLogin() {
+  stopKugouQrPolling()
+  kugouQrLogin.value = null
+  kugouQrStatus.value = 'idle'
+  kugouLoginNotice.value = kugouLoginStatus.value?.message ?? '已取消酷狗扫码登录。'
+}
+
+function startKugouQrPolling() {
+  stopKugouQrPolling()
+  void checkKugouQrLogin()
+  kugouQrPollTimer = window.setInterval(() => {
+    void checkKugouQrLogin()
+  }, 2000)
+}
+
+function stopKugouQrPolling() {
+  if (kugouQrPollTimer !== null) {
+    window.clearInterval(kugouQrPollTimer)
+    kugouQrPollTimer = null
+  }
+}
+
+async function checkKugouQrLogin() {
+  if (!kugouQrLogin.value || kugouQrChecking.value) {
+    return
+  }
+
+  if (kugouQrExpired.value) {
+    stopKugouQrPolling()
+    kugouQrStatus.value = 'expired'
+    kugouLoginNotice.value = '二维码已过期，请重新生成。'
+    return
+  }
+
+  kugouQrChecking.value = true
+  kugouLoginError.value = ''
+
+  try {
+    const result = await invoke<KugouQrCheckResult>('check_kugou_qr_login', {
+      key: kugouQrLogin.value.key,
+    })
+    kugouQrStatus.value = normalizeKugouQrStatus(result)
+    kugouLoginNotice.value = result.message
+
+    if (result.loggedIn) {
+      stopKugouQrPolling()
+      kugouQrLogin.value = null
+      kugouQrStatus.value = 'authorized'
+      kugouLoginStatus.value = {
+        loggedIn: true,
+        profile: result.profile,
+        savedAt: null,
+        checkedAt: String(Math.floor(Date.now() / 1000)),
+        message: result.message,
+      }
+      await refreshKugouLoginStatus(false)
+      await refreshKugouPlaylists(false)
+      playerStatus.value = '酷狗音乐登录成功。'
+    } else if (kugouQrStatus.value === 'expired') {
+      stopKugouQrPolling()
+    }
+  } catch (err) {
+    stopKugouQrPolling()
+    kugouQrStatus.value = 'error'
+    kugouLoginError.value = `酷狗扫码状态检查失败：${String(err)}`
+  } finally {
+    kugouQrChecking.value = false
+  }
+}
+
+async function clearKugouLogin() {
+  if (kugouLoggedIn.value && !window.confirm('清除本机保存的酷狗登录状态？')) {
+    return
+  }
+
+  stopKugouQrPolling()
+  kugouLoginBusy.value = true
+  kugouLoginError.value = ''
+  kugouLoginNotice.value = '正在清除酷狗登录状态...'
+
+  try {
+    const status = await invoke<KugouLoginStatus>('clear_kugou_login')
+    kugouLoginStatus.value = status
+    kugouQrLogin.value = null
+    kugouQrStatus.value = 'idle'
+    kugouLoginNotice.value = status.message
+    resetKugouPlaylistState()
+  } catch (err) {
+    kugouLoginError.value = `清除酷狗登录状态失败：${String(err)}`
+  } finally {
+    kugouLoginBusy.value = false
+  }
+}
+
+async function refreshKugouPlaylists(showStatus = true) {
+  if (!kugouLoggedIn.value) {
+    kugouPlaylistError.value = '请先登录酷狗音乐。'
+    return
+  }
+
+  kugouPlaylistsLoading.value = true
+  kugouPlaylistError.value = ''
+  if (showStatus) {
+    kugouLoginNotice.value = '正在读取酷狗个人歌单...'
+  }
+
+  try {
+    const playlists = await invoke<KugouPlaylistSummary[]>('list_kugou_playlists')
+    kugouPlaylists.value = playlists
+    kugouPlaylistDetail.value = null
+    kugouPlaylistDetailPage.value = 0
+    kugouSelectedPlaylistId.value = playlists[0]?.listId ?? ''
+    if (playlists[0]) {
+      await loadKugouPlaylistDetail(playlists[0], false)
+    }
+    if (showStatus) {
+      kugouLoginNotice.value =
+        playlists.length > 0 ? `已读取 ${playlists.length} 个酷狗歌单。` : '没有读取到酷狗歌单。'
+    }
+  } catch (err) {
+    kugouPlaylistError.value = `酷狗歌单读取失败：${String(err)}`
+  } finally {
+    kugouPlaylistsLoading.value = false
+  }
+}
+
+async function loadKugouPlaylistDetail(
+  playlist: KugouPlaylistSummary,
+  showStatus = true,
+  loadMore = false,
+) {
+  const isSamePlaylist = kugouPlaylistDetail.value?.playlist.listId === playlist.listId
+  const nextPage = loadMore && isSamePlaylist ? kugouPlaylistDetailPage.value + 1 : 1
+  kugouSelectedPlaylistId.value = playlist.listId
+  kugouPlaylistDetailLoading.value = true
+  kugouPlaylistError.value = ''
+  if (!loadMore || !isSamePlaylist) {
+    kugouPlaylistDetail.value = null
+    kugouPlaylistDetailPage.value = 0
+  }
+  if (showStatus) {
+    kugouLoginNotice.value = loadMore
+      ? `正在加载《${playlist.name}》的更多歌曲...`
+      : `正在读取《${playlist.name}》...`
+  }
+
+  try {
+    const result = await invoke<KugouPlaylistDetail>('get_kugou_playlist_detail', {
+      listId: playlist.listId,
+      page: nextPage,
+      limit: PLATFORM_PLAYLIST_PAGE_SIZE,
+    })
+    if (loadMore && isSamePlaylist && kugouPlaylistDetail.value) {
+      const mergedTracks = mergeKugouSearchTracks(
+        kugouPlaylistDetail.value.tracks,
+        result.tracks,
+      )
+      kugouPlaylistDetail.value = {
+        ...result,
+        tracks: mergedTracks,
+        totalTrackCount: result.totalTrackCount || kugouPlaylistDetail.value.totalTrackCount,
+        message: formatPlatformPlaylistNotice(
+          '酷狗',
+          result.playlist.name,
+          mergedTracks.length,
+          result.totalTrackCount || kugouPlaylistDetail.value.totalTrackCount,
+          result.truncated,
+        ),
+      }
+    } else {
+      kugouPlaylistDetail.value = {
+        ...result,
+        message: formatPlatformPlaylistNotice(
+          '酷狗',
+          result.playlist.name,
+          result.tracks.length,
+          result.totalTrackCount,
+          result.truncated,
+        ),
+      }
+    }
+    kugouPlaylistDetailPage.value = nextPage
+    if (showStatus) {
+      kugouLoginNotice.value = kugouPlaylistDetail.value.message
+    }
+    if (immersiveMode.value) {
+      immersivePlaylistSource.value = 'kugou'
+    }
+  } catch (err) {
+    if (!loadMore) {
+      kugouPlaylistDetail.value = null
+      kugouPlaylistDetailPage.value = 0
+    }
+    kugouPlaylistError.value = `酷狗歌单歌曲读取失败：${String(err)}`
+  } finally {
+    kugouPlaylistDetailLoading.value = false
+  }
+}
+
+async function loadMoreKugouPlaylistTracks() {
+  const playlist = kugouSelectedPlaylist.value
+  if (!playlist || !kugouPlaylistHasMore.value || kugouPlaylistDetailLoading.value) {
+    return
+  }
+
+  await loadKugouPlaylistDetail(playlist, true, true)
+}
+
+async function openKugouLoginFromLeft() {
+  activePanelView.value = 'kugou'
+  await startKugouQrLogin()
+}
+
+async function refreshKugouPlaylistsFromLeft() {
+  activePanelView.value = 'kugou'
+  await refreshKugouPlaylists(true)
+}
+
+async function openKugouPlaylistFromLeft(playlist: KugouPlaylistSummary) {
+  activePanelView.value = 'kugou'
+  await loadKugouPlaylistDetail(playlist)
+  await scrollPlaylistDetailIntoView('kugou')
+}
+
+function resetKugouPlaylistState() {
+  kugouPlaylists.value = []
+  kugouSelectedPlaylistId.value = ''
+  kugouPlaylistDetail.value = null
+  kugouPlaylistDetailPage.value = 0
+  kugouPlaylistsLoading.value = false
+  kugouPlaylistDetailLoading.value = false
+  kugouPlaylistError.value = ''
+}
+
+async function searchKugouSongs(loadMore = false) {
+  const keyword = loadMore
+    ? (kugouSearchResult.value?.keyword ?? kugouSearchQuery.value).trim()
+    : kugouSearchQuery.value.trim()
+  if (!keyword) {
+    kugouSearchError.value = '请输入酷狗搜索关键词。'
+    return
+  }
+
+  kugouSearchLoading.value = true
+  kugouSearchError.value = ''
+  const nextPage = loadMore ? kugouSearchPage.value + 1 : 1
+  kugouSearchNotice.value = loadMore
+    ? `正在加载“${keyword}”的更多酷狗结果...`
+    : `正在搜索“${keyword}”...`
+
+  try {
+    const result = await invoke<KugouSearchResult>('search_kugou_songs', {
+      keyword,
+      page: nextPage,
+      limit: PLATFORM_SEARCH_PAGE_SIZE,
+    })
+    if (loadMore && kugouSearchResult.value?.keyword === result.keyword) {
+      const mergedTracks = mergeKugouSearchTracks(
+        kugouSearchResult.value.tracks,
+        result.tracks,
+      )
+      kugouSearchResult.value = {
+        ...result,
+        tracks: mergedTracks,
+        total: result.total || kugouSearchResult.value.total,
+      }
+    } else {
+      kugouSearchResult.value = result
+    }
+    kugouSearchPage.value = nextPage
+    kugouSearchNotice.value = formatPlatformSearchNotice(
+      '酷狗',
+      result.keyword,
+      kugouSearchResult.value.tracks.length,
+      kugouSearchResult.value.total,
+    )
+    if (immersiveMode.value) {
+      immersivePlaylistSource.value = 'kugou'
+    }
+  } catch (err) {
+    if (!loadMore) {
+      kugouSearchResult.value = null
+      kugouSearchPage.value = 0
+    }
+    kugouSearchError.value = `酷狗搜索失败：${String(err)}`
+  } finally {
+    kugouSearchLoading.value = false
+  }
+}
+
+async function playKugouTrack(
+  track: KugouSearchTrack,
+  contextTracks?: KugouSearchTrack[],
+  options: OnlinePlaybackOptions = {},
+) {
+  const sourceTracks = resolveKugouPlaybackTracks(track, contextTracks)
+  kugouTrackActionHash.value = track.hash
+  kugouSearchError.value = ''
+  playerError.value = ''
+  playerStatus.value = `正在获取酷狗《${track.name}》的在线播放地址并创建本机播放代理...`
+
+  try {
+    const { playback, cached } = await resolveKugouTrackPlayback(track)
+    clearKugouTrackUnavailable(track)
+    const onlineTrack = createKugouMusicTrack(track, playback)
+    pausePlayback()
+    currentIndex.value = -1
+    neteaseCurrentTrack.value = onlineTrack
+    playbackContext.value = { source: 'kugou', tracks: sourceTracks }
+    if (immersiveMode.value) {
+      immersivePlaylistSource.value = 'kugou'
+    }
+    currentTime.value = 0
+    visualPlaybackTime.value = 0
+    duration.value = onlineTrack.duration ?? 0
+    await nextTick()
+    await playCurrent(true)
+    if (!playerError.value) {
+      const proxyDetail = playback.proxyDiagnostic ? ` ${playback.proxyDiagnostic}` : ''
+      playerStatus.value = cached
+        ? `正在通过已预取的本机代理播放酷狗《${track.name}》。${proxyDetail}`
+        : `正在通过本机代理播放酷狗《${track.name}》。${proxyDetail}`
+      void showKugouLyrics(track, false)
+      scheduleOnlinePlaybackPrefetch()
+    }
+  } catch (err) {
+    const reason = normalizeOnlinePlaybackFailureReason(err)
+    if (isUnavailableOnlinePlaybackFailure(err)) {
+      const key = kugouPlaybackCacheKey(track)
+      if (key) {
+        markOnlineTrackUnavailable(kugouUnavailableTracks, key, reason)
+      }
+      if (options.autoSkip && await skipUnavailableKugouTrack(track, sourceTracks, reason)) {
+        return
+      }
+    }
+    playerStatus.value = ''
+    playerError.value = formatKugouPlaybackFailure(err)
+  } finally {
+    kugouTrackActionHash.value = ''
+  }
+}
+
+function formatKugouPlaybackFailure(err: unknown) {
+  const rawMessage = String(err)
+  if (!rawMessage.trim()) {
+    return '酷狗在线播放失败：未返回具体失败原因。'
+  }
+
+  if (
+    rawMessage.includes('需要会员/付费授权') ||
+    rawMessage.includes('没有拿到完整播放授权') ||
+    rawMessage.includes('登录态没有拿到完整播放授权') ||
+    (rawMessage.includes('需要付费') && rawMessage.includes('试听片段'))
+  ) {
+    return '酷狗在线播放失败：当前酷狗账号在项目内没有拿到完整播放授权。项目已尝试普通接口、设备注册后的播放接口和登录态会员接口，但最终只拿到试听片段，已停止播放。你的账号有会员不代表第三方接口一定能拿到与官方客户端相同的设备/风控授权；如果官方客户端可播但这里仍失败，下一步需要做官方客户端或网页播放兜底。'
+  }
+
+  return `酷狗在线播放失败：${rawMessage}`
+}
+
+async function showKugouLyrics(track: KugouSearchTrack, showStatus = true) {
+  kugouLyricsTrack.value = track
+  kugouLyricsLoading.value = true
+  kugouLyricsError.value = ''
+  if (showStatus) {
+    kugouSearchNotice.value = `正在读取《${track.name}》酷狗歌词...`
+  }
+
+  try {
+    kugouLyricsResult.value = await invoke<KugouLyricsResult>('read_kugou_lyrics', {
+      hash: track.hash,
+      name: track.name,
+      artist: formatKugouTrackArtists(track),
+      durationMs: track.durationMs ?? null,
+    })
+    if (showStatus) {
+      kugouSearchNotice.value = `已读取《${track.name}》酷狗歌词。`
+    }
+  } catch (err) {
+    kugouLyricsResult.value = null
+    kugouLyricsError.value = `酷狗歌词读取失败：${String(err)}`
+  } finally {
+    kugouLyricsLoading.value = false
+  }
+}
+
+function closeKugouLyrics() {
+  kugouLyricsTrack.value = null
+  kugouLyricsResult.value = null
+  kugouLyricsLoading.value = false
+  kugouLyricsError.value = ''
 }
 
 function createNeteaseMusicTrack(
@@ -1841,8 +3671,34 @@ function createNeteaseMusicTrack(
     path: `${NETEASE_TRACK_ID_PREFIX}:${track.id}`,
     sourcePath: `${NETEASE_TRACK_ID_PREFIX}:${track.id}`,
     source: 'netease',
+    coverImgUrl: track.coverImgUrl ?? null,
     neteaseSongId: track.id,
     category: '网易云',
+    tags: [],
+    url: playback.url,
+    duration: durationSeconds,
+    favorite: false,
+    playCount: 0,
+    lastPlayedAt: null,
+    playHistory: [],
+  }
+}
+
+function createKugouMusicTrack(track: KugouSearchTrack, playback: KugouPlaybackUrl): MusicTrack {
+  const durationSeconds =
+    sanitizeTrackDuration((playback.durationMs ?? track.durationMs ?? 0) / 1000) ?? null
+
+  return {
+    id: `${KUGOU_TRACK_ID_PREFIX}:${track.hash}`,
+    title: normalizeTrackTitle(track.name) || '酷狗歌曲',
+    artist: formatKugouTrackArtists(track),
+    album: normalizeTrackAlbum(track.album),
+    path: `${KUGOU_TRACK_ID_PREFIX}:${track.hash}`,
+    sourcePath: `${KUGOU_TRACK_ID_PREFIX}:${track.hash}`,
+    source: 'kugou',
+    coverImgUrl: track.coverImgUrl ?? null,
+    kugouSongHash: track.hash,
+    category: '酷狗',
     tags: [],
     url: playback.url,
     duration: durationSeconds,
@@ -1920,9 +3776,10 @@ async function createImportedTrack(item: MusicImportItem, category: string) {
     const metadataTitle = normalizeTrackTitle(metadata.title)
     const metadataArtist = normalizeTrackArtist(metadata.artist)
     const metadataAlbum = normalizeTrackAlbum(metadata.album)
+    const metadataCoverImgUrl = normalizeCoverImgUrl(metadata.coverImgUrl)
     const metadataDuration = sanitizeTrackDuration(metadata.duration)
     const metadataApplied = Boolean(
-      metadataTitle || metadataArtist || metadataAlbum || metadataDuration,
+      metadataTitle || metadataArtist || metadataAlbum || metadataCoverImgUrl || metadataDuration,
     )
     const track = createTrackWithIdentity(
       item.path,
@@ -1934,6 +3791,7 @@ async function createImportedTrack(item: MusicImportItem, category: string) {
       category,
       {
         album: metadataAlbum,
+        coverImgUrl: metadataCoverImgUrl,
         duration: metadataDuration,
       },
     )
@@ -1960,8 +3818,97 @@ function normalizeMusicCategory(value?: string | null) {
   return category || DEFAULT_CATEGORY
 }
 
+function createDefaultMusicStageTunings(): MusicStageTuningMap {
+  return {
+    default: { ...DEFAULT_MUSIC_STAGE_TUNING },
+    galaxy: { ...DEFAULT_MUSIC_STAGE_TUNING },
+    cinematic: { ...DEFAULT_MUSIC_STAGE_TUNING },
+    dj: { ...DEFAULT_MUSIC_STAGE_TUNING },
+    lyric: { ...DEFAULT_MUSIC_STAGE_TUNING },
+  }
+}
+
+function stageTuningOptionsForPreset(preset: MusicVisualStagePreset): MusicStageTuningOption[] {
+  return preset === 'galaxy' ? galaxyStageTuningOptions : djStageTuningOptions
+}
+
+function normalizeMusicStageTuning(
+  value?: Partial<MusicStageTuning> | null,
+  preset: MusicVisualStagePreset = 'dj',
+): MusicStageTuning {
+  const next: MusicStageTuning = { ...DEFAULT_MUSIC_STAGE_TUNING }
+
+  for (const option of stageTuningOptionsForPreset(preset)) {
+    const rawValue = value?.[option.key]
+    next[option.key] =
+      typeof rawValue === 'number' ? clamp(rawValue, option.min, option.max) : DEFAULT_MUSIC_STAGE_TUNING[option.key]
+  }
+
+  return next
+}
+
+function normalizeMusicStageTunings(
+  value?: Partial<Record<MusicVisualStagePreset, Partial<MusicStageTuning>>> | null,
+  legacyValue?: Partial<MusicStageTuning> | null,
+): MusicStageTuningMap {
+  const source = value ?? {}
+
+  return {
+    default: normalizeMusicStageTuning(source.default ?? legacyValue, 'dj'),
+    galaxy: normalizeMusicStageTuning(source.galaxy, 'galaxy'),
+    cinematic: normalizeMusicStageTuning(source.cinematic ?? legacyValue, 'dj'),
+    dj: normalizeMusicStageTuning(source.dj ?? legacyValue, 'dj'),
+    lyric: normalizeMusicStageTuning(source.lyric ?? legacyValue, 'dj'),
+  }
+}
+
+function formatStageTuningValue(value: number) {
+  return `${Math.round(clamp(value, 0, 3) * 100)}%`
+}
+
+function resetVisualStageTuning() {
+  visualStageTunings.value = {
+    ...visualStageTunings.value,
+    [visualStagePreset.value]: { ...DEFAULT_MUSIC_STAGE_TUNING },
+  }
+}
+
 function isMusicVisualMode(value?: string | null): value is MusicVisualMode {
   return visualModeOptions.some((option) => option.value === value)
+}
+
+function isMusicVisualStagePreset(value?: string | null): value is MusicVisualStagePreset {
+  return stagePresetOptions.some((option) => option.value === value)
+}
+
+function applyVisualStagePreset(preset: MusicVisualStagePreset) {
+  const option = stagePresetOptions.find((item) => item.value === preset) ?? stagePresetOptions[0]
+  visualStagePreset.value = option.value
+  visualMode.value = option.mode
+  visualSpectrumStyle.value = option.spectrumStyle
+  visualLineStyle.value = option.lineStyle
+  visualRippleStyle.value = option.rippleStyle
+}
+
+function setVisualStagePreset(preset: MusicVisualStagePreset) {
+  applyVisualStagePreset(preset)
+}
+
+function isMusicSpectrumStyle(value?: string | null): value is MusicSpectrumStyle {
+  return spectrumStyleOptions.some((option) => option.value === value)
+}
+
+function handleWebglStarfieldUnavailable(reason: string) {
+  webglStarfieldUnavailable.value = true
+  console.warn(reason)
+}
+
+function isMusicLineStyle(value?: string | null): value is MusicLineStyle {
+  return lineStyleOptions.some((option) => option.value === value)
+}
+
+function isMusicRippleStyle(value?: string | null): value is MusicRippleStyle {
+  return rippleStyleOptions.some((option) => option.value === value)
 }
 
 function normalizeTrackTitle(value?: string | null) {
@@ -2153,6 +4100,485 @@ function filterTracksBySearch(trackList: MusicTrack[]) {
   }
 
   return trackList.filter((track) => trackMatchesSearch(track, normalizedSearchQuery.value))
+}
+
+function allLocalTrackIds() {
+  return tracks.value.map((track) => track.id)
+}
+
+function uniqueLocalTrackIds(trackIds: string[]) {
+  const seenTrackIds = new Set<string>()
+  return trackIds
+    .map((trackId) => normalizeTrackId(trackId))
+    .filter((trackId) => {
+      if (!trackId || seenTrackIds.has(trackId) || !trackById(trackId)) {
+        return false
+      }
+
+      seenTrackIds.add(trackId)
+      return true
+    })
+}
+
+function visibleLocalTrackIds() {
+  if (activePanelView.value !== 'library') {
+    return []
+  }
+
+  return uniqueLocalTrackIds(filteredTracks.value.map((track) => track.id))
+}
+
+function localPlaybackTrackIds() {
+  const contextTrackIds =
+    playbackContext.value.source === 'local'
+      ? uniqueLocalTrackIds(playbackContext.value.trackIds)
+      : []
+
+  return contextTrackIds.length > 0 ? contextTrackIds : allLocalTrackIds()
+}
+
+function currentLocalImmersiveSourceTracks() {
+  const sourceTracks = localPlaybackTrackIds()
+    .map((trackId) => trackById(trackId))
+    .filter((track): track is MusicTrack => Boolean(track))
+
+  return sourceTracks.length > 0 ? sourceTracks : tracks.value
+}
+
+function centeredPlaybackWindow<T>(sourceTracks: T[], currentListIndex: number) {
+  if (sourceTracks.length <= IMMERSIVE_PLAYLIST_FALLBACK_LIMIT) {
+    return sourceTracks
+  }
+
+  if (currentListIndex < 0) {
+    return sourceTracks.slice(0, IMMERSIVE_PLAYLIST_FALLBACK_LIMIT)
+  }
+
+  const rawStart = currentListIndex - IMMERSIVE_PLAYLIST_CONTEXT_RADIUS
+  const rawEnd = currentListIndex + IMMERSIVE_PLAYLIST_CONTEXT_RADIUS + 1
+  const start = Math.max(0, Math.min(rawStart, sourceTracks.length - IMMERSIVE_PLAYLIST_FALLBACK_LIMIT))
+  const end = Math.min(sourceTracks.length, Math.max(rawEnd, start + IMMERSIVE_PLAYLIST_FALLBACK_LIMIT))
+  return sourceTracks.slice(start, end)
+}
+
+function resolveLocalPlaybackTrackIds(trackId: string, contextTrackIds?: string[]) {
+  const explicitTrackIds = uniqueLocalTrackIds(contextTrackIds ?? [])
+  if (explicitTrackIds.includes(trackId)) {
+    return explicitTrackIds
+  }
+
+  const visibleTrackIds = visibleLocalTrackIds()
+  if (visibleTrackIds.includes(trackId)) {
+    return visibleTrackIds
+  }
+
+  const queuedTrackIds = uniqueLocalTrackIds([trackId, ...playQueue.value])
+  if (activeLibraryView.value === 'queue' && queuedTrackIds.includes(trackId)) {
+    return queuedTrackIds
+  }
+
+  const fallbackTrackIds = allLocalTrackIds()
+  return fallbackTrackIds.includes(trackId) ? fallbackTrackIds : []
+}
+
+function setLocalPlaybackContext(trackId: string, contextTrackIds?: string[]) {
+  playbackContext.value = {
+    source: 'local',
+    trackIds: resolveLocalPlaybackTrackIds(trackId, contextTrackIds),
+  }
+}
+
+function uniqueNeteasePlaybackTracks(trackList: NeteasePlaylistTrack[]) {
+  const seenSongIds = new Set<number>()
+  return trackList.filter((track) => {
+    if (!Number.isFinite(track.id) || seenSongIds.has(track.id)) {
+      return false
+    }
+
+    seenSongIds.add(track.id)
+    return true
+  })
+}
+
+function resolveNeteasePlaybackTracks(
+  track: NeteasePlaylistTrack,
+  contextTracks?: NeteasePlaylistTrack[],
+) {
+  const explicitTracks = uniqueNeteasePlaybackTracks(contextTracks ?? [])
+  if (explicitTracks.some((candidate) => candidate.id === track.id)) {
+    return explicitTracks
+  }
+
+  const playlistTracks = uniqueNeteasePlaybackTracks(neteasePlaylistDetail.value?.tracks ?? [])
+  if (playlistTracks.some((candidate) => candidate.id === track.id)) {
+    return playlistTracks
+  }
+
+  const searchTracks = uniqueNeteasePlaybackTracks(neteaseSearchTracks.value)
+  if (searchTracks.some((candidate) => candidate.id === track.id)) {
+    return searchTracks
+  }
+
+  return uniqueNeteasePlaybackTracks([track, ...explicitTracks])
+}
+
+function currentNeteasePlaybackTracks() {
+  const currentSongId = currentTrack.value?.neteaseSongId
+  const playlistTracks = uniqueNeteasePlaybackTracks(neteasePlaylistDetail.value?.tracks ?? [])
+  if (currentSongId && playlistTracks.some((track) => track.id === currentSongId)) {
+    return playlistTracks
+  }
+
+  if (playbackContext.value.source === 'netease') {
+    return uniqueNeteasePlaybackTracks(playbackContext.value.tracks)
+  }
+
+  const sourceTracks = uniqueNeteasePlaybackTracks([
+    ...neteaseSearchTracks.value,
+    ...playlistTracks,
+  ])
+  return currentSongId && sourceTracks.some((track) => track.id === currentSongId)
+    ? sourceTracks
+    : []
+}
+
+function currentNeteaseImmersiveSourceTracks() {
+  const playbackTracks = currentNeteasePlaybackTracks()
+  if (currentTrack.value?.source === 'netease' && playbackTracks.length > 0) {
+    return playbackTracks
+  }
+
+  const playlistTracks = uniqueNeteasePlaybackTracks(neteasePlaylistDetail.value?.tracks ?? [])
+  if (playlistTracks.length > 0) {
+    return playlistTracks
+  }
+
+  const searchTracks = uniqueNeteasePlaybackTracks(neteaseSearchTracks.value)
+  return searchTracks.length > 0 ? searchTracks : playbackTracks
+}
+
+function uniqueKugouPlaybackTracks(trackList: KugouSearchTrack[]) {
+  const seenHashes = new Set<string>()
+  return trackList.filter((track) => {
+    const hash = track.hash.trim()
+    if (!hash || seenHashes.has(hash)) {
+      return false
+    }
+
+    seenHashes.add(hash)
+    return true
+  })
+}
+
+function resolveKugouPlaybackTracks(track: KugouSearchTrack, contextTracks?: KugouSearchTrack[]) {
+  const explicitTracks = uniqueKugouPlaybackTracks(contextTracks ?? [])
+  if (explicitTracks.some((candidate) => candidate.hash === track.hash)) {
+    return explicitTracks
+  }
+
+  const playlistTracks = uniqueKugouPlaybackTracks(kugouPlaylistDetail.value?.tracks ?? [])
+  if (playlistTracks.some((candidate) => candidate.hash === track.hash)) {
+    return playlistTracks
+  }
+
+  const searchTracks = uniqueKugouPlaybackTracks(kugouSearchTracks.value)
+  if (searchTracks.some((candidate) => candidate.hash === track.hash)) {
+    return searchTracks
+  }
+
+  return uniqueKugouPlaybackTracks([track, ...explicitTracks])
+}
+
+function currentKugouPlaybackTracks() {
+  const currentHash = currentTrack.value?.kugouSongHash
+  const playlistTracks = uniqueKugouPlaybackTracks(kugouPlaylistDetail.value?.tracks ?? [])
+  if (currentHash && playlistTracks.some((track) => track.hash === currentHash)) {
+    return playlistTracks
+  }
+
+  if (playbackContext.value.source === 'kugou') {
+    return uniqueKugouPlaybackTracks(playbackContext.value.tracks)
+  }
+
+  const sourceTracks = uniqueKugouPlaybackTracks([
+    ...playlistTracks,
+    ...kugouSearchTracks.value,
+  ])
+  return currentHash && sourceTracks.some((track) => track.hash === currentHash) ? sourceTracks : []
+}
+
+function currentKugouImmersiveSourceTracks() {
+  const playbackTracks = currentKugouPlaybackTracks()
+  if (currentTrack.value?.source === 'kugou' && playbackTracks.length > 0) {
+    return playbackTracks
+  }
+
+  const playlistTracks = uniqueKugouPlaybackTracks(kugouPlaylistDetail.value?.tracks ?? [])
+  if (playlistTracks.length > 0) {
+    return playlistTracks
+  }
+
+  const searchTracks = uniqueKugouPlaybackTracks(kugouSearchTracks.value)
+  return searchTracks.length > 0 ? searchTracks : playbackTracks
+}
+
+async function maybeLoadMoreNeteaseTracksForPlayback(sourceTracks: NeteasePlaylistTrack[]) {
+  const currentSongId = currentTrack.value?.neteaseSongId
+  const playlist = neteaseSelectedPlaylist.value
+  if (
+    !currentSongId ||
+    !playlist ||
+    !neteasePlaylistHasMore.value ||
+    neteasePlaylistDetailLoading.value ||
+    !neteasePlaylistDetail.value?.tracks.some((track) => track.id === currentSongId)
+  ) {
+    return sourceTracks
+  }
+
+  const currentListIndex = sourceTracks.findIndex((track) => track.id === currentSongId)
+  if (
+    currentListIndex >= 0 &&
+    currentListIndex < sourceTracks.length - PLAYBACK_CONTEXT_PREFETCH_THRESHOLD
+  ) {
+    return sourceTracks
+  }
+
+  const beforeCount = neteasePlaylistDetail.value.tracks.length
+  await loadNeteasePlaylistDetail(playlist, false, true)
+  const expandedTracks = currentNeteasePlaybackTracks()
+  return expandedTracks.length > beforeCount ? expandedTracks : sourceTracks
+}
+
+async function maybeLoadMoreKugouTracksForPlayback(sourceTracks: KugouSearchTrack[]) {
+  const currentHash = currentTrack.value?.kugouSongHash
+  const playlist = kugouSelectedPlaylist.value
+  if (
+    !currentHash ||
+    !playlist ||
+    !kugouPlaylistHasMore.value ||
+    kugouPlaylistDetailLoading.value ||
+    !kugouPlaylistDetail.value?.tracks.some((track) => track.hash === currentHash)
+  ) {
+    return sourceTracks
+  }
+
+  const currentListIndex = sourceTracks.findIndex((track) => track.hash === currentHash)
+  if (
+    currentListIndex >= 0 &&
+    currentListIndex < sourceTracks.length - PLAYBACK_CONTEXT_PREFETCH_THRESHOLD
+  ) {
+    return sourceTracks
+  }
+
+  const beforeCount = kugouPlaylistDetail.value.tracks.length
+  await loadKugouPlaylistDetail(playlist, false, true)
+  const expandedTracks = currentKugouPlaybackTracks()
+  return expandedTracks.length > beforeCount ? expandedTracks : sourceTracks
+}
+
+function clearOnlinePlaybackPrefetchTimer() {
+  onlinePlaybackPrefetchSerial += 1
+  if (onlinePlaybackPrefetchTimer !== null) {
+    window.clearTimeout(onlinePlaybackPrefetchTimer)
+    onlinePlaybackPrefetchTimer = null
+  }
+}
+
+function clearOnlineStallRecoveryTimer() {
+  onlineStallRecoverySerial += 1
+  if (onlineStallRecoveryTimer !== null) {
+    window.clearTimeout(onlineStallRecoveryTimer)
+    onlineStallRecoveryTimer = null
+  }
+}
+
+function resetOnlineStallRecovery() {
+  clearOnlineStallRecoveryTimer()
+  onlineStallRecoveryAttempts = 0
+  onlineStallStartedAt = 0
+}
+
+function scheduleOnlinePlaybackPrefetch() {
+  clearOnlinePlaybackPrefetchTimer()
+  const candidate = nextOnlinePlaybackPrefetchCandidate()
+  if (!candidate) {
+    return
+  }
+
+  const serial = onlinePlaybackPrefetchSerial
+  onlinePlaybackPrefetchTimer = window.setTimeout(() => {
+    onlinePlaybackPrefetchTimer = null
+    void prefetchOnlinePlayback(candidate, serial)
+  }, ONLINE_PLAYBACK_PREFETCH_DELAY_MS)
+}
+
+function nextOnlinePlaybackPrefetchCandidate(): OnlinePlaybackPrefetchCandidate | null {
+  if (repeatMode.value === 'one' || shuffleEnabled.value) {
+    return null
+  }
+
+  if (currentTrack.value?.source === 'netease') {
+    const sourceTracks = currentNeteasePlaybackTracks()
+    const currentSongId = currentTrack.value.neteaseSongId
+    const currentListIndex = sourceTracks.findIndex((track) => track.id === currentSongId)
+    const targetIndex = firstPlayableNeteaseCandidateIndex(sourceTracks, currentListIndex, false)
+    return targetIndex !== undefined ? { source: 'netease', track: sourceTracks[targetIndex] } : null
+  }
+
+  if (currentTrack.value?.source === 'kugou') {
+    const sourceTracks = currentKugouPlaybackTracks()
+    const currentHash = currentTrack.value.kugouSongHash
+    const currentListIndex = sourceTracks.findIndex((track) => track.hash === currentHash)
+    const targetIndex = firstPlayableKugouCandidateIndex(sourceTracks, currentListIndex, false)
+    return targetIndex !== undefined ? { source: 'kugou', track: sourceTracks[targetIndex] } : null
+  }
+
+  return null
+}
+
+async function prefetchOnlinePlayback(candidate: OnlinePlaybackPrefetchCandidate, serial: number) {
+  if (serial !== onlinePlaybackPrefetchSerial) {
+    return
+  }
+
+  try {
+    if (candidate.source === 'netease') {
+      if (getCachedNeteasePlayback(candidate.track)) {
+        return
+      }
+      const playback = await fetchNeteasePlayback(candidate.track)
+      if (serial === onlinePlaybackPrefetchSerial) {
+        cacheNeteasePlayback(candidate.track, playback)
+      }
+      return
+    }
+
+    if (getCachedKugouPlayback(candidate.track)) {
+      return
+    }
+    const playback = await fetchKugouPlayback(candidate.track)
+    if (serial === onlinePlaybackPrefetchSerial) {
+      cacheKugouPlayback(candidate.track, playback)
+    }
+  } catch {
+    // 预取失败不打断当前播放；真正切歌时会按正常播放链路重新获取。
+  }
+}
+
+function nextPlaybackCandidateIndices(currentListIndex: number, count: number, manual: boolean) {
+  if (count <= 0) {
+    return []
+  }
+
+  const indices: number[] = []
+  const visited = new Set<number>()
+  let cursor = currentListIndex
+
+  for (let attempt = 0; attempt < count; attempt += 1) {
+    const nextIndex = nextPlaybackListIndex(cursor, count, manual)
+    if (
+      nextIndex < 0 ||
+      visited.has(nextIndex) ||
+      (nextIndex === currentListIndex && currentListIndex >= 0)
+    ) {
+      break
+    }
+
+    indices.push(nextIndex)
+    visited.add(nextIndex)
+    cursor = nextIndex
+  }
+
+  return indices
+}
+
+function firstPlayableNeteaseCandidateIndex(
+  sourceTracks: NeteasePlaylistTrack[],
+  currentListIndex: number,
+  manual: boolean,
+) {
+  return nextPlaybackCandidateIndices(currentListIndex, sourceTracks.length, manual)
+    .find((index) => !neteaseTrackUnavailableReason(sourceTracks[index]))
+}
+
+function firstPlayableKugouCandidateIndex(
+  sourceTracks: KugouSearchTrack[],
+  currentListIndex: number,
+  manual: boolean,
+) {
+  return nextPlaybackCandidateIndices(currentListIndex, sourceTracks.length, manual)
+    .find((index) => !kugouTrackUnavailableReason(sourceTracks[index]))
+}
+
+async function skipUnavailableNeteaseTrack(
+  failedTrack: NeteasePlaylistTrack,
+  sourceTracks: NeteasePlaylistTrack[],
+  reason: string,
+) {
+  const currentListIndex = sourceTracks.findIndex((track) => track.id === failedTrack.id)
+  const targetIndex = firstPlayableNeteaseCandidateIndex(sourceTracks, currentListIndex, false)
+  if (targetIndex === undefined) {
+    playerStatus.value = ''
+    playerError.value = `网易云《${failedTrack.name}》当前不可播放：${reason}。后续没有可自动尝试的歌曲。`
+    return true
+  }
+
+  const nextTrack = sourceTracks[targetIndex]
+  playerStatus.value = `已跳过网易云《${failedTrack.name}》：${reason}。正在尝试下一首《${nextTrack.name}》...`
+  await playNeteaseTrack(nextTrack, sourceTracks, { autoSkip: true })
+  return true
+}
+
+async function skipUnavailableKugouTrack(
+  failedTrack: KugouSearchTrack,
+  sourceTracks: KugouSearchTrack[],
+  reason: string,
+) {
+  const currentListIndex = sourceTracks.findIndex((track) => track.hash === failedTrack.hash)
+  const targetIndex = firstPlayableKugouCandidateIndex(sourceTracks, currentListIndex, false)
+  if (targetIndex === undefined) {
+    playerStatus.value = ''
+    playerError.value = `酷狗《${failedTrack.name}》当前不可播放：${reason}。后续没有可自动尝试的歌曲。`
+    return true
+  }
+
+  const nextTrack = sourceTracks[targetIndex]
+  playerStatus.value = `已跳过酷狗《${failedTrack.name}》：${reason}。正在尝试下一首《${nextTrack.name}》...`
+  await playKugouTrack(nextTrack, sourceTracks, { autoSkip: true })
+  return true
+}
+
+function previousPlaybackListIndex(currentListIndex: number, count: number) {
+  if (count === 0) {
+    return -1
+  }
+
+  return currentListIndex <= 0 ? count - 1 : currentListIndex - 1
+}
+
+function nextPlaybackListIndex(currentListIndex: number, count: number, manual: boolean) {
+  if (count === 0) {
+    return -1
+  }
+
+  if (shuffleEnabled.value && count > 1) {
+    let next = currentListIndex
+    while (next === currentListIndex) {
+      next = Math.floor(Math.random() * count)
+    }
+    return next
+  }
+
+  const next = currentListIndex + 1
+  if (next < count) {
+    return next
+  }
+
+  if (manual || repeatMode.value === 'all') {
+    return 0
+  }
+
+  return -1
 }
 
 function trackMatchesSearch(track: MusicTrack, query: string) {
@@ -2632,20 +5058,21 @@ async function togglePlay() {
   }
 
   if (playing.value) {
-    audio.value.pause()
-    playing.value = false
+    pausePlayback()
     return
   }
 
   await playCurrent()
 }
 
-async function playTrack(index: number) {
+async function playTrack(index: number, contextTrackIds?: string[]) {
   if (index < 0 || index >= tracks.value.length) {
     return
   }
 
+  const track = tracks.value[index]
   neteaseCurrentTrack.value = null
+  setLocalPlaybackContext(track.id, contextTrackIds)
   currentIndex.value = index
   currentTime.value = 0
   visualPlaybackTime.value = 0
@@ -2658,10 +5085,11 @@ async function playTrack(index: number) {
 async function playTrackById(trackId: string) {
   const index = tracks.value.findIndex((track) => track.id === trackId)
   if (index >= 0) {
+    const contextTrackIds = resolveLocalPlaybackTrackIds(trackId)
     if (activeLibraryView.value === 'queue') {
       removeTrackFromQueue(trackId)
     }
-    await playTrack(index)
+    await playTrack(index, contextTrackIds)
   }
 }
 
@@ -2673,12 +5101,20 @@ function immersiveNeteaseTrackActive(track: NeteasePlaylistTrack) {
   return currentTrack.value?.source === 'netease' && currentTrack.value.neteaseSongId === track.id
 }
 
+function immersiveKugouTrackActive(track: KugouSearchTrack) {
+  return currentTrack.value?.source === 'kugou' && currentTrack.value.kugouSongHash === track.hash
+}
+
 function canPlayImmersiveTrack(track: MusicTrack) {
-  return track.source !== 'netease' && !immersiveTrackActive(track)
+  return track.source !== 'netease' && track.source !== 'kugou' && !immersiveTrackActive(track)
 }
 
 function canPlayImmersiveNeteaseTrack(track: NeteasePlaylistTrack) {
   return neteaseLoggedIn.value && !immersiveNeteaseTrackActive(track) && neteaseTrackActionId.value !== track.id
+}
+
+function canPlayImmersiveKugouTrack(track: KugouSearchTrack) {
+  return !immersiveKugouTrackActive(track) && kugouTrackActionHash.value !== track.hash
 }
 
 async function playImmersiveTrack(track: MusicTrack) {
@@ -2687,7 +5123,15 @@ async function playImmersiveTrack(track: MusicTrack) {
   }
 
   immersivePlaylistSource.value = 'local'
-  await playTrackById(track.id)
+  const trackIndex = tracks.value.findIndex((candidate) => candidate.id === track.id)
+  if (trackIndex < 0) {
+    return
+  }
+
+  await playTrack(
+    trackIndex,
+    currentLocalImmersiveSourceTracks().map((candidate) => candidate.id),
+  )
 }
 
 async function playImmersiveNeteaseTrack(track: NeteasePlaylistTrack) {
@@ -2696,7 +5140,16 @@ async function playImmersiveNeteaseTrack(track: NeteasePlaylistTrack) {
   }
 
   immersivePlaylistSource.value = 'netease'
-  await playNeteaseTrack(track)
+  await playNeteaseTrack(track, currentNeteaseImmersiveSourceTracks())
+}
+
+async function playImmersiveKugouTrack(track: KugouSearchTrack) {
+  if (!canPlayImmersiveKugouTrack(track)) {
+    return
+  }
+
+  immersivePlaylistSource.value = 'kugou'
+  await playKugouTrack(track, currentKugouImmersiveSourceTracks())
 }
 
 function toggleImmersivePlaylistVisible() {
@@ -2707,17 +5160,29 @@ function toggleImmersiveRhythmPanelVisible() {
   immersiveRhythmPanelVisible.value = !immersiveRhythmPanelVisible.value
 }
 
+function setImmersiveStageOnlyMode(nextStageOnlyMode: boolean) {
+  immersiveStageOnlyMode.value = nextStageOnlyMode
+}
+
+function toggleImmersiveStageOnlyMode() {
+  setImmersiveStageOnlyMode(!immersiveStageOnlyMode.value)
+}
+
 async function playCurrent(resetTime = false) {
   if (!audio.value || !currentTrack.value) {
     return
   }
 
   const track = currentTrack.value
+  const requestSerial = ++playbackRequestSerial
   try {
     if (resetTime) {
       audio.value.currentTime = 0
     }
     await audio.value.play()
+    if (requestSerial !== playbackRequestSerial || track !== currentTrack.value) {
+      return
+    }
     playing.value = true
     if (immersiveMode.value) {
       void prepareImmersiveVisualization()
@@ -2726,9 +5191,34 @@ async function playCurrent(resetTime = false) {
       recordTrackPlayback(track)
     }
   } catch (err) {
+    if (
+      requestSerial !== playbackRequestSerial ||
+      track !== currentTrack.value ||
+      isInterruptedPlayError(err)
+    ) {
+      return
+    }
     playing.value = false
     playerError.value = `无法播放该音频：${String(err)}`
   }
+}
+
+function invalidatePendingPlayback() {
+  playbackRequestSerial += 1
+}
+
+function isInterruptedPlayError(err: unknown) {
+  if (err instanceof DOMException && err.name === 'AbortError') {
+    return true
+  }
+
+  const message = String(err)
+  return (
+    message.includes('AbortError') &&
+    (message.includes('pause()') ||
+      message.includes('interrupted') ||
+      message.includes('new load request'))
+  )
 }
 
 function recordTrackPlayback(track: MusicTrack) {
@@ -2742,69 +5232,155 @@ function recordTrackPlayback(track: MusicTrack) {
 }
 
 function pausePlayback() {
+  invalidatePendingPlayback()
+  resetOnlineStallRecovery()
   audio.value?.pause()
   playing.value = false
 }
 
 async function playPrevious() {
-  if (tracks.value.length === 0) {
+  if (!currentTrack.value && tracks.value.length === 0) {
     return
   }
 
-  if (audio.value && audio.value.currentTime > 4) {
+  if (currentTrack.value && audio.value && audio.value.currentTime > 4) {
     audio.value.currentTime = 0
     currentTime.value = 0
     return
   }
 
-  const previousIndex =
-    currentIndex.value <= 0 ? tracks.value.length - 1 : currentIndex.value - 1
-  await playTrack(previousIndex)
-}
-
-async function playNext(manual = true) {
-  const index = nextTrackIndex(manual)
-  if (index < 0) {
-    pausePlayback()
-    if (audio.value) {
-      audio.value.currentTime = 0
-    }
-    currentTime.value = 0
+  if (currentTrack.value?.source === 'netease') {
+    await playPreviousNeteaseTrack()
     return
   }
 
-  await playTrack(index)
+  if (currentTrack.value?.source === 'kugou') {
+    await playPreviousKugouTrack()
+    return
+  }
+
+  const target = previousLocalPlaybackTarget()
+  if (target.index >= 0) {
+    await playTrack(target.index, target.contextTrackIds)
+  }
 }
 
-function nextTrackIndex(manual: boolean) {
-  const count = tracks.value.length
-  if (count === 0) {
-    return -1
+async function playNext(manual = true) {
+  if (currentTrack.value?.source === 'netease') {
+    await playNextNeteaseTrack(manual)
+    return
   }
 
+  if (currentTrack.value?.source === 'kugou') {
+    await playNextKugouTrack(manual)
+    return
+  }
+
+  const target = nextLocalPlaybackTarget(manual)
+  if (target.index < 0) {
+    stopPlaybackAtListEnd()
+    return
+  }
+
+  await playTrack(target.index, target.contextTrackIds)
+}
+
+function stopPlaybackAtListEnd() {
+  pausePlayback()
+  if (audio.value) {
+    audio.value.currentTime = 0
+  }
+  currentTime.value = 0
+  visualPlaybackTime.value = 0
+}
+
+function previousLocalPlaybackTarget() {
+  const contextTrackIds = localPlaybackTrackIds()
+  const currentTrackId = tracks.value[currentIndex.value]?.id ?? currentTrack.value?.id ?? ''
+  const currentListIndex = contextTrackIds.findIndex((trackId) => trackId === currentTrackId)
+  const targetListIndex = previousPlaybackListIndex(currentListIndex, contextTrackIds.length)
+  const targetTrackId = targetListIndex >= 0 ? contextTrackIds[targetListIndex] : ''
+  return {
+    index: tracks.value.findIndex((track) => track.id === targetTrackId),
+    contextTrackIds,
+  }
+}
+
+function nextLocalPlaybackTarget(manual: boolean) {
   const queuedIndex = dequeueNextTrackIndex()
   if (queuedIndex >= 0) {
-    return queuedIndex
-  }
-
-  if (shuffleEnabled.value && count > 1) {
-    let next = currentIndex.value
-    while (next === currentIndex.value) {
-      next = Math.floor(Math.random() * count)
+    const queuedTrackId = tracks.value[queuedIndex]?.id ?? ''
+    const queuedContextTrackIds = uniqueLocalTrackIds([queuedTrackId, ...playQueue.value])
+    return {
+      index: queuedIndex,
+      contextTrackIds:
+        queuedContextTrackIds.length > 0 ? queuedContextTrackIds : localPlaybackTrackIds(),
     }
-    return next
   }
 
-  const next = currentIndex.value + 1
-  if (next < count) {
-    return next
+  const contextTrackIds = localPlaybackTrackIds()
+  const currentTrackId = tracks.value[currentIndex.value]?.id ?? currentTrack.value?.id ?? ''
+  const currentListIndex = contextTrackIds.findIndex((trackId) => trackId === currentTrackId)
+  const targetListIndex = nextPlaybackListIndex(currentListIndex, contextTrackIds.length, manual)
+  const targetTrackId = targetListIndex >= 0 ? contextTrackIds[targetListIndex] : ''
+  return {
+    index: tracks.value.findIndex((track) => track.id === targetTrackId),
+    contextTrackIds,
+  }
+}
+
+async function playPreviousNeteaseTrack() {
+  const sourceTracks = currentNeteasePlaybackTracks()
+  const currentSongId = currentTrack.value?.neteaseSongId
+  const currentListIndex = sourceTracks.findIndex((track) => track.id === currentSongId)
+  const targetIndex = previousPlaybackListIndex(currentListIndex, sourceTracks.length)
+  if (targetIndex >= 0) {
+    await playNeteaseTrack(sourceTracks[targetIndex], sourceTracks)
+  }
+}
+
+async function playNextNeteaseTrack(manual: boolean) {
+  const sourceTracks = await maybeLoadMoreNeteaseTracksForPlayback(currentNeteasePlaybackTracks())
+  const currentSongId = currentTrack.value?.neteaseSongId
+  const currentListIndex = sourceTracks.findIndex((track) => track.id === currentSongId)
+  const targetIndex = firstPlayableNeteaseCandidateIndex(sourceTracks, currentListIndex, manual)
+  if (targetIndex === undefined) {
+    playerStatus.value = ''
+    playerError.value = sourceTracks.length > 0
+      ? '网易云后续歌曲当前都不可播放或正在等待重试，请稍后刷新歌单或手动重试。'
+      : ''
+    stopPlaybackAtListEnd()
+    return
   }
 
-  if (manual || repeatMode.value === 'all') {
-    return 0
+  await playNeteaseTrack(sourceTracks[targetIndex], sourceTracks, { autoSkip: !manual })
+}
+
+async function playPreviousKugouTrack() {
+  const sourceTracks = currentKugouPlaybackTracks()
+  const currentHash = currentTrack.value?.kugouSongHash
+  const currentListIndex = sourceTracks.findIndex((track) => track.hash === currentHash)
+  const targetIndex = previousPlaybackListIndex(currentListIndex, sourceTracks.length)
+  if (targetIndex >= 0) {
+    await playKugouTrack(sourceTracks[targetIndex], sourceTracks)
+  }
+}
+
+async function playNextKugouTrack(manual: boolean) {
+  const sourceTracks = await maybeLoadMoreKugouTracksForPlayback(currentKugouPlaybackTracks())
+  const currentHash = currentTrack.value?.kugouSongHash
+  const currentListIndex = sourceTracks.findIndex((track) => track.hash === currentHash)
+  const targetIndex = firstPlayableKugouCandidateIndex(sourceTracks, currentListIndex, manual)
+  if (targetIndex === undefined) {
+    playerStatus.value = ''
+    playerError.value = sourceTracks.length > 0
+      ? '酷狗后续歌曲当前都不可播放或正在等待重试，请稍后刷新歌单或手动重试。'
+      : ''
+    stopPlaybackAtListEnd()
+    return
   }
 
-  return -1
+  await playKugouTrack(sourceTracks[targetIndex], sourceTracks, { autoSkip: !manual })
 }
 
 function dequeueNextTrackIndex() {
@@ -2836,6 +5412,311 @@ function handleTimeUpdate() {
   if (!immersiveMode.value || !playing.value) {
     visualPlaybackTime.value = time
   }
+  if (
+    currentTrackOnline.value &&
+    onlineStallStartedAt > 0 &&
+    time > onlineStallStartedAt + ONLINE_STALL_RECOVERY_PROGRESS_SECONDS
+  ) {
+    resetOnlineStallRecovery()
+    if (
+      playerStatus.value.includes('等待缓冲恢复') ||
+      playerStatus.value.includes('长时间无数据') ||
+      playerStatus.value.includes('重新尝试刷新')
+    ) {
+      playerStatus.value = ''
+    }
+  }
+}
+
+function handleAudioWaiting() {
+  scheduleOnlineStallRecovery('缓冲中')
+}
+
+function handleAudioStalled() {
+  scheduleOnlineStallRecovery('读取停顿')
+}
+
+function handleAudioRecovered() {
+  if (!currentTrackOnline.value) {
+    return
+  }
+
+  const time = audio.value?.currentTime ?? currentTime.value
+  if (
+    onlineStallStartedAt > 0 &&
+    time <= onlineStallStartedAt + ONLINE_STALL_RECOVERY_PROGRESS_SECONDS
+  ) {
+    return
+  }
+
+  resetOnlineStallRecovery()
+  if (playerStatus.value.includes('等待缓冲恢复')) {
+    playerStatus.value = ''
+  }
+}
+
+function scheduleOnlineStallRecovery(reason: string) {
+  const track = currentTrack.value
+  if (!audio.value || !track || !currentTrackOnline.value || !playing.value) {
+    return
+  }
+
+  if (onlineStallRecoveryTimer !== null) {
+    return
+  }
+
+  const startedAt = audio.value.currentTime || currentTime.value
+  onlineStallStartedAt = startedAt
+  const serial = ++onlineStallRecoverySerial
+  playerStatus.value = `当前${currentTrackPlatformLabel.value}${reason}，正在等待缓冲恢复...`
+  onlineStallRecoveryTimer = window.setTimeout(() => {
+    onlineStallRecoveryTimer = null
+    void recoverOnlinePlaybackStall(track, startedAt, serial)
+  }, ONLINE_STALL_RECOVERY_DELAY_MS)
+}
+
+function sameMusicTrackIdentity(left: MusicTrack | null | undefined, right: MusicTrack | null | undefined) {
+  if (!left || !right || left.source !== right.source) {
+    return false
+  }
+
+  if (left.source === 'netease' || right.source === 'netease') {
+    return left.neteaseSongId !== undefined && left.neteaseSongId === right.neteaseSongId
+  }
+
+  if (left.source === 'kugou' || right.source === 'kugou') {
+    return Boolean(left.kugouSongHash) && left.kugouSongHash === right.kugouSongHash
+  }
+
+  return left.id === right.id
+}
+
+function waitForOnlinePlaybackProgress(track: MusicTrack, resumeTime: number) {
+  return new Promise<void>((resolve, reject) => {
+    const element = audio.value
+    if (!element) {
+      reject(new Error('音频播放器不可用。'))
+      return
+    }
+
+    const player = element
+    let settled = false
+    let timer: number | null = null
+    const durationLimit = Number.isFinite(player.duration) && player.duration > 0
+      ? Math.max(resumeTime, player.duration - 0.25)
+      : resumeTime + ONLINE_STALL_RECOVERY_PROGRESS_SECONDS
+    const targetTime = Math.min(
+      resumeTime + ONLINE_STALL_RECOVERY_PROGRESS_SECONDS,
+      durationLimit,
+    )
+    const cleanup = () => {
+      player.removeEventListener('timeupdate', checkProgress)
+      player.removeEventListener('playing', checkProgress)
+      player.removeEventListener('canplay', checkProgress)
+      player.removeEventListener('progress', checkProgress)
+      player.removeEventListener('error', handleError)
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+    }
+    const settle = (callback: () => void) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      callback()
+    }
+    const handleError = () => {
+      settle(() => reject(new Error('音频元素读取刷新后的播放链路失败。')))
+    }
+    function checkProgress() {
+      if (!sameMusicTrackIdentity(currentTrack.value, track)) {
+        settle(() => reject(new Error('播放目标已切换。')))
+        return
+      }
+
+      const time = player.currentTime || currentTime.value
+      if (player.ended || (!player.paused && time > targetTime)) {
+        settle(() => resolve())
+      }
+    }
+
+    player.addEventListener('timeupdate', checkProgress)
+    player.addEventListener('playing', checkProgress)
+    player.addEventListener('canplay', checkProgress)
+    player.addEventListener('progress', checkProgress)
+    player.addEventListener('error', handleError)
+    timer = window.setTimeout(() => {
+      settle(() => reject(new Error('刷新播放链路后仍未检测到播放进度推进。')))
+    }, ONLINE_STALL_RECOVERY_VERIFY_MS)
+    checkProgress()
+  })
+}
+
+function scheduleOnlineStallRecoveryRetry(stalledTrack: MusicTrack, reason: string) {
+  if (!audio.value || !sameMusicTrackIdentity(currentTrack.value, stalledTrack) || !playing.value) {
+    return
+  }
+
+  clearOnlineStallRecoveryTimer()
+  const startedAt = audio.value.currentTime || currentTime.value || onlineStallStartedAt
+  onlineStallStartedAt = startedAt
+  const serial = ++onlineStallRecoverySerial
+  playerStatus.value =
+    `当前${currentTrackPlatformLabel.value}恢复失败：${reason}。正在重新尝试刷新播放链路...`
+  onlineStallRecoveryTimer = window.setTimeout(() => {
+    onlineStallRecoveryTimer = null
+    void recoverOnlinePlaybackStall(stalledTrack, startedAt, serial)
+  }, ONLINE_STALL_RECOVERY_RETRY_DELAY_MS)
+}
+
+async function skipCurrentOnlineTrackAfterStall(stalledTrack: MusicTrack, reason: string) {
+  const sourceTrack = platformTrackForCurrentPlayback(stalledTrack)
+  if (!sourceTrack) {
+    playerStatus.value = ''
+    playerError.value = `当前${currentTrackPlatformLabel.value}持续无数据：${reason}。没有找到可自动跳过的源列表。`
+    return
+  }
+
+  if (sourceTrack.source === 'netease') {
+    const sourceTracks = currentNeteasePlaybackTracks()
+    markOnlineTrackUnavailable(neteaseUnavailableTracks, sourceTrack.track.id, reason)
+    await skipUnavailableNeteaseTrack(sourceTrack.track, sourceTracks, reason)
+    return
+  }
+
+  const sourceTracks = currentKugouPlaybackTracks()
+  const key = kugouPlaybackCacheKey(sourceTrack.track)
+  if (key) {
+    markOnlineTrackUnavailable(kugouUnavailableTracks, key, reason)
+  }
+  await skipUnavailableKugouTrack(sourceTrack.track, sourceTracks, reason)
+}
+
+async function recoverOnlinePlaybackStall(
+  stalledTrack: MusicTrack,
+  stalledAt: number,
+  serial: number,
+) {
+  if (
+    serial !== onlineStallRecoverySerial ||
+    !sameMusicTrackIdentity(currentTrack.value, stalledTrack) ||
+    !audio.value ||
+    !playing.value ||
+    !currentTrackOnline.value
+  ) {
+    return
+  }
+
+  const currentAudioTime = audio.value.currentTime || currentTime.value
+  const recoveredNaturally =
+    currentAudioTime > stalledAt + ONLINE_STALL_RECOVERY_PROGRESS_SECONDS
+  if (recoveredNaturally) {
+    resetOnlineStallRecovery()
+    return
+  }
+
+  if (onlineStallRecoveryAttempts >= MAX_ONLINE_STALL_RECOVERY_ATTEMPTS) {
+    await skipCurrentOnlineTrackAfterStall(
+      stalledTrack,
+      '连续多次长时间无数据，刷新播放链路后仍未恢复。',
+    )
+    return
+  }
+
+  onlineStallRecoveryAttempts += 1
+  const resumeTime = Math.max(currentAudioTime, onlineStallStartedAt, 0)
+  playerStatus.value = `当前${currentTrackPlatformLabel.value}长时间无数据，正在刷新播放链路并尝试从 ${formatTime(resumeTime)} 继续...`
+
+  try {
+    await refreshCurrentOnlinePlaybackAt(resumeTime, stalledTrack)
+  } catch (err) {
+    if (sameMusicTrackIdentity(currentTrack.value, stalledTrack)) {
+      const reason = normalizeOnlineStallRecoveryFailureReason(err)
+      if (!playing.value && playerError.value) {
+        await skipCurrentOnlineTrackAfterStall(stalledTrack, reason)
+        return
+      }
+      if (onlineStallRecoveryAttempts >= MAX_ONLINE_STALL_RECOVERY_ATTEMPTS) {
+        await skipCurrentOnlineTrackAfterStall(stalledTrack, reason)
+        return
+      }
+      scheduleOnlineStallRecoveryRetry(stalledTrack, reason)
+    }
+  }
+}
+
+async function refreshCurrentOnlinePlaybackAt(resumeTime: number, expectedTrack: MusicTrack) {
+  const sourceTrack = platformTrackForCurrentPlayback(expectedTrack)
+  if (!sourceTrack) {
+    throw new Error('没有找到当前在线歌曲的源列表信息。')
+  }
+
+  invalidateCurrentOnlinePlaybackCache()
+  let refreshedTrack: MusicTrack
+  if (sourceTrack.source === 'netease') {
+    const playback = await fetchNeteasePlayback(sourceTrack.track)
+    cacheNeteasePlayback(sourceTrack.track, playback)
+    refreshedTrack = createNeteaseMusicTrack(sourceTrack.track, playback)
+  } else {
+    const playback = await fetchKugouPlayback(sourceTrack.track)
+    cacheKugouPlayback(sourceTrack.track, playback)
+    refreshedTrack = createKugouMusicTrack(sourceTrack.track, playback)
+  }
+
+  if (!sameMusicTrackIdentity(currentTrack.value, expectedTrack)) {
+    return
+  }
+
+  neteaseCurrentTrack.value = refreshedTrack
+  currentTime.value = resumeTime
+  visualPlaybackTime.value = resumeTime
+  await nextTick()
+
+  if (!audio.value || currentTrack.value !== refreshedTrack) {
+    return
+  }
+
+  audio.value.load()
+  await nextTick()
+  try {
+    audio.value.currentTime = resumeTime
+  } catch {
+    currentTime.value = 0
+    visualPlaybackTime.value = 0
+  }
+  await playCurrent(false)
+  if (playerError.value) {
+    throw new Error(playerError.value)
+  }
+  await waitForOnlinePlaybackProgress(refreshedTrack, resumeTime)
+  if (!playerError.value) {
+    playerStatus.value = `已刷新${currentTrackPlatformLabel.value}播放链路，继续播放《${refreshedTrack.title}》。`
+    scheduleOnlinePlaybackPrefetch()
+  }
+}
+
+function platformTrackForCurrentPlayback(track: MusicTrack):
+  | { source: 'netease'; track: NeteasePlaylistTrack }
+  | { source: 'kugou'; track: KugouSearchTrack }
+  | null {
+  if (track.source === 'netease' && track.neteaseSongId) {
+    const sourceTrack = currentNeteasePlaybackTracks().find(
+      (candidate) => candidate.id === track.neteaseSongId,
+    )
+    return sourceTrack ? { source: 'netease', track: sourceTrack } : null
+  }
+
+  if (track.source === 'kugou' && track.kugouSongHash) {
+    const sourceTrack = currentKugouPlaybackTracks().find(
+      (candidate) => candidate.hash === track.kugouSongHash,
+    )
+    return sourceTrack ? { source: 'kugou', track: sourceTrack } : null
+  }
+
+  return null
 }
 
 async function handleEnded() {
@@ -2847,25 +5728,110 @@ async function handleEnded() {
   await playNext(false)
 }
 
+async function updateKugouProxyErrorDetail(track: MusicTrack) {
+  if (!track.url) {
+    return
+  }
+
+  try {
+    const status = await invoke<KugouPlaybackProxyStatus>('get_kugou_playback_proxy_status', {
+      proxyUrl: track.url,
+    })
+    if (currentTrack.value !== track) {
+      return
+    }
+
+    const detailParts = [
+      formatKugouProxyStatusMessage(status.message),
+      status.lastRange ? `失败位置：${status.lastRange}` : '',
+      status.refreshCount > 0 ? `已刷新 ${status.refreshCount} 次` : '',
+    ].filter(Boolean)
+    playerError.value = detailParts.length > 0
+      ? `当前酷狗在线音乐无法继续读取。${detailParts.join('；')}`
+      : '当前酷狗在线音乐无法继续读取，代理没有返回更多诊断信息。'
+  } catch (err) {
+    if (currentTrack.value !== track) {
+      return
+    }
+    playerError.value =
+      `当前酷狗在线音乐无法继续读取，且代理诊断读取失败：${String(err)}`
+  }
+}
+
+function formatKugouProxyStatusMessage(message: string) {
+  if (message.includes('音频流读取中断') || message.includes('本机播放器音频流失败')) {
+    return `${message}。这通常是 CDN 网络波动、临时链接中断或播放器拖动进度时旧 Range 被取消导致。`
+  }
+
+  return message
+}
+
 function handleAudioError() {
   playing.value = false
   playerStatus.value = ''
+  invalidateCurrentOnlinePlaybackCache()
+  if (currentTrack.value?.source === 'kugou') {
+    const track = currentTrack.value
+    playerError.value =
+      '当前酷狗在线音乐无法通过本机播放代理继续读取，正在读取代理诊断...'
+    void updateKugouProxyErrorDetail(track)
+    return
+  }
+
   playerError.value = currentTrackOnline.value
-    ? '当前网易云音频无法读取，播放链接可能已过期或受版权、会员、地区限制。'
+    ? `当前${currentTrackPlatformLabel.value}无法读取，播放链接可能已过期或受版权、会员、地区限制。`
     : '当前音频无法读取，请确认文件仍在原位置并且格式受系统支持。'
 }
 
 async function prepareImmersiveVisualization() {
-  if (currentTrack.value) {
-    void analyzeCurrentTrackBeatMap()
-    void loadCurrentTrackLyrics()
-  }
-
   if (audio.value && playing.value) {
     startVisualClock()
     connectAudioElement(audio.value)
     void resumeAnalyzer()
   }
+
+  scheduleImmersiveContentPreparation()
+}
+
+function clearImmersiveContentPrepTimer() {
+  immersiveContentPrepSerial += 1
+  if (immersiveContentPrepTimer !== null) {
+    window.clearTimeout(immersiveContentPrepTimer)
+    immersiveContentPrepTimer = null
+  }
+}
+
+function scheduleImmersiveContentPreparation(delayMs = IMMERSIVE_CONTENT_PREP_DELAY_MS) {
+  clearImmersiveContentPrepTimer()
+  const track = currentTrack.value
+  if (!immersiveMode.value || !track) {
+    return
+  }
+
+  const serial = immersiveContentPrepSerial
+  const trackId = track.id
+  immersiveContentPrepTimer = window.setTimeout(() => {
+    immersiveContentPrepTimer = null
+    if (
+      serial !== immersiveContentPrepSerial ||
+      !immersiveMode.value ||
+      currentTrack.value?.id !== trackId
+    ) {
+      return
+    }
+
+    void prepareImmersiveContent()
+  }, delayMs)
+}
+
+async function prepareImmersiveContent() {
+  const track = currentTrack.value
+  if (!track || !immersiveMode.value) {
+    return
+  }
+
+  void analyzeCurrentTrackBeatMap()
+  void loadCurrentTrackLyrics()
 }
 
 function startVisualClock() {
@@ -2912,7 +5878,7 @@ async function analyzeCurrentTrackBeatMap() {
     return
   }
 
-  if (track.source === 'netease') {
+  if (track.source === 'netease' || track.source === 'kugou' || playing.value) {
     beatMapRequestedTrackId = track.id
     return
   }
@@ -3127,6 +6093,7 @@ function createRecognitionCandidate(
     title: metadata.title?.trim() || '',
     artist: metadata.artist?.trim() || '',
     album: metadata.album?.trim() || '',
+    coverImgUrl: normalizeCoverImgUrl(metadata.coverImgUrl) ?? '',
     duration: sanitizeTrackDuration(metadata.duration),
     source: metadata.source || 'metadata',
     confidence: clamp(metadata.confidence ?? 0, 0, 1),
@@ -3154,6 +6121,9 @@ function applyRecognitionCandidate() {
   }
   if (candidate.album) {
     track.album = candidate.album
+  }
+  if (candidate.coverImgUrl) {
+    track.coverImgUrl = candidate.coverImgUrl
   }
   if (candidate.duration) {
     track.duration = candidate.duration
@@ -3459,14 +6429,20 @@ function removeTrackFromPlaylist(playlist: MusicPlaylist, trackId: string) {
     : `已从「${playlist.name}」移除歌曲。`
 }
 
-async function playCustomPlaylist(playlist: MusicPlaylist) {
-  const firstTrackId = normalizePlaylistTrackIds(playlist.trackIds)[0]
-  if (!firstTrackId) {
-    playerError.value = '这个歌单还没有歌曲。'
+async function playCustomPlaylistTrack(playlist: MusicPlaylist, trackId: string) {
+  const trackIds = normalizePlaylistTrackIds(playlist.trackIds)
+  if (!trackIds.includes(trackId)) {
+    playerError.value = '这个歌单里找不到这首歌曲。'
     return
   }
 
-  await playTrackById(firstTrackId)
+  const index = tracks.value.findIndex((track) => track.id === trackId)
+  if (index < 0) {
+    playerError.value = '这首歌曲已经不在本地音乐库中。'
+    return
+  }
+
+  await playTrack(index, trackIds)
 }
 
 function queueCustomPlaylist(playlist: MusicPlaylist) {
@@ -3524,6 +6500,482 @@ function finishPlaylistTrackDrag() {
   draggingPlaylistTrackId.value = null
 }
 
+function isImmersiveFreeCameraInUse() {
+  return immersiveFreeCameraActive.value || immersiveFreeCameraLocked.value || immersiveFreeCameraResetting.value
+}
+
+function isEditableEventTarget(target: EventTarget | null) {
+  return target instanceof HTMLElement
+    ? Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
+    : false
+}
+
+function handleImmersiveFreeCameraKeyDown(event: KeyboardEvent) {
+  consumeImmersiveFreeCameraKey(event, true)
+}
+
+function handleImmersiveFreeCameraKeyUp(event: KeyboardEvent) {
+  consumeImmersiveFreeCameraKey(event, false)
+}
+
+function consumeImmersiveFreeCameraKey(event: KeyboardEvent, isDown: boolean) {
+  if (!immersiveMode.value || isEditableEventTarget(event.target) || event.altKey || event.metaKey) {
+    return false
+  }
+
+  if (isDown && event.code === 'KeyR' && !event.ctrlKey) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    if (!event.repeat) {
+      toggleImmersiveFreeCamera()
+    }
+    return true
+  }
+
+  if (isDown && event.code === 'KeyK' && !event.ctrlKey && isImmersiveFreeCameraInUse()) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    resetImmersiveFreeCamera()
+    return true
+  }
+
+  if (!immersiveFreeCameraActive.value || !IMMERSIVE_FREE_CAMERA_CONTROL_CODES.has(event.code)) {
+    return false
+  }
+
+  event.preventDefault()
+  event.stopImmediatePropagation()
+
+  if (isDown) {
+    immersiveFreeCameraKeys.add(event.code)
+  } else {
+    immersiveFreeCameraKeys.delete(event.code)
+  }
+
+  scheduleImmersiveFreeCameraFrame()
+  return true
+}
+
+function handleImmersiveFreeCameraMouseMove(event: MouseEvent) {
+  if (!immersiveMode.value || !immersiveFreeCameraActive.value) {
+    immersiveFreeCameraPointerSeen = false
+    return
+  }
+
+  let movementX = event.movementX || 0
+  let movementY = event.movementY || 0
+
+  if ((!movementX && !movementY) && immersiveFreeCameraPointerSeen) {
+    movementX = event.clientX - immersiveFreeCameraPointerX
+    movementY = event.clientY - immersiveFreeCameraPointerY
+  }
+
+  immersiveFreeCameraPointerX = event.clientX
+  immersiveFreeCameraPointerY = event.clientY
+  immersiveFreeCameraPointerSeen = true
+
+  if (!movementX && !movementY) {
+    return
+  }
+
+  const motionScale = visualReducedMotion.value ? 0.42 : 1
+  immersiveFreeCameraYaw.value -= movementX * IMMERSIVE_FREE_CAMERA_MOUSE_FACTOR * motionScale
+  immersiveFreeCameraPitch.value = clamp(
+    immersiveFreeCameraPitch.value - movementY * IMMERSIVE_FREE_CAMERA_MOUSE_FACTOR * motionScale,
+    -Math.PI * 0.49,
+    Math.PI * 0.49,
+  )
+}
+
+function handleImmersiveSceneWheel(event: WheelEvent) {
+  if (!isImmersiveFreeCameraInUse()) {
+    return
+  }
+
+  event.preventDefault()
+  immersiveFreeCameraFov.value = clamp(immersiveFreeCameraFov.value + event.deltaY * 0.018, 28, 72)
+}
+
+function toggleImmersiveFreeCamera() {
+  if (!immersiveMode.value || !webglStarfieldActive.value) {
+    return
+  }
+
+  clearImmersiveStageMomentum()
+  immersiveStageDragging.value = false
+  immersiveStagePointerId = null
+  immersiveFreeCameraResetting.value = false
+  immersiveFreeCameraKeys.clear()
+  immersiveFreeCameraVelocityX = 0
+  immersiveFreeCameraVelocityY = 0
+  immersiveFreeCameraVelocityZ = 0
+
+  if (immersiveFreeCameraActive.value) {
+    immersiveFreeCameraActive.value = false
+    immersiveFreeCameraLocked.value = true
+    immersiveFreeCameraPointerSeen = false
+    exitImmersiveFreeCameraPointerLock()
+    clearImmersiveFreeCameraFrame()
+    return
+  }
+
+  if (!immersiveFreeCameraLocked.value) {
+    captureImmersiveFreeCameraFromStage()
+  }
+
+  immersiveFreeCameraActive.value = true
+  immersiveFreeCameraLocked.value = true
+  immersiveFreeCameraPointerSeen = false
+  requestImmersiveFreeCameraPointerLock()
+  scheduleImmersiveFreeCameraFrame()
+}
+
+function captureImmersiveFreeCameraFromStage() {
+  const radians = Math.PI / 180
+  immersiveFreeCameraX.value = IMMERSIVE_FREE_CAMERA_DEFAULT.x
+  immersiveFreeCameraY.value = IMMERSIVE_FREE_CAMERA_DEFAULT.y
+  immersiveFreeCameraZ.value = IMMERSIVE_FREE_CAMERA_DEFAULT.z
+  immersiveFreeCameraYaw.value = immersiveStageYaw.value * radians * 1.18
+  immersiveFreeCameraPitch.value = clamp(
+    IMMERSIVE_FREE_CAMERA_DEFAULT.pitch + immersiveStagePitch.value * radians * 0.96,
+    -Math.PI * 0.49,
+    Math.PI * 0.49,
+  )
+  immersiveFreeCameraRoll.value = IMMERSIVE_FREE_CAMERA_DEFAULT.roll
+  immersiveFreeCameraFov.value = IMMERSIVE_FREE_CAMERA_DEFAULT.fov
+}
+
+function requestImmersiveFreeCameraPointerLock() {
+  const scene = immersiveScene.value
+  if (!scene?.requestPointerLock) {
+    return
+  }
+
+  try {
+    const result = scene.requestPointerLock()
+    if (result && typeof (result as Promise<void>).catch === 'function') {
+      ;(result as Promise<void>).catch(() => {
+        immersiveFreeCameraPointerSeen = false
+      })
+    }
+  } catch {
+    immersiveFreeCameraPointerSeen = false
+  }
+}
+
+function exitImmersiveFreeCameraPointerLock() {
+  try {
+    if (document.pointerLockElement === immersiveScene.value) {
+      document.exitPointerLock()
+    }
+  } catch {
+    // Pointer lock is optional; failing to release it should not break playback controls.
+  }
+}
+
+function resetImmersiveFreeCamera() {
+  if (!isImmersiveFreeCameraInUse()) {
+    resetImmersiveStageView()
+    return
+  }
+
+  immersiveFreeCameraResetFrom = {
+    x: immersiveFreeCameraX.value,
+    y: immersiveFreeCameraY.value,
+    z: immersiveFreeCameraZ.value,
+    yaw: immersiveFreeCameraYaw.value,
+    pitch: immersiveFreeCameraPitch.value,
+    roll: immersiveFreeCameraRoll.value,
+    fov: immersiveFreeCameraFov.value,
+  }
+  immersiveFreeCameraResetStart = performance.now()
+  immersiveFreeCameraActive.value = false
+  immersiveFreeCameraLocked.value = true
+  immersiveFreeCameraResetting.value = true
+  immersiveFreeCameraKeys.clear()
+  immersiveFreeCameraVelocityX = 0
+  immersiveFreeCameraVelocityY = 0
+  immersiveFreeCameraVelocityZ = 0
+  immersiveFreeCameraPointerSeen = false
+  exitImmersiveFreeCameraPointerLock()
+  scheduleImmersiveFreeCameraFrame()
+  resetImmersiveStageView(undefined, true)
+}
+
+function clearImmersiveFreeCamera() {
+  immersiveFreeCameraActive.value = false
+  immersiveFreeCameraLocked.value = false
+  immersiveFreeCameraResetting.value = false
+  immersiveFreeCameraKeys.clear()
+  immersiveFreeCameraVelocityX = 0
+  immersiveFreeCameraVelocityY = 0
+  immersiveFreeCameraVelocityZ = 0
+  immersiveFreeCameraPointerSeen = false
+  setImmersiveFreeCameraDefaultPose()
+  exitImmersiveFreeCameraPointerLock()
+  clearImmersiveFreeCameraFrame()
+}
+
+function setImmersiveFreeCameraDefaultPose() {
+  immersiveFreeCameraX.value = IMMERSIVE_FREE_CAMERA_DEFAULT.x
+  immersiveFreeCameraY.value = IMMERSIVE_FREE_CAMERA_DEFAULT.y
+  immersiveFreeCameraZ.value = IMMERSIVE_FREE_CAMERA_DEFAULT.z
+  immersiveFreeCameraYaw.value = IMMERSIVE_FREE_CAMERA_DEFAULT.yaw
+  immersiveFreeCameraPitch.value = IMMERSIVE_FREE_CAMERA_DEFAULT.pitch
+  immersiveFreeCameraRoll.value = IMMERSIVE_FREE_CAMERA_DEFAULT.roll
+  immersiveFreeCameraFov.value = IMMERSIVE_FREE_CAMERA_DEFAULT.fov
+}
+
+function scheduleImmersiveFreeCameraFrame() {
+  if (immersiveFreeCameraFrameId !== null) {
+    return
+  }
+
+  immersiveFreeCameraFrameId = window.requestAnimationFrame(stepImmersiveFreeCameraFrame)
+}
+
+function clearImmersiveFreeCameraFrame() {
+  if (immersiveFreeCameraFrameId !== null) {
+    window.cancelAnimationFrame(immersiveFreeCameraFrameId)
+    immersiveFreeCameraFrameId = null
+  }
+  immersiveFreeCameraLastFrame = 0
+}
+
+function stepImmersiveFreeCameraFrame(timestamp: number) {
+  immersiveFreeCameraFrameId = null
+  const deltaSeconds = immersiveFreeCameraLastFrame
+    ? clamp((timestamp - immersiveFreeCameraLastFrame) / 1000, 1 / 120, 0.08)
+    : 1 / 60
+  immersiveFreeCameraLastFrame = timestamp
+
+  if (immersiveFreeCameraResetting.value) {
+    updateImmersiveFreeCameraReset(timestamp)
+  } else if (immersiveFreeCameraActive.value) {
+    updateImmersiveFreeCameraMotion(deltaSeconds)
+  }
+
+  if (immersiveFreeCameraResetting.value || immersiveFreeCameraActive.value) {
+    scheduleImmersiveFreeCameraFrame()
+  } else {
+    immersiveFreeCameraLastFrame = 0
+  }
+}
+
+function updateImmersiveFreeCameraReset(timestamp: number) {
+  const progress = clamp((timestamp - immersiveFreeCameraResetStart) / IMMERSIVE_FREE_CAMERA_RESET_MS, 0, 1)
+  const eased = 1 - Math.pow(1 - progress, 3)
+
+  immersiveFreeCameraX.value = lerpNumber(immersiveFreeCameraResetFrom.x, IMMERSIVE_FREE_CAMERA_DEFAULT.x, eased)
+  immersiveFreeCameraY.value = lerpNumber(immersiveFreeCameraResetFrom.y, IMMERSIVE_FREE_CAMERA_DEFAULT.y, eased)
+  immersiveFreeCameraZ.value = lerpNumber(immersiveFreeCameraResetFrom.z, IMMERSIVE_FREE_CAMERA_DEFAULT.z, eased)
+  immersiveFreeCameraYaw.value = lerpNumber(immersiveFreeCameraResetFrom.yaw, IMMERSIVE_FREE_CAMERA_DEFAULT.yaw, eased)
+  immersiveFreeCameraPitch.value = lerpNumber(immersiveFreeCameraResetFrom.pitch, IMMERSIVE_FREE_CAMERA_DEFAULT.pitch, eased)
+  immersiveFreeCameraRoll.value = lerpNumber(immersiveFreeCameraResetFrom.roll, IMMERSIVE_FREE_CAMERA_DEFAULT.roll, eased)
+  immersiveFreeCameraFov.value = lerpNumber(immersiveFreeCameraResetFrom.fov, IMMERSIVE_FREE_CAMERA_DEFAULT.fov, eased)
+
+  if (progress >= 1) {
+    setImmersiveFreeCameraDefaultPose()
+    immersiveFreeCameraResetting.value = false
+    immersiveFreeCameraLocked.value = false
+  }
+}
+
+function updateImmersiveFreeCameraMotion(deltaSeconds: number) {
+  const forwardIntent =
+    (immersiveFreeCameraKeys.has('KeyW') ? 1 : 0) - (immersiveFreeCameraKeys.has('KeyS') ? 1 : 0)
+  const sideIntent =
+    (immersiveFreeCameraKeys.has('KeyD') ? 1 : 0) - (immersiveFreeCameraKeys.has('KeyA') ? 1 : 0)
+  const liftIntent =
+    (immersiveFreeCameraKeys.has('Space') ? 1 : 0) -
+    (immersiveFreeCameraKeys.has('ControlLeft') || immersiveFreeCameraKeys.has('ControlRight') ? 1 : 0)
+  const yaw = immersiveFreeCameraYaw.value
+  const pitch = immersiveFreeCameraPitch.value
+  const forwardX = -Math.sin(yaw) * Math.cos(pitch)
+  const forwardY = Math.sin(pitch)
+  const forwardZ = -Math.cos(yaw) * Math.cos(pitch)
+  const rightX = Math.cos(yaw)
+  const rightZ = -Math.sin(yaw)
+  let targetX = rightX * sideIntent + forwardX * forwardIntent
+  let targetY = liftIntent + forwardY * forwardIntent
+  let targetZ = rightZ * sideIntent + forwardZ * forwardIntent
+  const targetLength = Math.hypot(targetX, targetY, targetZ)
+
+  if (targetLength > 1) {
+    targetX /= targetLength
+    targetY /= targetLength
+    targetZ /= targetLength
+  }
+
+  const fast = immersiveFreeCameraKeys.has('ShiftLeft') || immersiveFreeCameraKeys.has('ShiftRight')
+  const speed = fast ? IMMERSIVE_FREE_CAMERA_FAST_SPEED : IMMERSIVE_FREE_CAMERA_BASE_SPEED
+  targetX *= speed
+  targetY *= speed
+  targetZ *= speed
+
+  const easing = targetLength > 0 ? 8.2 : 13.5
+  const mix = clamp(easing * deltaSeconds, 0, 1)
+  immersiveFreeCameraVelocityX = lerpNumber(immersiveFreeCameraVelocityX, targetX, mix)
+  immersiveFreeCameraVelocityY = lerpNumber(immersiveFreeCameraVelocityY, targetY, mix)
+  immersiveFreeCameraVelocityZ = lerpNumber(immersiveFreeCameraVelocityZ, targetZ, mix)
+
+  if (Math.hypot(immersiveFreeCameraVelocityX, immersiveFreeCameraVelocityY, immersiveFreeCameraVelocityZ) < 0.02) {
+    immersiveFreeCameraVelocityX = 0
+    immersiveFreeCameraVelocityY = 0
+    immersiveFreeCameraVelocityZ = 0
+  }
+
+  immersiveFreeCameraX.value = clamp(immersiveFreeCameraX.value + immersiveFreeCameraVelocityX * deltaSeconds, -14, 14)
+  immersiveFreeCameraY.value = clamp(immersiveFreeCameraY.value + immersiveFreeCameraVelocityY * deltaSeconds, -7, 9)
+  immersiveFreeCameraZ.value = clamp(immersiveFreeCameraZ.value + immersiveFreeCameraVelocityZ * deltaSeconds, -10, 18)
+
+  const rollIntent =
+    (immersiveFreeCameraKeys.has('KeyQ') ? 1 : 0) - (immersiveFreeCameraKeys.has('KeyE') ? 1 : 0)
+  immersiveFreeCameraRoll.value = clamp(
+    immersiveFreeCameraRoll.value + rollIntent * deltaSeconds * 0.9,
+    -0.78,
+    0.78,
+  )
+}
+
+function lerpNumber(from: number, to: number, amount: number) {
+  return from + (to - from) * amount
+}
+
+function startImmersiveStageDrag(event: PointerEvent) {
+  if (event.button !== 0 || event.defaultPrevented) {
+    return
+  }
+
+  if (immersiveFreeCameraActive.value) {
+    requestImmersiveFreeCameraPointerLock()
+    event.preventDefault()
+    return
+  }
+
+  if (isImmersiveFreeCameraInUse()) {
+    event.preventDefault()
+    return
+  }
+
+  clearImmersiveStageMomentum()
+  immersiveStageDragging.value = true
+  immersiveStagePointerId = event.pointerId
+  immersiveStageLastX = event.clientX
+  immersiveStageLastY = event.clientY
+  immersiveStageVelocityYaw.value = 0
+  immersiveStageVelocityPitch.value = 0
+  event.preventDefault()
+  const target = event.currentTarget as HTMLElement | null
+  if (target?.setPointerCapture) {
+    target.setPointerCapture(event.pointerId)
+  }
+}
+
+function moveImmersiveStageDrag(event: PointerEvent) {
+  if (!immersiveStageDragging.value || immersiveStagePointerId !== event.pointerId) {
+    return
+  }
+
+  const deltaX = event.clientX - immersiveStageLastX
+  const deltaY = event.clientY - immersiveStageLastY
+  const motionScale = visualReducedMotion.value ? 0.42 : 1
+  const yawDelta = deltaX * IMMERSIVE_STAGE_DRAG_YAW_FACTOR * motionScale
+  const pitchDelta = -deltaY * IMMERSIVE_STAGE_DRAG_PITCH_FACTOR * motionScale
+
+  immersiveStageYaw.value = clamp(
+    immersiveStageYaw.value + yawDelta,
+    -IMMERSIVE_STAGE_MAX_YAW,
+    IMMERSIVE_STAGE_MAX_YAW,
+  )
+  immersiveStagePitch.value = clamp(
+    immersiveStagePitch.value + pitchDelta,
+    -IMMERSIVE_STAGE_MAX_PITCH,
+    IMMERSIVE_STAGE_MAX_PITCH,
+  )
+  immersiveStageVelocityYaw.value = yawDelta
+  immersiveStageVelocityPitch.value = pitchDelta
+  immersiveStageLastX = event.clientX
+  immersiveStageLastY = event.clientY
+}
+
+function finishImmersiveStageDrag(event: PointerEvent) {
+  if (immersiveStagePointerId !== event.pointerId) {
+    return
+  }
+
+  const target = event.currentTarget as HTMLElement | null
+  if (target?.releasePointerCapture && target.hasPointerCapture?.(event.pointerId)) {
+    target.releasePointerCapture(event.pointerId)
+  }
+  immersiveStageDragging.value = false
+  immersiveStagePointerId = null
+
+  if (visualReducedMotion.value) {
+    immersiveStageVelocityYaw.value = 0
+    immersiveStageVelocityPitch.value = 0
+    return
+  }
+
+  startImmersiveStageMomentum()
+}
+
+function resetImmersiveStageView(event?: MouseEvent, skipFreeCamera = false) {
+  event?.preventDefault()
+  if (!skipFreeCamera && isImmersiveFreeCameraInUse()) {
+    resetImmersiveFreeCamera()
+    return
+  }
+  clearImmersiveStageMomentum()
+  immersiveStageDragging.value = false
+  immersiveStagePointerId = null
+  immersiveStageYaw.value = 0
+  immersiveStagePitch.value = 0
+  immersiveStageVelocityYaw.value = 0
+  immersiveStageVelocityPitch.value = 0
+}
+
+function startImmersiveStageMomentum() {
+  clearImmersiveStageMomentum()
+  const decay = 0.86
+
+  const step = () => {
+    immersiveStageVelocityYaw.value *= decay
+    immersiveStageVelocityPitch.value *= decay
+
+    if (
+      Math.abs(immersiveStageVelocityYaw.value) < 0.015 &&
+      Math.abs(immersiveStageVelocityPitch.value) < 0.015
+    ) {
+      immersiveStageVelocityYaw.value = 0
+      immersiveStageVelocityPitch.value = 0
+      immersiveStageMomentumFrameId = null
+      return
+    }
+
+    immersiveStageYaw.value = clamp(
+      immersiveStageYaw.value + immersiveStageVelocityYaw.value,
+      -IMMERSIVE_STAGE_MAX_YAW,
+      IMMERSIVE_STAGE_MAX_YAW,
+    )
+    immersiveStagePitch.value = clamp(
+      immersiveStagePitch.value + immersiveStageVelocityPitch.value,
+      -IMMERSIVE_STAGE_MAX_PITCH,
+      IMMERSIVE_STAGE_MAX_PITCH,
+    )
+    immersiveStageMomentumFrameId = window.requestAnimationFrame(step)
+  }
+
+  immersiveStageMomentumFrameId = window.requestAnimationFrame(step)
+}
+
+function clearImmersiveStageMomentum() {
+  if (immersiveStageMomentumFrameId !== null) {
+    window.cancelAnimationFrame(immersiveStageMomentumFrameId)
+    immersiveStageMomentumFrameId = null
+  }
+}
+
 function clearPlaylist() {
   pausePlayback()
   resetNeteasePlaybackState()
@@ -3569,6 +7021,9 @@ async function setImmersiveMode(nextImmersiveMode: boolean) {
     void prepareImmersiveVisualization()
     await applyMusicWindowDisplayMode('immersive')
   } else {
+    immersiveStageOnlyMode.value = false
+    clearImmersiveContentPrepTimer()
+    clearImmersiveFreeCamera()
     stopVisualClock()
     syncVisualPlaybackTime()
     lyricsRequestedTrackId = ''
@@ -3589,6 +7044,10 @@ async function setMiniPlayerMode(nextMiniMode: boolean) {
   miniPlayerMode.value = nextMiniMode
   if (nextMiniMode) {
     immersiveMode.value = false
+    immersiveStageOnlyMode.value = false
+    clearImmersiveContentPrepTimer()
+    clearImmersiveFreeCamera()
+    resetImmersiveStageView()
     stopVisualClock()
     syncVisualPlaybackTime()
     lyricsRequestedTrackId = ''
@@ -3626,6 +7085,8 @@ async function toggleMiniPlayerMode() {
 async function hideMusicPlayer() {
   if (immersiveMode.value) {
     immersiveMode.value = false
+    clearImmersiveContentPrepTimer()
+    clearImmersiveFreeCamera()
     stopVisualClock()
     syncVisualPlaybackTime()
     lyricsRequestedTrackId = ''
@@ -3666,6 +7127,26 @@ function normalizeNeteaseQrStatus(result: NeteaseQrCheckResult) {
   return 'error'
 }
 
+function normalizeKugouQrStatus(result: KugouQrCheckResult) {
+  if (result.loggedIn || result.status === 'authorized' || result.code === 4) {
+    return 'authorized'
+  }
+
+  if (result.status === 'scanned' || result.code === 2 || result.code === 3) {
+    return 'scanned'
+  }
+
+  if (result.status === 'expired' || result.code === 0 || result.code === 5) {
+    return 'expired'
+  }
+
+  if (result.status === 'waiting' || result.code === 1) {
+    return 'waiting'
+  }
+
+  return 'error'
+}
+
 function formatNeteaseTimestamp(value?: string | null) {
   if (!value) {
     return '未知时间'
@@ -3683,6 +7164,24 @@ function formatNeteaseTimestamp(value?: string | null) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function platformMembershipStatusLabel(membership?: PlatformMembershipInfo | null) {
+  return membership?.statusLabel?.trim() || '未检测到会员信息'
+}
+
+function platformMembershipDetailLabel(membership?: PlatformMembershipInfo | null) {
+  if (!membership) {
+    return '会员摘要仅显示状态，不展示平台凭据。'
+  }
+
+  const details = [
+    membership.typeLabel?.trim(),
+    membership.levelLabel?.trim(),
+    membership.expireAt ? `到期 ${formatNeteaseTimestamp(membership.expireAt)}` : '',
+  ].filter(Boolean)
+
+  return details.length > 0 ? details.join(' · ') : '会员摘要仅显示状态，不展示平台凭据。'
 }
 
 function formatNeteaseCount(value?: number | null) {
@@ -3727,6 +7226,30 @@ function formatNeteasePlaylistUpdate(playlist: NeteasePlaylistSummary) {
   return `更新 ${date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}`
 }
 
+function formatKugouPlaylistMeta(playlist: KugouPlaylistSummary) {
+  return [
+    `${formatNeteaseCount(playlist.trackCount)} 首`,
+    playlist.creatorNickname ? `创建者 ${playlist.creatorNickname}` : '',
+    playlist.subscribed ? '收藏歌单' : '自建歌单',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function formatKugouPlaylistUpdate(playlist: KugouPlaylistSummary) {
+  const updateTime = Number(playlist.updateTime ?? 0)
+  if (!Number.isFinite(updateTime) || updateTime <= 0) {
+    return ''
+  }
+
+  const date = new Date(updateTime > 10_000_000_000 ? updateTime : updateTime * 1000)
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+
+  return `更新 ${date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })}`
+}
+
 function formatNeteaseTrackArtists(track: NeteasePlaylistTrack) {
   return track.artists.filter(Boolean).join(' / ') || '未知歌手'
 }
@@ -3744,6 +7267,37 @@ function formatNeteaseTrackMeta(track: NeteasePlaylistTrack) {
   return [track.album ? `专辑 ${track.album}` : '', formatNeteaseTrackDuration(track)]
     .filter(Boolean)
     .join(' · ')
+}
+
+function formatNeteaseTrackSubline(track: NeteasePlaylistTrack) {
+  return [formatNeteaseTrackArtists(track), formatNeteaseTrackMeta(track)].filter(Boolean).join(' · ')
+}
+
+function formatKugouTrackArtists(track: KugouSearchTrack) {
+  return track.artists.filter(Boolean).join(' / ') || '未知歌手'
+}
+
+function formatKugouTrackDuration(track: KugouSearchTrack) {
+  const durationMs = Number(track.durationMs ?? 0)
+  if (!Number.isFinite(durationMs) || durationMs <= 0) {
+    return '未知时长'
+  }
+
+  return formatTime(durationMs / 1000)
+}
+
+function formatKugouTrackMeta(track: KugouSearchTrack) {
+  return [
+    track.album ? `专辑 ${track.album}` : '',
+    formatKugouTrackDuration(track),
+    track.payType && track.payType > 0 ? '可能受版权限制' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function formatKugouTrackSubline(track: KugouSearchTrack) {
+  return [formatKugouTrackArtists(track), formatKugouTrackMeta(track)].filter(Boolean).join(' · ')
 }
 
 function formatTrackMeta(track: MusicTrack) {
@@ -3772,12 +7326,26 @@ function formatTrackListMeta(track: MusicTrack) {
     .join(' · ')
 }
 
+function formatTrackListSubline(track: MusicTrack) {
+  return [trackArtistLabel(track), formatTrackListMeta(track)].filter(Boolean).join(' · ')
+}
+
 function formatCurrentTrackDetail(track: MusicTrack) {
   if (track.source === 'netease') {
     return [
       track.album ? `专辑：${track.album}` : '',
       `时长：${formatTrackDuration(track)}`,
       '来源：网易云在线',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
+
+  if (track.source === 'kugou') {
+    return [
+      track.album ? `专辑：${track.album}` : '',
+      `时长：${formatTrackDuration(track)}`,
+      '来源：酷狗在线',
     ]
       .filter(Boolean)
       .join(' · ')
@@ -3808,6 +7376,12 @@ function formatTrackDuration(track: MusicTrack) {
   return trackDuration ? formatTime(trackDuration) : '未知时长'
 }
 
+function handleCurrentCoverImageError() {
+  if (currentTrack.value) {
+    currentTrack.value.coverImgUrl = null
+  }
+}
+
 function immersiveTrackDurationLabel(track: MusicTrack) {
   const trackDuration =
     immersiveTrackActive(track) && durationValue.value > 0
@@ -3818,11 +7392,20 @@ function immersiveTrackDurationLabel(track: MusicTrack) {
     return formatTime(trackDuration)
   }
 
-  return track.source === 'netease' ? '在线' : '--:--'
+  return track.source === 'netease' || track.source === 'kugou' ? '在线' : '--:--'
 }
 
 function immersiveNeteaseTrackDurationLabel(track: NeteasePlaylistTrack) {
   if (neteaseTrackActionId.value === track.id) {
+    return '获取中'
+  }
+
+  const durationMs = Number(track.durationMs ?? 0)
+  return Number.isFinite(durationMs) && durationMs > 0 ? formatTime(durationMs / 1000) : '--:--'
+}
+
+function immersiveKugouTrackDurationLabel(track: KugouSearchTrack) {
+  if (kugouTrackActionHash.value === track.hash) {
     return '获取中'
   }
 
@@ -3835,12 +7418,20 @@ function trackSourceLabel(track: MusicTrack) {
     return '网易云在线'
   }
 
+  if (track.source === 'kugou') {
+    return '酷狗在线'
+  }
+
   return track.sourcePath && track.sourcePath !== track.path ? '存储目录' : '原始位置'
 }
 
 function trackSourceTitle(track: MusicTrack) {
   if (track.source === 'netease') {
     return `网易云歌曲 ID：${track.neteaseSongId ?? '未知'}`
+  }
+
+  if (track.source === 'kugou') {
+    return `酷狗歌曲 Hash：${track.kugouSongHash ?? '未知'}`
   }
 
   if (track.sourcePath && track.sourcePath !== track.path) {
@@ -3870,6 +7461,53 @@ function formatPlayedAt(value: string) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function resolveImmersiveLyricsLayoutStyle(current: string, previous: string, next: string) {
+  const currentLines = estimateImmersiveLyricLineCount(
+    current,
+    14,
+    IMMERSIVE_LYRIC_MAIN_MAX_LINES,
+  )
+  const sideLines = Math.max(
+    estimateImmersiveLyricLineCount(previous, 24, IMMERSIVE_LYRIC_SIDE_MAX_LINES),
+    estimateImmersiveLyricLineCount(next, 24, IMMERSIVE_LYRIC_SIDE_MAX_LINES),
+  )
+  const mainFontSize =
+    currentLines >= 4 ? 38 : currentLines === 3 ? 44 : currentLines === 2 ? 54 : 62
+  const mainLineHeight = currentLines >= 3 ? 1.16 : 1.1
+  const sideFontSize = sideLines > 1 ? 20 : 24
+  const mainMinHeight = Math.ceil(currentLines * mainFontSize * mainLineHeight + 42)
+  const sideMinHeight = Math.max(34, Math.ceil(sideLines * sideFontSize * 1.34))
+  const stackGap = currentLines >= 3 ? 22 : currentLines === 2 ? 16 : 12
+
+  return {
+    '--immersive-current-line-count': String(currentLines),
+    '--immersive-side-line-count': String(sideLines),
+    '--immersive-main-font-size': `${mainFontSize}px`,
+    '--immersive-main-line-height': String(mainLineHeight),
+    '--immersive-main-min-height': `${mainMinHeight}px`,
+    '--immersive-side-font-size': `${sideFontSize}px`,
+    '--immersive-side-min-height': `${sideMinHeight}px`,
+    '--immersive-lyrics-stack-gap': `${stackGap}px`,
+  }
+}
+
+function estimateImmersiveLyricLineCount(text: string, charsPerLine: number, maxLines: number) {
+  const normalized = text.trim()
+  if (!normalized) {
+    return 1
+  }
+
+  const weightedLength = Array.from(normalized).reduce((total, char) => {
+    if (/\s/.test(char)) {
+      return total + 0.35
+    }
+
+    return total + (/[\u0000-\u007f]/.test(char) ? 0.58 : 1)
+  }, 0)
+
+  return Math.max(1, Math.min(maxLines, Math.ceil(weightedLength / charsPerLine)))
 }
 
 function createFallbackVisualEnergyFrame(
@@ -3952,15 +7590,22 @@ function clamp(value: number, min: number, max: number) {
     :class="[
       themeClass,
       windowOpenAnimationClass,
-      { 'music-window-mini': miniPlayerMode, 'music-window-immersive': immersiveMode },
+      {
+        'music-window-mini': miniPlayerMode,
+        'music-window-immersive': immersiveMode,
+        'music-window-list-focus': listFocusMode && !miniPlayerMode && !immersiveMode,
+      },
     ]"
   >
     <audio
       ref="audio"
       :src="currentTrack?.url"
-      preload="metadata"
+      preload="auto"
       @loadedmetadata="handleLoadedMetadata"
       @timeupdate="handleTimeUpdate"
+      @waiting="handleAudioWaiting"
+      @stalled="handleAudioStalled"
+      @playing="handleAudioRecovered"
       @ended="handleEnded"
       @error="handleAudioError"
     />
@@ -4025,69 +7670,127 @@ function clamp(value: number, min: number, max: number) {
       :class="{
         'is-playlist-hidden': !immersivePlaylistVisible,
         'is-panel-hidden': !immersiveRhythmPanelVisible,
+        'is-stage-only': immersiveStageOnlyMode,
+        'is-stage-dragging': immersiveStageDragging,
+        'is-free-camera-active': immersiveFreeCameraActive,
+        'is-free-camera-locked': immersiveFreeCameraLocked || immersiveFreeCameraResetting,
+        'is-stage-dj': visualStagePreset === 'dj',
       }"
-      @pointerdown="startDrag"
     >
-      <MusicVisualizerCanvas
-        :frequency-data="visualFrequencyData"
-        :energy="visualEnergyFrame"
-        :playing="playing"
-        :mode="visualMode"
-        :intensity="visualIntensity"
-        :reduced-motion="visualReducedMotion"
-        :theme="drawerTheme"
-      />
-      <div class="music-immersive-vignette" aria-hidden="true" />
-
-      <section
-        class="music-immersive-lyrics"
-        :class="{
-          'is-synced': immersiveLyrics.synced,
-          'is-loading': lyricsStatus === 'loading',
-          'is-empty': lyricsStatus === 'empty',
-          'is-error': lyricsStatus === 'error',
-          'is-interlude': immersiveLyrics.interlude,
-          'is-reduced-motion': visualReducedMotion,
-        }"
-        aria-label="沉浸歌词"
+      <div
+        ref="immersiveScene"
+        class="music-immersive-scene"
+        @pointerdown="startImmersiveStageDrag"
+        @pointermove="moveImmersiveStageDrag"
+        @pointerup="finishImmersiveStageDrag"
+        @pointercancel="finishImmersiveStageDrag"
+        @lostpointercapture="finishImmersiveStageDrag"
+        @wheel="handleImmersiveSceneWheel"
+        @dblclick="resetImmersiveStageView"
       >
-        <Transition name="immersive-lyric-status" mode="out-in">
-          <span :key="immersiveLyricsStatusLabel" class="music-immersive-lyrics-status">
-            {{ immersiveLyricsStatusLabel }}
-          </span>
-        </Transition>
-        <div class="music-immersive-lyrics-stack">
-          <div class="music-immersive-lyrics-slot side">
-            <Transition name="immersive-lyric-side" mode="out-in">
-              <p :key="immersiveLyrics.previousKey" class="music-immersive-lyrics-line previous">
-                {{ immersiveLyrics.previous }}
-              </p>
-            </Transition>
-          </div>
-          <div class="music-immersive-lyrics-slot main">
-            <Transition name="immersive-lyric-main">
-              <p
-                :key="immersiveLyrics.currentKey"
-                class="music-immersive-lyrics-line current"
-                :style="{ '--lyric-progress': `${Math.round(immersiveLyrics.progress * 1000) / 10}%` }"
-              >
-                <span class="music-immersive-lyrics-line-text">
-                  {{ immersiveLyrics.current }}
-                </span>
-              </p>
-            </Transition>
-          </div>
-          <div class="music-immersive-lyrics-slot side">
-            <Transition name="immersive-lyric-side" mode="out-in">
-              <p :key="immersiveLyrics.nextKey" class="music-immersive-lyrics-line next">
-                {{ lyricsStatus === 'error' ? lyricsError : immersiveLyrics.next }}
-              </p>
-            </Transition>
-          </div>
-        </div>
-      </section>
+        <div class="music-immersive-stage" :style="immersiveStageStyle">
+          <div class="music-immersive-stage-backdrop" aria-hidden="true" />
+          <MusicVisualizerCanvas
+            :frequency-data="visualFrequencyData"
+            :energy="visualEnergyFrame"
+            :playing="playing"
+            :mode="visualMode"
+            :spectrum-style="canvasSpectrumStyle"
+            :line-style="canvasLineStyle"
+            :ripple-style="canvasRippleStyle"
+            :intensity="visualIntensity"
+            :reduced-motion="visualReducedMotion"
+            :theme="resolvedImmersiveTheme"
+            :disable-foreground="canvasForegroundDisabled"
+          />
+          <MusicWebglStarfield
+            v-if="webglStarfieldActive"
+            :energy="visualEnergyFrame"
+            :frequency-data="visualFrequencyData"
+            :playing="playing"
+            :mode="visualMode"
+            :stage-preset="visualStagePreset"
+            :spectrum-style="visualSpectrumStyle"
+            :line-style="visualLineStyle"
+            :ripple-style="visualRippleStyle"
+            :intensity="visualIntensity"
+            :reduced-motion="visualReducedMotion"
+            :stage-tuning="visualStageTuning"
+            :theme="resolvedImmersiveTheme"
+            :stage-yaw="immersiveStageYaw"
+            :stage-pitch="immersiveStagePitch"
+            :stage-dragging="immersiveStageDragging"
+            :free-camera="immersiveFreeCameraView"
+            @webgl-unavailable="handleWebglStarfieldUnavailable"
+          />
+          <div class="music-immersive-vignette" aria-hidden="true" />
 
-      <header class="music-immersive-header">
+          <section
+            v-if="!immersiveStageOnlyMode"
+            class="music-immersive-lyrics"
+            :class="{
+              'is-synced': immersiveLyrics.synced,
+              'is-loading': lyricsStatus === 'loading',
+              'is-empty': lyricsStatus === 'empty',
+              'is-error': lyricsStatus === 'error',
+              'is-interlude': immersiveLyrics.interlude,
+              'is-reduced-motion': visualReducedMotion,
+              'is-idle': !currentTrack,
+            }"
+            :style="immersiveLyricsLayoutStyle"
+            aria-label="沉浸歌词"
+          >
+            <Transition name="immersive-lyric-status" mode="out-in">
+              <span :key="immersiveLyricsStatusLabel" class="music-immersive-lyrics-status">
+                {{ immersiveLyricsStatusLabel }}
+              </span>
+            </Transition>
+            <div class="music-immersive-lyrics-stack">
+              <div class="music-immersive-lyrics-slot side">
+                <Transition name="immersive-lyric-side" mode="out-in">
+                  <p :key="immersiveLyrics.previousKey" class="music-immersive-lyrics-line previous">
+                    {{ immersiveLyrics.previous }}
+                  </p>
+                </Transition>
+              </div>
+              <div class="music-immersive-lyrics-slot main">
+                <Transition name="immersive-lyric-main">
+                  <p
+                    :key="immersiveLyrics.currentKey"
+                    class="music-immersive-lyrics-line current"
+                    :style="{ '--lyric-progress': `${Math.round(immersiveLyrics.progress * 1000) / 10}%` }"
+                  >
+                    <span class="music-immersive-lyrics-line-text">
+                      {{ immersiveLyrics.current }}
+                    </span>
+                  </p>
+                </Transition>
+              </div>
+              <div class="music-immersive-lyrics-slot side">
+                <Transition name="immersive-lyric-side" mode="out-in">
+                  <p :key="immersiveLyrics.nextKey" class="music-immersive-lyrics-line next">
+                    {{ lyricsStatus === 'error' ? lyricsError : immersiveLyrics.next }}
+                  </p>
+                </Transition>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <button
+        v-if="immersiveStageOnlyMode"
+        type="button"
+        class="music-immersive-stage-only-restore"
+        title="显示完整沉浸界面"
+        aria-label="显示完整沉浸界面"
+        @pointerdown.stop
+        @click="setImmersiveStageOnlyMode(false)"
+      >
+        显示界面
+      </button>
+
+      <header v-if="!immersiveStageOnlyMode" class="music-immersive-header">
         <div>
           <span>{{ visualizerStatusLabel }}</span>
           <h1>{{ currentTrack?.title || '沉浸音乐模式' }}</h1>
@@ -4110,6 +7813,15 @@ function clamp(value: number, min: number, max: number) {
           >
             {{ immersiveRhythmPanelVisible ? '隐藏韵律' : '显示韵律' }}
           </button>
+          <button
+            type="button"
+            :class="{ active: immersiveStageOnlyMode }"
+            title="隐藏界面控件，只显示音乐舞台"
+            :aria-pressed="immersiveStageOnlyMode"
+            @click="toggleImmersiveStageOnlyMode"
+          >
+            只看舞台
+          </button>
           <button type="button" title="返回普通播放器" @click="setImmersiveMode(false)">返回</button>
           <button type="button" title="切换小悬浮播放器" @click="setMiniPlayerMode(true)">迷你</button>
           <button type="button" class="window-close" title="隐藏播放器" @click="hideMusicPlayer">
@@ -4118,7 +7830,11 @@ function clamp(value: number, min: number, max: number) {
         </div>
       </header>
 
-      <aside v-if="immersivePlaylistVisible" class="music-immersive-playlist" @pointerdown.stop>
+      <aside
+        v-if="immersivePlaylistVisible && !immersiveStageOnlyMode"
+        class="music-immersive-playlist"
+        @pointerdown.stop
+      >
         <div class="music-immersive-playlist-heading">
           <div class="music-immersive-playlist-title">
             <strong>播放列表</strong>
@@ -4142,6 +7858,15 @@ function clamp(value: number, min: number, max: number) {
               @click="immersivePlaylistSource = 'netease'"
             >
               网易云
+            </button>
+            <button
+              type="button"
+              :class="{ active: immersivePlaylistSource === 'kugou' }"
+              role="tab"
+              :aria-selected="immersivePlaylistSource === 'kugou'"
+              @click="immersivePlaylistSource = 'kugou'"
+            >
+              酷狗
             </button>
           </div>
         </div>
@@ -4190,10 +7915,13 @@ function clamp(value: number, min: number, max: number) {
             :key="`netease-${track.id}`"
             type="button"
             class="music-immersive-playlist-row online"
-            :class="{ active: immersiveNeteaseTrackActive(track) }"
+            :class="{
+              active: immersiveNeteaseTrackActive(track),
+              unavailable: Boolean(neteaseTrackUnavailableReason(track)),
+            }"
             :disabled="!canPlayImmersiveNeteaseTrack(track)"
             :aria-current="immersiveNeteaseTrackActive(track) ? 'true' : undefined"
-            :title="`${track.name} - ${formatNeteaseTrackArtists(track)}`"
+            :title="neteaseTrackUnavailableReason(track) || `${track.name} - ${formatNeteaseTrackArtists(track)}`"
             @click="playImmersiveNeteaseTrack(track)"
           >
             <span class="music-immersive-playlist-index">
@@ -4201,10 +7929,43 @@ function clamp(value: number, min: number, max: number) {
             </span>
             <span class="music-immersive-playlist-main">
               <strong>{{ track.name }}</strong>
-              <small>{{ formatNeteaseTrackArtists(track) }}</small>
+              <small>{{ neteaseTrackUnavailableReason(track) || formatNeteaseTrackArtists(track) }}</small>
             </span>
             <span class="music-immersive-playlist-duration">
-              {{ immersiveNeteaseTrackDurationLabel(track) }}
+              {{ neteaseTrackUnavailableReason(track) ? '不可播' : immersiveNeteaseTrackDurationLabel(track) }}
+            </span>
+          </button>
+        </div>
+
+        <div
+          v-else-if="immersivePlaylistSource === 'kugou' && immersiveKugouPlaylistTracks.length > 0"
+          class="music-immersive-playlist-list"
+          role="list"
+          aria-label="沉浸模式酷狗播放列表"
+        >
+          <button
+            v-for="(track, index) in immersiveKugouPlaylistTracks"
+            :key="`kugou-${track.hash}`"
+            type="button"
+            class="music-immersive-playlist-row online"
+            :class="{
+              active: immersiveKugouTrackActive(track),
+              unavailable: Boolean(kugouTrackUnavailableReason(track)),
+            }"
+            :disabled="!canPlayImmersiveKugouTrack(track)"
+            :aria-current="immersiveKugouTrackActive(track) ? 'true' : undefined"
+            :title="kugouTrackUnavailableReason(track) || `${track.name} - ${formatKugouTrackArtists(track)}`"
+            @click="playImmersiveKugouTrack(track)"
+          >
+            <span class="music-immersive-playlist-index">
+              {{ immersiveKugouTrackActive(track) ? '▶' : index + 1 }}
+            </span>
+            <span class="music-immersive-playlist-main">
+              <strong>{{ track.name }}</strong>
+              <small>{{ kugouTrackUnavailableReason(track) || formatKugouTrackArtists(track) }}</small>
+            </span>
+            <span class="music-immersive-playlist-duration">
+              {{ kugouTrackUnavailableReason(track) ? '不可播' : immersiveKugouTrackDurationLabel(track) }}
             </span>
           </button>
         </div>
@@ -4214,23 +7975,71 @@ function clamp(value: number, min: number, max: number) {
         </div>
       </aside>
 
-      <aside v-if="immersiveRhythmPanelVisible" class="music-immersive-panel" @pointerdown.stop>
+      <aside
+        v-if="immersiveRhythmPanelVisible && !immersiveStageOnlyMode"
+        class="music-immersive-panel"
+        @pointerdown.stop
+      >
         <div class="music-immersive-panel-heading">
-          <strong>{{ visualModeLabel }}</strong>
+          <strong>{{ visualStagePresetLabel }}</strong>
           <span>能量 {{ visualizerEnergyLabel }}</span>
         </div>
 
-        <div class="music-visual-mode-grid" role="tablist" aria-label="沉浸视觉模式">
-          <button
-            v-for="option in visualModeOptions"
-            :key="option.value"
-            type="button"
-            :class="{ active: visualMode === option.value }"
-            :title="option.description"
-            @click="visualMode = option.value"
-          >
-            {{ option.label }}
-          </button>
+        <div class="music-immersive-panel-section">
+          <span>舞台预设</span>
+          <div class="music-stage-preset-grid" role="tablist" aria-label="沉浸舞台预设">
+            <button
+              v-for="option in stagePresetOptions"
+              :key="option.value"
+              type="button"
+              :class="{ active: visualStagePreset === option.value }"
+              :title="option.description"
+              @click="setVisualStagePreset(option.value)"
+            >
+              <span class="music-stage-preset-kicker">{{ option.kicker }}</span>
+              <span class="music-stage-preset-swatches" aria-hidden="true">
+                <span
+                  v-for="swatch in option.swatches"
+                  :key="swatch"
+                  :style="{ background: swatch }"
+                />
+              </span>
+              <span class="music-stage-preset-copy">
+                <strong>{{ option.label }}</strong>
+                <small>{{ option.description }}</small>
+              </span>
+              <span class="music-stage-preset-metrics" aria-hidden="true">
+                <span v-for="metric in option.metrics" :key="metric">{{ metric }}</span>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div class="music-immersive-panel-section">
+          <span>主题</span>
+          <div class="music-immersive-theme-grid" role="tablist" aria-label="沉浸主题风格">
+            <button
+              v-for="option in immersiveThemeOptions"
+              :key="option.value"
+              type="button"
+              :class="{ active: musicImmersiveThemePreference === option.value }"
+              :title="option.description"
+              :disabled="immersiveThemeSaving"
+              @click="setMusicImmersiveThemePreference(option.value)"
+            >
+              <span class="music-immersive-theme-card-art" aria-hidden="true">
+                <span
+                  v-for="swatch in option.swatches"
+                  :key="swatch"
+                  :style="{ background: swatch }"
+                />
+              </span>
+              <span class="music-immersive-theme-card-copy">
+                <strong>{{ option.label }}</strong>
+                <small>{{ option.description }}</small>
+              </span>
+            </button>
+          </div>
         </div>
 
         <label class="music-immersive-range">
@@ -4244,6 +8053,31 @@ function clamp(value: number, min: number, max: number) {
             aria-label="可视化强度"
           />
         </label>
+
+        <div class="music-immersive-panel-section music-stage-tuning-panel">
+          <span>舞台参数</span>
+          <div class="music-stage-tuning-grid">
+            <label
+              v-for="option in stageTuningOptions"
+              :key="option.key"
+              class="music-immersive-range music-stage-tuning-range"
+            >
+              <span>{{ option.label }}</span>
+              <input
+                v-model.number="visualStageTuning[option.key]"
+                type="range"
+                :min="option.min"
+                :max="option.max"
+                :step="option.step"
+                :aria-label="option.ariaLabel"
+              />
+              <output>{{ formatStageTuningValue(visualStageTuning[option.key]) }}</output>
+            </label>
+          </div>
+          <div class="music-stage-tuning-actions">
+            <button type="button" @click="resetVisualStageTuning">重置参数</button>
+          </div>
+        </div>
 
         <label class="music-immersive-range music-immersive-offset">
           歌词
@@ -4264,38 +8098,53 @@ function clamp(value: number, min: number, max: number) {
         </label>
 
         <p
-          v-if="beatMapError || (analyzerError && !beatMapMatchesCurrentTrack)"
+          v-if="immersiveThemeError || beatMapError || (analyzerError && !beatMapMatchesCurrentTrack)"
           class="music-immersive-warning"
         >
-          {{ visualizerHintLabel }}
+          {{ immersiveThemeError || visualizerHintLabel }}
         </p>
         <p v-else class="music-immersive-hint">
           {{ visualizerHintLabel }}
         </p>
       </aside>
 
-      <div v-if="!currentTrack" class="music-immersive-empty" @pointerdown.stop>
+      <div v-if="!currentTrack && !immersiveStageOnlyMode" class="music-immersive-empty" @pointerdown.stop>
         <strong>还没有正在播放的音乐</strong>
         <span>返回播放器添加或选择本地歌曲。</span>
         <button type="button" @click="setImmersiveMode(false)">返回播放器</button>
       </div>
 
-      <footer class="music-immersive-controls" @pointerdown.stop>
+      <footer v-if="!immersiveStageOnlyMode" class="music-immersive-controls" @pointerdown.stop>
         <div class="music-immersive-main-controls">
-          <button type="button" :disabled="!hasTracks" title="上一首" @click="playPrevious">
-            上一首
+          <button
+            type="button"
+            class="music-control-icon"
+            :disabled="!hasTracks"
+            title="上一首"
+            aria-label="上一首"
+            @click="playPrevious"
+          >
+            <span aria-hidden="true">‹</span>
           </button>
           <button
             type="button"
-            class="music-play-button"
+            class="music-control-icon music-play-button"
             :disabled="!hasTracks"
             :title="playing ? '暂停' : '播放'"
+            :aria-label="playing ? '暂停' : '播放'"
             @click="togglePlay"
           >
-            {{ playing ? '暂停' : '播放' }}
+            <span aria-hidden="true">{{ playing ? 'Ⅱ' : '▶' }}</span>
           </button>
-          <button type="button" :disabled="!hasTracks" title="下一首" @click="playNext(true)">
-            下一首
+          <button
+            type="button"
+            class="music-control-icon"
+            :disabled="!hasTracks"
+            title="下一首"
+            aria-label="下一首"
+            @click="playNext(true)"
+          >
+            <span aria-hidden="true">›</span>
           </button>
         </div>
 
@@ -4317,14 +8166,24 @@ function clamp(value: number, min: number, max: number) {
         <div class="music-immersive-options">
           <button
             type="button"
+            class="music-control-icon"
             :class="{ active: shuffleEnabled }"
-            :disabled="tracks.length < 2"
+            :disabled="playbackListTrackCount < 2"
+            title="随机播放"
+            aria-label="随机播放"
             @click="shuffleEnabled = !shuffleEnabled"
           >
-            随机
+            <span aria-hidden="true">⇄</span>
           </button>
-          <button type="button" :disabled="!hasTracks" @click="toggleRepeatMode">
-            {{ repeatModeLabel }}
+          <button
+            type="button"
+            class="music-control-icon"
+            :disabled="!hasTracks"
+            :title="repeatModeLabel"
+            :aria-label="repeatModeLabel"
+            @click="toggleRepeatMode"
+          >
+            <span aria-hidden="true">{{ repeatModeIcon }}</span>
           </button>
           <label>
             音量
@@ -4346,9 +8205,18 @@ function clamp(value: number, min: number, max: number) {
     <header class="music-header" @pointerdown="startDrag">
       <div class="music-header-title">
         <h1>音乐播放</h1>
-        <p>{{ currentTrack ? (currentTrackOnline ? '正在播放网易云在线音乐' : '正在播放本机音乐') : '选择音频开始播放' }}</p>
+        <p>{{ currentTrack ? `正在播放${currentTrackPlatformLabel}` : '选择音频开始播放' }}</p>
       </div>
       <div class="music-header-actions" @pointerdown="stopHeaderDrag">
+        <button
+          type="button"
+          :class="{ active: listFocusMode }"
+          :title="listFocusMode ? '恢复播放工作台布局' : '扩大歌曲列表浏览区'"
+          :aria-pressed="listFocusMode"
+          @click="listFocusMode = !listFocusMode"
+        >
+          列表
+        </button>
         <button type="button" title="进入沉浸式音乐模式" @click="toggleImmersiveMode">沉浸</button>
         <button type="button" title="切换小悬浮播放器" @click="toggleMiniPlayerMode">迷你</button>
         <button type="button" title="打开音乐设置" @click="showMusicSettings">设置</button>
@@ -4364,69 +8232,63 @@ function clamp(value: number, min: number, max: number) {
       <option v-for="tag in tagOptions" :key="tag" :value="tag" />
     </datalist>
 
-    <section class="music-now">
-      <div class="music-disc" :class="{ 'music-disc-playing': playing }" aria-hidden="true">
-        <span />
-      </div>
-      <div class="music-current-copy">
-        <strong>{{ currentTrack?.title || '未选择音乐' }}</strong>
-        <small v-if="currentTrack" class="music-current-artist">
-          {{ trackArtistLabel(currentTrack) }}
-        </small>
-        <small v-if="currentTrack" class="music-current-meta" :title="trackSourceTitle(currentTrack)">
-          {{ formatCurrentTrackDetail(currentTrack) }}
-        </small>
-        <small v-else class="music-current-meta">支持 mp3、wav、flac、m4a、aac、ogg、webm。</small>
-      </div>
-    </section>
-
-    <section class="music-controls" aria-label="播放控制">
-      <div class="music-main-controls">
-        <button type="button" :disabled="!hasTracks" title="上一首" @click="playPrevious">
-          上一首
-        </button>
-        <button
-          type="button"
-          class="music-play-button"
-          :disabled="!hasTracks"
-          :title="playing ? '暂停' : '播放'"
-          @click="togglePlay"
-        >
-          {{ playing ? '暂停' : '播放' }}
-        </button>
-        <button type="button" :disabled="!hasTracks" title="下一首" @click="playNext(true)">
-          下一首
-        </button>
-      </div>
-
-      <div class="music-progress-row">
-        <span>{{ formatTime(progressValue) }}</span>
-        <input
-          type="range"
-          min="0"
-          :max="durationValue"
-          step="1"
-          :value="progressValue"
-          :disabled="!currentTrack || durationValue <= 0"
-          aria-label="播放进度"
-          @input="seek"
-        />
-        <span>{{ formatTime(durationValue) }}</span>
-      </div>
-
-      <div class="music-option-row">
-        <button
-          type="button"
-          :class="{ active: shuffleEnabled }"
-          :disabled="tracks.length < 2"
-          @click="shuffleEnabled = !shuffleEnabled"
-        >
-          随机
-        </button>
-        <button type="button" :disabled="!hasTracks" @click="toggleRepeatMode">
-          {{ repeatModeLabel }}
-        </button>
-        <label>
+    <section class="music-standard-shell">
+      <section v-if="listFocusMode" class="music-list-player-bar" aria-label="列表模式播放控制">
+        <div class="music-list-now">
+          <div class="music-cover-frame music-list-cover-frame" aria-hidden="true">
+            <img
+              v-if="currentTrack?.coverImgUrl"
+              class="music-cover-image"
+              :src="currentTrack.coverImgUrl"
+              alt=""
+              draggable="false"
+              referrerpolicy="no-referrer"
+              @error="handleCurrentCoverImageError"
+            />
+            <div v-else class="music-disc" :class="{ 'music-disc-playing': playing }">
+              <span />
+            </div>
+          </div>
+          <div class="music-list-now-copy">
+            <strong>{{ currentTrack?.title || '未选择音乐' }}</strong>
+            <small>
+              {{ currentTrack ? `${trackArtistLabel(currentTrack)} · ${currentTrackPlatformLabel}` : '选择歌曲后开始播放' }}
+            </small>
+          </div>
+        </div>
+        <div class="music-main-controls">
+          <button
+            type="button"
+            class="music-control-icon"
+            :disabled="!hasTracks"
+            title="上一首"
+            aria-label="上一首"
+            @click="playPrevious"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+          <button
+            type="button"
+            class="music-control-icon music-play-button"
+            :disabled="!hasTracks"
+            :title="playing ? '暂停' : '播放'"
+            :aria-label="playing ? '暂停' : '播放'"
+            @click="togglePlay"
+          >
+            <span aria-hidden="true">{{ playing ? 'Ⅱ' : '▶' }}</span>
+          </button>
+          <button
+            type="button"
+            class="music-control-icon"
+            :disabled="!hasTracks"
+            title="下一首"
+            aria-label="下一首"
+            @click="playNext(true)"
+          >
+            <span aria-hidden="true">›</span>
+          </button>
+        </div>
+        <label class="music-volume-row">
           音量
           <input
             type="range"
@@ -4438,13 +8300,420 @@ function clamp(value: number, min: number, max: number) {
             @input="setVolume"
           />
         </label>
-      </div>
-    </section>
+        <div class="music-option-row">
+          <button
+            type="button"
+            class="music-control-icon"
+            :class="{ active: shuffleEnabled }"
+            :disabled="playbackListTrackCount < 2"
+            title="随机播放"
+            aria-label="随机播放"
+            @click="shuffleEnabled = !shuffleEnabled"
+          >
+            <span aria-hidden="true">⇄</span>
+          </button>
+          <button
+            type="button"
+            class="music-control-icon"
+            :disabled="!hasTracks"
+            :title="repeatModeLabel"
+            :aria-label="repeatModeLabel"
+            @click="toggleRepeatMode"
+          >
+            <span aria-hidden="true">{{ repeatModeIcon }}</span>
+          </button>
+          <div class="music-progress-row">
+            <span>{{ formatTime(progressValue) }}</span>
+            <input
+              type="range"
+              min="0"
+              :max="durationValue"
+              step="1"
+              :value="progressValue"
+              :disabled="!currentTrack || durationValue <= 0"
+              aria-label="播放进度"
+              @input="seek"
+            />
+            <span>{{ formatTime(durationValue) }}</span>
+          </div>
+        </div>
+        <div v-if="playerStatus || playerError" class="music-list-feedback">
+          <span v-if="playerStatus">{{ playerStatus }}</span>
+          <span v-if="playerError" class="error">{{ playerError }}</span>
+        </div>
+      </section>
+      <aside class="music-player-panel" aria-label="当前播放和控制">
+        <section class="music-now">
+          <div class="music-cover-frame" aria-hidden="true">
+            <img
+              v-if="currentTrack?.coverImgUrl"
+              class="music-cover-image"
+              :src="currentTrack.coverImgUrl"
+              alt=""
+              draggable="false"
+              referrerpolicy="no-referrer"
+              @error="handleCurrentCoverImageError"
+            />
+            <div v-else class="music-disc" :class="{ 'music-disc-playing': playing }">
+              <span />
+            </div>
+          </div>
+          <div class="music-current-copy">
+            <strong>{{ currentTrack?.title || '未选择音乐' }}</strong>
+            <small v-if="currentTrack" class="music-current-artist">
+              {{ trackArtistLabel(currentTrack) }}
+            </small>
+            <small v-if="currentTrack" class="music-current-meta" :title="trackSourceTitle(currentTrack)">
+              {{ formatCurrentTrackDetail(currentTrack) }}
+            </small>
+            <small v-else class="music-current-meta">支持 mp3、wav、flac、m4a、aac、ogg、webm。</small>
+          </div>
+        </section>
 
-    <p v-if="playerStatus" class="music-status">{{ playerStatus }}</p>
-    <p v-if="playerError" class="music-error">{{ playerError }}</p>
+        <section class="music-controls" aria-label="播放控制">
+          <div class="music-control-strip">
+            <div class="music-main-controls">
+              <button
+                type="button"
+                class="music-control-icon"
+                :disabled="!hasTracks"
+                title="上一首"
+                aria-label="上一首"
+                @click="playPrevious"
+              >
+                <span aria-hidden="true">‹</span>
+              </button>
+              <button
+                type="button"
+                class="music-control-icon music-play-button"
+                :disabled="!hasTracks"
+                :title="playing ? '暂停' : '播放'"
+                :aria-label="playing ? '暂停' : '播放'"
+                @click="togglePlay"
+              >
+                <span aria-hidden="true">{{ playing ? 'Ⅱ' : '▶' }}</span>
+              </button>
+              <button
+                type="button"
+                class="music-control-icon"
+                :disabled="!hasTracks"
+                title="下一首"
+                aria-label="下一首"
+                @click="playNext(true)"
+              >
+                <span aria-hidden="true">›</span>
+              </button>
+            </div>
 
-    <section class="music-playlist">
+            <label class="music-volume-row">
+              音量
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                :value="volume"
+                aria-label="音量"
+                @input="setVolume"
+              />
+            </label>
+          </div>
+
+          <div class="music-option-row">
+            <button
+              type="button"
+              class="music-control-icon"
+              :class="{ active: shuffleEnabled }"
+              :disabled="playbackListTrackCount < 2"
+              title="随机播放"
+              aria-label="随机播放"
+              @click="shuffleEnabled = !shuffleEnabled"
+            >
+              <span aria-hidden="true">⇄</span>
+            </button>
+            <button
+              type="button"
+              class="music-control-icon"
+              :disabled="!hasTracks"
+              :title="repeatModeLabel"
+              :aria-label="repeatModeLabel"
+              @click="toggleRepeatMode"
+            >
+              <span aria-hidden="true">{{ repeatModeIcon }}</span>
+            </button>
+            <div class="music-progress-row">
+              <span>{{ formatTime(progressValue) }}</span>
+              <input
+                type="range"
+                min="0"
+                :max="durationValue"
+                step="1"
+                :value="progressValue"
+                :disabled="!currentTrack || durationValue <= 0"
+                aria-label="播放进度"
+                @input="seek"
+              />
+              <span>{{ formatTime(durationValue) }}</span>
+            </div>
+          </div>
+        </section>
+
+        <div v-if="playerStatus || playerError" class="music-feedback-stack">
+          <p v-if="playerStatus" class="music-status">{{ playerStatus }}</p>
+          <p v-if="playerError" class="music-error">{{ playerError }}</p>
+        </div>
+
+        <section class="music-playlist-section music-left-playlists" aria-label="我的歌单">
+          <header class="music-playlist-section-header">
+            <div>
+              <strong>我的歌单</strong>
+              <span v-if="activePanelView === 'library'">{{ leftLocalPlaylistStatusLabel }}</span>
+              <span v-else-if="activePanelView === 'netease'">{{ leftNeteasePlaylistStatusLabel }}</span>
+              <span v-else>{{ leftKugouPlaylistStatusLabel }}</span>
+            </div>
+          </header>
+
+          <div class="music-left-playlist-groups">
+            <section
+              v-if="activePanelView === 'library'"
+              class="music-left-playlist-group"
+              aria-label="本地我的歌单"
+            >
+              <header class="music-left-playlist-group-header">
+                <div>
+                  <strong>本地我的歌单</strong>
+                  <span>{{ leftLocalPlaylistStatusLabel }}</span>
+                </div>
+              </header>
+
+              <form class="music-playlist-create" @submit.prevent="createCustomPlaylist">
+                <input
+                  v-model="newPlaylistName"
+                  autocomplete="off"
+                  placeholder="新建本地歌单"
+                  aria-label="新建本地歌单"
+                />
+                <button type="submit">新建</button>
+              </form>
+
+              <div v-if="customPlaylists.length > 0" class="music-custom-playlists">
+                <article
+                  v-for="playlist in customPlaylists"
+                  :key="playlist.id"
+                  class="music-custom-playlist-card"
+                  :class="{ active: activeCustomPlaylistId === playlist.id }"
+                >
+                  <button
+                    type="button"
+                    class="music-custom-playlist-summary"
+                    @click="selectCustomPlaylist(playlist.id)"
+                  >
+                    <span aria-hidden="true">本</span>
+                    <div>
+                      <strong>{{ playlist.name }}</strong>
+                      <small>{{ playlistTrackCountLabel(playlist) }}</small>
+                      <small>{{ playlistPreviewLabel(playlist) }}</small>
+                    </div>
+                    <span class="music-playlist-card-state" aria-hidden="true">
+                      {{ activeCustomPlaylistId === playlist.id ? '展开' : '›' }}
+                    </span>
+                  </button>
+
+                  <div class="music-custom-playlist-actions">
+                    <button type="button" @click="queueCustomPlaylist(playlist)">队列</button>
+                    <button type="button" @click="openPlaylistTrackPicker(playlist)">加歌</button>
+                    <button type="button" @click="renameCustomPlaylistWithPrompt(playlist)">改名</button>
+                    <button type="button" @click="deleteCustomPlaylist(playlist.id)">删除</button>
+                  </div>
+
+                  <div
+                    v-if="activeCustomPlaylistId === playlist.id"
+                    class="music-custom-playlist-detail"
+                  >
+                    <div
+                      v-for="track in customPlaylistTracks(playlist)"
+                      :key="track.id"
+                      class="music-custom-playlist-track"
+                      draggable="true"
+                      @dragstart="startPlaylistTrackDrag(track.id, $event)"
+                      @dragover.prevent
+                      @drop="dropPlaylistTrack(playlist, track.id, $event)"
+                      @dragend="finishPlaylistTrackDrag"
+                    >
+                      <button type="button" @click="playCustomPlaylistTrack(playlist, track.id)">
+                        <span>{{ track.title }}</span>
+                        <small>{{ trackArtistLabel(track) }}</small>
+                      </button>
+                      <button
+                        type="button"
+                        title="从歌单移除"
+                        aria-label="从歌单移除"
+                        @click="removeTrackFromPlaylist(playlist, track.id)"
+                      >
+                        ×
+                      </button>
+                    </div>
+
+                    <p v-if="customPlaylistTracks(playlist).length === 0" class="music-playlist-empty">
+                      这个歌单还没有歌曲。
+                    </p>
+                  </div>
+                </article>
+              </div>
+
+              <div v-else class="music-empty music-playlist-empty">
+                <strong>还没有本地歌单</strong>
+                <span>输入名称后新建歌单。</span>
+              </div>
+            </section>
+
+            <section
+              v-else-if="activePanelView === 'netease'"
+              class="music-left-playlist-group"
+              aria-label="网易云我的歌单"
+            >
+              <header class="music-left-playlist-group-header">
+                <div>
+                  <strong>网易云我的歌单</strong>
+                  <span>{{ leftNeteasePlaylistStatusLabel }}</span>
+                </div>
+                <button
+                  v-if="neteaseLoggedIn"
+                  type="button"
+                  :disabled="neteasePlaylistsLoading || neteasePlaylistDetailLoading"
+                  @click="refreshNeteasePlaylistsFromLeft"
+                >
+                  {{ neteasePlaylistsLoading ? '读取中' : '刷新' }}
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  :disabled="neteaseLoginBusy"
+                  @click="openNeteaseLoginFromLeft"
+                >
+                  登录
+                </button>
+              </header>
+
+              <div
+                v-if="neteaseLoggedIn && neteasePlaylists.length > 0"
+                class="music-left-source-playlists"
+              >
+                <article
+                  v-for="playlist in neteasePlaylists"
+                  :key="playlist.id"
+                  class="music-left-source-playlist-card"
+                  :class="{ active: playlist.id === neteaseSelectedPlaylistId }"
+                >
+                  <button
+                    type="button"
+                    class="music-left-source-playlist-summary"
+                    :disabled="neteasePlaylistDetailLoading"
+                    @click="openNeteasePlaylistFromLeft(playlist)"
+                  >
+                    <img
+                      v-if="playlist.coverImgUrl"
+                      :src="playlist.coverImgUrl"
+                      alt=""
+                      referrerpolicy="no-referrer"
+                    />
+                    <span v-else aria-hidden="true">云</span>
+                    <div>
+                      <strong>{{ playlist.name }}</strong>
+                      <small>{{ formatNeteasePlaylistMeta(playlist) }}</small>
+                      <small v-if="formatNeteasePlaylistUpdate(playlist)">
+                        {{ formatNeteasePlaylistUpdate(playlist) }}
+                      </small>
+                    </div>
+                    <span class="music-playlist-card-state" aria-hidden="true">
+                      {{ playlist.id === neteaseSelectedPlaylistId ? '当前' : '›' }}
+                    </span>
+                  </button>
+                </article>
+              </div>
+
+              <div v-else class="music-left-playlist-empty">
+                <strong>{{ neteaseLoggedIn ? '暂无网易云歌单' : '未登录网易云' }}</strong>
+                <span>{{ neteaseLoggedIn ? '点击刷新读取我的歌单。' : '登录后显示网易云我的歌单。' }}</span>
+              </div>
+            </section>
+
+            <section
+              v-else-if="activePanelView === 'kugou'"
+              class="music-left-playlist-group"
+              aria-label="酷狗我的歌单"
+            >
+              <header class="music-left-playlist-group-header">
+                <div>
+                  <strong>酷狗我的歌单</strong>
+                  <span>{{ leftKugouPlaylistStatusLabel }}</span>
+                </div>
+                <button
+                  v-if="kugouLoggedIn"
+                  type="button"
+                  :disabled="kugouPlaylistsLoading || kugouPlaylistDetailLoading"
+                  @click="refreshKugouPlaylistsFromLeft"
+                >
+                  {{ kugouPlaylistsLoading ? '读取中' : '刷新' }}
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  :disabled="kugouLoginBusy"
+                  @click="openKugouLoginFromLeft"
+                >
+                  登录
+                </button>
+              </header>
+
+              <div
+                v-if="kugouLoggedIn && kugouPlaylists.length > 0"
+                class="music-left-source-playlists"
+              >
+                <article
+                  v-for="playlist in kugouPlaylists"
+                  :key="playlist.listId"
+                  class="music-left-source-playlist-card"
+                  :class="{ active: playlist.listId === kugouSelectedPlaylistId }"
+                >
+                  <button
+                    type="button"
+                    class="music-left-source-playlist-summary"
+                    :disabled="kugouPlaylistDetailLoading"
+                    @click="openKugouPlaylistFromLeft(playlist)"
+                  >
+                    <img
+                      v-if="playlist.coverImgUrl"
+                      :src="playlist.coverImgUrl"
+                      alt=""
+                      referrerpolicy="no-referrer"
+                    />
+                    <span v-else aria-hidden="true">酷</span>
+                    <div>
+                      <strong>{{ playlist.name }}</strong>
+                      <small>{{ formatKugouPlaylistMeta(playlist) }}</small>
+                      <small v-if="formatKugouPlaylistUpdate(playlist)">
+                        {{ formatKugouPlaylistUpdate(playlist) }}
+                      </small>
+                    </div>
+                    <span class="music-playlist-card-state" aria-hidden="true">
+                      {{ playlist.listId === kugouSelectedPlaylistId ? '当前' : '›' }}
+                    </span>
+                  </button>
+                </article>
+              </div>
+
+              <div v-else class="music-left-playlist-empty">
+                <strong>{{ kugouLoggedIn ? '暂无酷狗歌单' : '未登录酷狗' }}</strong>
+                <span>{{ kugouLoggedIn ? '点击刷新读取我的歌单。' : '登录后显示酷狗我的歌单。' }}</span>
+              </div>
+            </section>
+          </div>
+        </section>
+      </aside>
+
+      <section class="music-content-panel" aria-label="音乐内容">
+        <section class="music-playlist">
       <div class="music-playlist-header">
         <div class="music-panel-tabs" role="tablist" aria-label="音乐功能分区">
           <button
@@ -4510,153 +8779,7 @@ function clamp(value: number, min: number, max: number) {
         </div>
       </div>
 
-      <div v-if="activePanelView === 'playlists'" class="music-playlist-manager">
-        <section class="music-playlist-section">
-          <header class="music-playlist-section-header">
-            <div>
-              <strong>场景电台</strong>
-              <span>按标签自动选歌，点击后直接播放一组歌曲。</span>
-            </div>
-          </header>
-
-          <div class="music-shortcut-grid music-scene-grid">
-            <button
-              v-for="scenePlaylist in scenePlaylistOptions"
-              :key="scenePlaylist.id"
-              type="button"
-              class="music-shortcut-card"
-              :disabled="scenePlaylistTrackCount(scenePlaylist) === 0"
-              :title="scenePlaylist.description"
-              @click="playScenePlaylist(scenePlaylist)"
-            >
-              <strong>{{ scenePlaylist.title }}</strong>
-              <span>{{ scenePlaylistDescription(scenePlaylist) }}</span>
-            </button>
-          </div>
-        </section>
-
-        <section class="music-playlist-section">
-          <header class="music-playlist-section-header">
-            <div>
-              <strong>我的歌单</strong>
-              <span>{{ customPlaylists.length }} 个歌单 · 点击歌单展开歌曲</span>
-            </div>
-            <div class="music-playlist-create">
-              <input
-                v-model="newPlaylistName"
-                autocomplete="off"
-                placeholder="新建歌单"
-                @keydown.enter="createCustomPlaylist"
-              />
-              <button type="button" @click="createCustomPlaylist">新建</button>
-            </div>
-          </header>
-
-          <div v-if="customPlaylists.length > 0" class="music-custom-playlists">
-            <article
-              v-for="playlist in customPlaylists"
-              :key="playlist.id"
-              class="music-custom-playlist-card"
-              :class="{ active: activeCustomPlaylistId === playlist.id }"
-            >
-              <button
-                type="button"
-                class="music-custom-playlist-summary"
-                @click="selectCustomPlaylist(playlist.id)"
-              >
-                <span aria-hidden="true">{{ activeCustomPlaylistId === playlist.id ? '▾' : '▸' }}</span>
-                <div>
-                  <strong>{{ playlist.name }}</strong>
-                  <small>{{ playlistTrackCountLabel(playlist) }}</small>
-                </div>
-                <small>{{ playlistPreviewLabel(playlist) }}</small>
-              </button>
-
-              <div class="music-custom-playlist-actions">
-                <button type="button" @click="playCustomPlaylist(playlist)">播放</button>
-                <button type="button" @click="queueCustomPlaylist(playlist)">入队</button>
-                <button type="button" @click="openPlaylistTrackPicker(playlist)">加歌</button>
-                <button type="button" @click="renameCustomPlaylistWithPrompt(playlist)">改名</button>
-                <button type="button" @click="deleteCustomPlaylist(playlist.id)">删除</button>
-              </div>
-
-              <div
-                v-if="activeCustomPlaylistId === playlist.id"
-                class="music-custom-playlist-detail"
-              >
-                <div v-if="customPlaylistTracks(playlist).length > 0" class="music-track-list">
-                  <article
-                    v-for="track in customPlaylistTracks(playlist)"
-                    :key="track.id"
-                    class="music-track-row"
-                    :class="{
-                      active: currentTrack?.id === track.id,
-                      dragging: draggingPlaylistTrackId === track.id,
-                    }"
-                    draggable="true"
-                    @dragstart="startPlaylistTrackDrag(track.id, $event)"
-                    @dragover.prevent
-                    @drop="dropPlaylistTrack(playlist, track.id, $event)"
-                    @dragend="finishPlaylistTrackDrag"
-                  >
-                    <button type="button" class="music-track-main" @click="playTrackById(track.id)">
-                      <span>{{ playlist.trackIds.indexOf(track.id) + 1 }}</span>
-                      <div>
-                        <strong>{{ track.title }}</strong>
-                        <small class="music-track-artist">{{ trackArtistLabel(track) }}</small>
-                        <small class="music-track-meta" :title="trackSourceTitle(track)">
-                          {{ formatTrackListMeta(track) }}
-                        </small>
-                      </div>
-                    </button>
-                    <div class="music-track-actions">
-                      <button
-                        type="button"
-                        class="music-track-more"
-                        title="从歌单移除"
-                        aria-label="从歌单移除"
-                        @click="removeTrackFromPlaylist(playlist, track.id)"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </article>
-                </div>
-                <div v-else class="music-empty music-playlist-empty">
-                  <strong>歌单暂无歌曲</strong>
-                  <span>点击“加歌”从本地音乐库中选择。</span>
-                </div>
-              </div>
-            </article>
-          </div>
-
-          <div v-else class="music-empty">
-            <strong>暂无自定义歌单</strong>
-            <span>输入名称后创建第一个歌单。</span>
-          </div>
-        </section>
-      </div>
-
-      <div v-else-if="activePanelView === 'ai'" class="music-ai-panel">
-        <strong>AI 推荐</strong>
-        <p>{{ aiRecommendationSummary }}</p>
-        <div class="music-shortcut-grid">
-          <button
-            v-for="option in aiRecommendationOptions"
-            :key="option.id"
-            type="button"
-            class="music-shortcut-card"
-            :disabled="aiRecommendationTrackCount(option) === 0"
-            :title="option.description"
-            @click="playAiRecommendation(option)"
-          >
-            <strong>{{ option.title }}</strong>
-            <span>{{ aiRecommendationDescription(option) }}</span>
-          </button>
-        </div>
-      </div>
-
-      <div v-else-if="activePanelView === 'netease'" class="music-platform-panel">
+      <div v-if="activePanelView === 'netease'" class="music-platform-panel">
         <section class="music-platform-card">
           <header class="music-platform-header">
             <div>
@@ -4666,14 +8789,6 @@ function clamp(value: number, min: number, max: number) {
             <div class="music-platform-actions">
               <button type="button" :disabled="neteaseLoginBusy" @click="refreshNeteaseLoginStatus(true)">
                 刷新
-              </button>
-              <button
-                v-if="neteaseLoggedIn"
-                type="button"
-                :disabled="neteasePlaylistsLoading || neteasePlaylistDetailLoading"
-                @click="refreshNeteasePlaylists(true)"
-              >
-                {{ neteasePlaylistsLoading ? '读取中' : '读取歌单' }}
               </button>
               <button
                 v-if="!neteaseLoggedIn"
@@ -4702,6 +8817,13 @@ function clamp(value: number, min: number, max: number) {
             <div>
               <strong>{{ neteaseProfile.nickname }}</strong>
               <span>用户 ID {{ neteaseProfile.userId }}</span>
+              <span
+                class="music-platform-membership"
+                :class="{ active: neteaseProfile.membership?.active }"
+              >
+                <span>{{ platformMembershipStatusLabel(neteaseProfile.membership) }}</span>
+                <small>{{ platformMembershipDetailLabel(neteaseProfile.membership) }}</small>
+              </span>
               <small v-if="neteaseLoginStatus?.savedAt">
                 本机保存于 {{ formatNeteaseTimestamp(neteaseLoginStatus.savedAt) }}
               </small>
@@ -4737,13 +8859,118 @@ function clamp(value: number, min: number, max: number) {
           </p>
         </section>
 
+        <section class="music-platform-card">
+          <header class="music-platform-section-header">
+            <div>
+              <strong>搜索网易云</strong>
+              <span>{{ neteaseSearchStatusDetail }}</span>
+            </div>
+            <span>{{ neteaseSearchLoadedLabel }}</span>
+          </header>
+
+          <div class="music-platform-search-row">
+            <label class="music-platform-search">
+              <span>关键词</span>
+              <input
+                v-model="neteaseSearchQuery"
+                autocomplete="off"
+                placeholder="搜索歌曲、歌手或专辑"
+                @keydown.enter="searchNeteaseSongs()"
+              />
+            </label>
+            <button type="button" :disabled="neteaseSearchLoading" @click="searchNeteaseSongs()">
+              {{ neteaseSearchLoading ? '搜索中' : '搜索' }}
+            </button>
+          </div>
+
+          <p
+            v-if="neteaseSearchError || neteaseSearchNotice"
+            class="music-platform-message"
+            :class="{ error: Boolean(neteaseSearchError) }"
+          >
+            {{ neteaseSearchStatusDetail }}
+          </p>
+
+          <div v-if="neteaseSearchLoading && neteaseSearchTracks.length === 0" class="music-platform-empty">
+            <strong>正在搜索网易云音乐</strong>
+            <span>搜索结果只保存在当前运行状态，不写入本机曲库。</span>
+          </div>
+
+          <div v-else-if="neteaseSearchResult && neteaseSearchTracks.length === 0" class="music-platform-empty">
+            <strong>暂无网易云结果</strong>
+            <span>换一个关键词再试。</span>
+          </div>
+
+          <div v-else-if="neteaseSearchTracks.length > 0" class="music-platform-track-list">
+            <article
+              v-for="(track, index) in neteaseSearchTracks"
+              :key="`netease-search-${track.id}-${index}`"
+              class="music-platform-track-row"
+              :class="{
+                active: currentTrack?.source === 'netease' && currentTrack.neteaseSongId === track.id,
+                unavailable: Boolean(neteaseTrackUnavailableReason(track)),
+              }"
+            >
+              <span class="music-platform-track-index">{{ index + 1 }}</span>
+              <img
+                v-if="track.coverImgUrl"
+                :src="track.coverImgUrl"
+                alt=""
+                referrerpolicy="no-referrer"
+              />
+              <span v-else class="music-platform-track-cover" aria-hidden="true">云</span>
+              <span class="music-platform-track-copy">
+                <strong>{{ track.name }}</strong>
+                <small :title="formatNeteaseTrackSubline(track)">
+                  {{ formatNeteaseTrackSubline(track) }}
+                </small>
+                <small
+                  v-if="neteaseTrackUnavailableReason(track)"
+                  class="music-platform-track-warning"
+                  :title="neteaseTrackUnavailableReason(track)"
+                >
+                  不可播放：{{ neteaseTrackUnavailableReason(track) }}
+                </small>
+              </span>
+              <span class="music-platform-track-actions">
+                <button
+                  type="button"
+                  :disabled="!neteaseLoggedIn || (neteaseLyricsLoading && neteaseLyricsTrack?.id === track.id)"
+                  @click="showNeteaseLyrics(track)"
+                >
+                  {{ neteaseLyricsLoading && neteaseLyricsTrack?.id === track.id ? '读取中' : '歌词' }}
+                </button>
+                <button
+                  type="button"
+                  :disabled="!neteaseLoggedIn || neteaseTrackActionId === track.id"
+                  @click="playNeteaseTrack(track, neteaseSearchTracks)"
+                >
+                  {{ neteaseTrackActionId === track.id ? '获取中' : neteaseTrackUnavailableReason(track) ? '重试' : '播放' }}
+                </button>
+              </span>
+            </article>
+          </div>
+
+          <button
+            v-if="neteaseSearchHasMore"
+            type="button"
+            class="music-platform-load-more"
+            :disabled="neteaseSearchLoading"
+            @click="searchNeteaseSongs(true)"
+          >
+            {{ neteaseSearchLoading ? '加载中' : `加载更多（${neteaseSearchLoadedLabel}）` }}
+          </button>
+        </section>
+
         <section v-if="neteaseLoggedIn" class="music-platform-card">
           <header class="music-platform-section-header">
             <div>
-              <strong>我的歌单</strong>
+              <strong>{{ neteaseSelectedPlaylist?.name || '当前歌单' }}</strong>
               <span>{{ neteasePlaylistStatusLabel }}</span>
             </div>
-            <span>{{ neteasePlaylists.length }} 个</span>
+            <span v-if="neteaseSelectedPlaylist">
+              {{ neteasePlaylistLoadedLabel }}
+            </span>
           </header>
 
           <p
@@ -4761,62 +8988,42 @@ function clamp(value: number, min: number, max: number) {
 
           <div v-else-if="neteasePlaylists.length === 0" class="music-platform-empty">
             <strong>暂无歌单数据</strong>
-            <span>点击“读取歌单”重新获取网易云歌单列表。</span>
+            <span>在左下角点击“刷新”读取网易云我的歌单。</span>
           </div>
 
-          <div v-else class="music-platform-playlist-list">
-            <button
-              v-for="playlist in neteasePlaylists"
-              :key="playlist.id"
-              type="button"
-              class="music-platform-playlist-row"
-              :class="{ active: playlist.id === neteaseSelectedPlaylistId }"
-              :disabled="neteasePlaylistDetailLoading"
-              @click="loadNeteasePlaylistDetail(playlist)"
-            >
-              <img
-                v-if="playlist.coverImgUrl"
-                :src="playlist.coverImgUrl"
-                alt=""
-                referrerpolicy="no-referrer"
-              />
-              <span v-else class="music-platform-cover" aria-hidden="true">歌</span>
-              <span class="music-platform-playlist-copy">
-                <strong>{{ playlist.name }}</strong>
-                <small>{{ formatNeteasePlaylistMeta(playlist) }}</small>
-                <small v-if="formatNeteasePlaylistUpdate(playlist)">
-                  {{ formatNeteasePlaylistUpdate(playlist) }}
-                </small>
-              </span>
-            </button>
-          </div>
-
-          <section v-if="neteaseSelectedPlaylist" class="music-platform-detail">
+          <section
+            v-else-if="neteaseSelectedPlaylist"
+            ref="neteasePlaylistDetailSection"
+            class="music-platform-detail"
+          >
             <header class="music-platform-section-header">
               <div>
                 <strong>{{ neteaseSelectedPlaylist.name }}</strong>
-                <span>
-                  {{ neteasePlaylistDetail?.tracks.length ?? 0 }} /
-                  {{ neteasePlaylistDetail?.totalTrackCount ?? neteaseSelectedPlaylist.trackCount }} 首
-                </span>
+                <span>{{ neteasePlaylistLoadedLabel }}</span>
               </div>
-              <span v-if="neteasePlaylistDetail?.truncated">已截断</span>
+              <span v-if="neteasePlaylistHasMore">可继续加载</span>
             </header>
 
-            <div v-if="neteasePlaylistDetailLoading" class="music-platform-empty">
+            <div
+              v-if="neteasePlaylistDetailLoading && !neteasePlaylistDetail?.tracks.length"
+              class="music-platform-empty"
+            >
               <strong>正在读取歌曲摘要</strong>
               <span>读取完成后会显示歌曲、歌手、专辑和时长。</span>
             </div>
 
             <div
-              v-else-if="neteasePlaylistDetail?.tracks.length"
+              v-if="neteasePlaylistDetail?.tracks.length"
               class="music-platform-track-list"
             >
               <article
                 v-for="(track, index) in neteasePlaylistDetail.tracks"
                 :key="`${track.id}-${index}`"
                 class="music-platform-track-row"
-                :class="{ active: currentTrack?.source === 'netease' && currentTrack.neteaseSongId === track.id }"
+                :class="{
+                  active: currentTrack?.source === 'netease' && currentTrack.neteaseSongId === track.id,
+                  unavailable: Boolean(neteaseTrackUnavailableReason(track)),
+                }"
               >
                 <span class="music-platform-track-index">{{ index + 1 }}</span>
                 <img
@@ -4828,8 +9035,16 @@ function clamp(value: number, min: number, max: number) {
                 <span v-else class="music-platform-track-cover" aria-hidden="true">♪</span>
                 <span class="music-platform-track-copy">
                   <strong>{{ track.name }}</strong>
-                  <small>{{ formatNeteaseTrackArtists(track) }}</small>
-                  <small>{{ formatNeteaseTrackMeta(track) }}</small>
+                  <small :title="formatNeteaseTrackSubline(track)">
+                    {{ formatNeteaseTrackSubline(track) }}
+                  </small>
+                  <small
+                    v-if="neteaseTrackUnavailableReason(track)"
+                    class="music-platform-track-warning"
+                    :title="neteaseTrackUnavailableReason(track)"
+                  >
+                    不可播放：{{ neteaseTrackUnavailableReason(track) }}
+                  </small>
                 </span>
                 <span class="music-platform-track-actions">
                   <button
@@ -4842,15 +9057,28 @@ function clamp(value: number, min: number, max: number) {
                   <button
                     type="button"
                     :disabled="neteaseTrackActionId === track.id"
-                    @click="playNeteaseTrack(track)"
+                    @click="playNeteaseTrack(track, neteasePlaylistDetail?.tracks ?? [])"
                   >
-                    {{ neteaseTrackActionId === track.id ? '获取中' : '播放' }}
+                    {{ neteaseTrackActionId === track.id ? '获取中' : neteaseTrackUnavailableReason(track) ? '重试' : '播放' }}
                   </button>
                 </span>
               </article>
             </div>
 
-            <div v-else class="music-platform-empty">
+            <button
+              v-if="neteasePlaylistHasMore"
+              type="button"
+              class="music-platform-load-more"
+              :disabled="neteasePlaylistDetailLoading"
+              @click="loadMoreNeteasePlaylistTracks"
+            >
+              {{ neteasePlaylistDetailLoading ? '加载中' : `加载更多（${neteasePlaylistLoadedLabel}）` }}
+            </button>
+
+            <div
+              v-if="!neteasePlaylistDetailLoading && !neteasePlaylistDetail?.tracks.length"
+              class="music-platform-empty"
+            >
               <strong>暂无歌曲摘要</strong>
               <span>当前歌单没有返回可展示的歌曲信息。</span>
             </div>
@@ -4906,7 +9134,357 @@ function clamp(value: number, min: number, max: number) {
 
         <section class="music-platform-card is-muted">
           <strong>后续</strong>
-          <span>已支持读取歌单、在线歌词和临时在线播放；搜索跳转与客户端兜底后续单独接入。</span>
+          <span>已支持搜索、读取歌单、在线歌词和临时在线播放；客户端或网页兜底后续单独接入。</span>
+        </section>
+      </div>
+
+      <div v-else-if="activePanelView === 'kugou'" class="music-platform-panel">
+        <section class="music-platform-card">
+          <header class="music-platform-header">
+            <div>
+              <strong>酷狗音乐</strong>
+              <span>{{ kugouStatusLabel }}</span>
+            </div>
+            <div class="music-platform-actions">
+              <button type="button" :disabled="kugouLoginBusy" @click="refreshKugouLoginStatus(true)">
+                刷新
+              </button>
+              <button
+                v-if="!kugouLoggedIn"
+                type="button"
+                :disabled="kugouLoginBusy"
+                @click="startKugouQrLogin"
+              >
+                扫码登录
+              </button>
+              <button v-else type="button" :disabled="kugouLoginBusy" @click="clearKugouLogin">
+                退出
+              </button>
+            </div>
+          </header>
+
+          <div v-if="kugouProfile" class="music-platform-profile">
+            <img
+              v-if="kugouProfile.avatarUrl"
+              :src="kugouProfile.avatarUrl"
+              alt=""
+              referrerpolicy="no-referrer"
+            />
+            <div v-else class="music-platform-avatar" aria-hidden="true">
+              酷
+            </div>
+            <div>
+              <strong>{{ kugouProfile.nickname }}</strong>
+              <span>用户 ID {{ kugouProfile.userId }}</span>
+              <span
+                class="music-platform-membership"
+                :class="{ active: kugouProfile.membership?.active }"
+              >
+                <span>{{ platformMembershipStatusLabel(kugouProfile.membership) }}</span>
+                <small>{{ platformMembershipDetailLabel(kugouProfile.membership) }}</small>
+              </span>
+              <small v-if="kugouLoginStatus?.savedAt">
+                本机保存于 {{ formatNeteaseTimestamp(kugouLoginStatus.savedAt) }}
+              </small>
+            </div>
+          </div>
+
+          <div v-else class="music-platform-empty">
+            <strong>{{ kugouLoggedIn ? '酷狗账号已连接' : '未连接酷狗账号' }}</strong>
+            <span>{{ kugouStatusDetail }}</span>
+          </div>
+
+          <div v-if="kugouQrLogin" class="music-platform-qr">
+            <img :src="kugouQrLogin.qrImage" alt="酷狗音乐登录二维码" />
+            <div>
+              <strong>{{ kugouStatusLabel }}</strong>
+              <span>{{ kugouStatusDetail }}</span>
+              <small>过期时间 {{ formatNeteaseTimestamp(kugouQrLogin.expiresAt) }}</small>
+              <div class="music-platform-actions">
+                <button type="button" :disabled="kugouLoginBusy" @click="startKugouQrLogin">
+                  重新生成
+                </button>
+                <button type="button" @click="cancelKugouQrLogin">取消</button>
+              </div>
+            </div>
+          </div>
+
+          <p
+            v-if="kugouLoginError || kugouLoginNotice"
+            class="music-platform-message"
+            :class="{ error: Boolean(kugouLoginError) }"
+          >
+            {{ kugouStatusDetail }}
+          </p>
+
+          <div class="music-platform-search-row">
+            <label class="music-platform-search">
+              <span>关键词</span>
+              <input
+                v-model="kugouSearchQuery"
+                autocomplete="off"
+                placeholder="搜索歌曲、歌手或专辑"
+                @keydown.enter="searchKugouSongs()"
+              />
+            </label>
+            <button type="button" :disabled="kugouSearchLoading" @click="searchKugouSongs()">
+              {{ kugouSearchLoading ? '搜索中' : '搜索' }}
+            </button>
+          </div>
+
+          <p
+            v-if="kugouSearchError || kugouSearchNotice"
+            class="music-platform-message"
+            :class="{ error: Boolean(kugouSearchError) }"
+          >
+            {{ kugouSearchStatusDetail }}
+          </p>
+
+          <section class="music-platform-detail">
+            <header class="music-platform-section-header">
+              <div>
+                <strong>搜索结果</strong>
+                <span>
+                  {{ kugouSearchLoadedLabel }}
+                </span>
+              </div>
+              <span>临时列表</span>
+            </header>
+
+            <div v-if="kugouSearchLoading && kugouSearchTracks.length === 0" class="music-platform-empty">
+              <strong>正在搜索酷狗音乐</strong>
+              <span>搜索结果只保存在当前运行状态，不写入本机曲库。</span>
+            </div>
+
+            <div v-else-if="kugouSearchTracks.length === 0" class="music-platform-empty">
+              <strong>暂无酷狗结果</strong>
+              <span>输入关键词并点击“搜索”。</span>
+            </div>
+
+            <div v-else class="music-platform-track-list">
+              <article
+                v-for="(track, index) in kugouSearchTracks"
+                :key="`${track.hash}-${index}`"
+                class="music-platform-track-row"
+                :class="{
+                  active: currentTrack?.source === 'kugou' && currentTrack.kugouSongHash === track.hash,
+                  unavailable: Boolean(kugouTrackUnavailableReason(track)),
+                }"
+              >
+                <span class="music-platform-track-index">{{ index + 1 }}</span>
+                <img
+                  v-if="track.coverImgUrl"
+                  :src="track.coverImgUrl"
+                  alt=""
+                  referrerpolicy="no-referrer"
+                />
+                <span v-else class="music-platform-track-cover" aria-hidden="true">酷</span>
+                <span class="music-platform-track-copy">
+                  <strong>{{ track.name }}</strong>
+                  <small :title="formatKugouTrackSubline(track)">
+                    {{ formatKugouTrackSubline(track) }}
+                  </small>
+                  <small
+                    v-if="kugouTrackUnavailableReason(track)"
+                    class="music-platform-track-warning"
+                    :title="kugouTrackUnavailableReason(track)"
+                  >
+                    不可播放：{{ kugouTrackUnavailableReason(track) }}
+                  </small>
+                </span>
+                <span class="music-platform-track-actions">
+                  <button
+                    type="button"
+                    :disabled="kugouLyricsLoading && kugouLyricsTrack?.hash === track.hash"
+                    @click="showKugouLyrics(track)"
+                  >
+                    {{ kugouLyricsLoading && kugouLyricsTrack?.hash === track.hash ? '读取中' : '歌词' }}
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="kugouTrackActionHash === track.hash"
+                    @click="playKugouTrack(track, kugouSearchTracks)"
+                  >
+                    {{ kugouTrackActionHash === track.hash ? '获取中' : kugouTrackUnavailableReason(track) ? '重试' : '播放' }}
+                  </button>
+                </span>
+              </article>
+            </div>
+
+            <button
+              v-if="kugouSearchHasMore"
+              type="button"
+              class="music-platform-load-more"
+              :disabled="kugouSearchLoading"
+              @click="searchKugouSongs(true)"
+            >
+              {{ kugouSearchLoading ? '加载中' : `加载更多（${kugouSearchLoadedLabel}）` }}
+            </button>
+          </section>
+        </section>
+
+        <section v-if="kugouLoggedIn" class="music-platform-card">
+          <header class="music-platform-section-header">
+            <div>
+              <strong>{{ kugouSelectedPlaylist?.name || '当前歌单' }}</strong>
+              <span>{{ kugouPlaylistStatusLabel }}</span>
+            </div>
+            <span v-if="kugouSelectedPlaylist">
+              {{ kugouPlaylistLoadedLabel }}
+            </span>
+          </header>
+
+          <p
+            v-if="kugouPlaylistError || kugouPlaylistsLoading || kugouPlaylistDetail"
+            class="music-platform-message"
+            :class="{ error: Boolean(kugouPlaylistError) }"
+          >
+            {{ kugouPlaylistStatusLabel }}
+          </p>
+
+          <div v-if="kugouPlaylistsLoading && kugouPlaylists.length === 0" class="music-platform-empty">
+            <strong>正在读取酷狗个人歌单</strong>
+            <span>只读取歌单和歌曲摘要，不读取播放地址。</span>
+          </div>
+
+          <div v-else-if="kugouPlaylists.length === 0" class="music-platform-empty">
+            <strong>暂无酷狗歌单数据</strong>
+            <span>在左下角点击“刷新”读取酷狗我的歌单。</span>
+          </div>
+
+          <section
+            v-else-if="kugouSelectedPlaylist"
+            ref="kugouPlaylistDetailSection"
+            class="music-platform-detail"
+          >
+            <header class="music-platform-section-header">
+              <div>
+                <strong>{{ kugouSelectedPlaylist.name }}</strong>
+                <span>{{ kugouPlaylistLoadedLabel }}</span>
+              </div>
+              <span v-if="kugouPlaylistHasMore">可继续加载</span>
+            </header>
+
+            <div
+              v-if="kugouPlaylistDetailLoading && !kugouPlaylistDetail?.tracks.length"
+              class="music-platform-empty"
+            >
+              <strong>正在读取歌曲摘要</strong>
+              <span>读取完成后会显示歌曲、歌手、专辑和时长。</span>
+            </div>
+
+            <div v-if="kugouPlaylistDetail?.tracks.length" class="music-platform-track-list">
+              <article
+                v-for="(track, index) in kugouPlaylistDetail.tracks"
+                :key="`kugou-playlist-${track.hash}-${index}`"
+                class="music-platform-track-row"
+                :class="{
+                  active: currentTrack?.source === 'kugou' && currentTrack.kugouSongHash === track.hash,
+                  unavailable: Boolean(kugouTrackUnavailableReason(track)),
+                }"
+              >
+                <span class="music-platform-track-index">{{ index + 1 }}</span>
+                <img
+                  v-if="track.coverImgUrl"
+                  :src="track.coverImgUrl"
+                  alt=""
+                  referrerpolicy="no-referrer"
+                />
+                <span v-else class="music-platform-track-cover" aria-hidden="true">♪</span>
+                <span class="music-platform-track-copy">
+                  <strong>{{ track.name }}</strong>
+                  <small :title="formatKugouTrackSubline(track)">
+                    {{ formatKugouTrackSubline(track) }}
+                  </small>
+                  <small
+                    v-if="kugouTrackUnavailableReason(track)"
+                    class="music-platform-track-warning"
+                    :title="kugouTrackUnavailableReason(track)"
+                  >
+                    不可播放：{{ kugouTrackUnavailableReason(track) }}
+                  </small>
+                </span>
+                <span class="music-platform-track-actions">
+                  <button
+                    type="button"
+                    :disabled="kugouLyricsLoading && kugouLyricsTrack?.hash === track.hash"
+                    @click="showKugouLyrics(track)"
+                  >
+                    {{ kugouLyricsLoading && kugouLyricsTrack?.hash === track.hash ? '读取中' : '歌词' }}
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="kugouTrackActionHash === track.hash"
+                    @click="playKugouTrack(track, kugouPlaylistDetail?.tracks ?? [])"
+                  >
+                    {{ kugouTrackActionHash === track.hash ? '获取中' : kugouTrackUnavailableReason(track) ? '重试' : '播放' }}
+                  </button>
+                </span>
+              </article>
+            </div>
+
+            <button
+              v-if="kugouPlaylistHasMore"
+              type="button"
+              class="music-platform-load-more"
+              :disabled="kugouPlaylistDetailLoading"
+              @click="loadMoreKugouPlaylistTracks"
+            >
+              {{ kugouPlaylistDetailLoading ? '加载中' : `加载更多（${kugouPlaylistLoadedLabel}）` }}
+            </button>
+
+            <div
+              v-if="!kugouPlaylistDetailLoading && !kugouPlaylistDetail?.tracks.length"
+              class="music-platform-empty"
+            >
+              <strong>暂无歌曲摘要</strong>
+              <span>当前酷狗歌单没有返回可展示的歌曲信息。</span>
+            </div>
+          </section>
+        </section>
+
+        <section
+          v-if="kugouLyricsTrack || kugouLyricsError"
+          class="music-platform-card music-platform-lyrics-card"
+        >
+          <header class="music-platform-section-header">
+            <div>
+              <strong>{{ kugouLyricsTrack?.name || '酷狗歌词' }}</strong>
+              <span>
+                {{
+                  kugouLyricsLoading
+                    ? '正在读取在线歌词'
+                    : kugouLyricsError || '酷狗在线歌词'
+                }}
+              </span>
+            </div>
+            <button type="button" @click="closeKugouLyrics">关闭</button>
+          </header>
+
+          <p
+            v-if="kugouLyricsError || kugouLyricsResult?.warnings.length"
+            class="music-platform-message"
+            :class="{ error: Boolean(kugouLyricsError) }"
+          >
+            {{ kugouLyricsError || kugouLyricsResult?.warnings.join('；') }}
+          </p>
+
+          <div v-if="kugouLyricsLoading" class="music-platform-empty">
+            <strong>正在读取酷狗歌词</strong>
+            <span>读取完成后会显示 LRC 歌词，沉浸模式会自动同步使用。</span>
+          </div>
+
+          <div v-else-if="kugouLyricsResult" class="music-platform-lyrics-view">
+            <p class="music-platform-message">
+              已读取酷狗 LRC 歌词，沉浸模式会按时间轴同步显示。
+            </p>
+            <pre>{{ kugouLyricsResult.lrcContent || kugouLyricsResult.content }}</pre>
+          </div>
+        </section>
+
+        <section class="music-platform-card is-muted">
+          <strong>说明</strong>
+          <span>酷狗本轮支持搜索、在线歌词和临时在线播放；播放地址为空时通常是版权、会员、地区或接口限制。</span>
         </section>
       </div>
 
@@ -4931,9 +9509,11 @@ function clamp(value: number, min: number, max: number) {
             <span>{{ trackDisplayNumber(track.id) }}</span>
             <div>
               <strong>{{ track.title }}</strong>
-              <small class="music-track-artist">{{ trackArtistLabel(track) }}</small>
-              <small class="music-track-meta" :title="trackSourceTitle(track)">
-                {{ formatTrackListMeta(track) }}
+              <small
+                class="music-track-subline"
+                :title="`${formatTrackListSubline(track)}\n${trackSourceTitle(track)}`"
+              >
+                {{ formatTrackListSubline(track) }}
               </small>
             </div>
           </button>
@@ -5034,6 +9614,8 @@ function clamp(value: number, min: number, max: number) {
         <strong>{{ emptyPlaylistTitle }}</strong>
         <button type="button" @click="showMusicSettings">打开设置添加音乐</button>
       </div>
+        </section>
+      </section>
     </section>
 
     <div
@@ -5190,38 +9772,31 @@ function clamp(value: number, min: number, max: number) {
         class="music-editor-panel music-playlist-picker"
         role="dialog"
         aria-modal="true"
-        aria-label="添加歌曲到歌单"
+        aria-label="向歌单添加歌曲"
       >
         <header>
           <div>
-            <h2>添加歌曲</h2>
-            <p>
-              {{ playlistTrackPickerTarget?.name || '歌单' }} · 已选
-              {{ playlistTrackPickerSelectedCount }} 首
-            </p>
+            <h2>添加到歌单</h2>
+            <p>{{ playlistTrackPickerTarget?.name || '选择歌曲' }}</p>
           </div>
-          <button type="button" class="window-close" title="关闭添加歌曲" @click="closePlaylistTrackPicker">
+          <button
+            type="button"
+            class="window-close"
+            title="关闭添加歌曲"
+            @click="closePlaylistTrackPicker"
+          >
             ×
           </button>
         </header>
 
-        <div class="music-search-field music-playlist-picker-search">
+        <label class="music-field music-playlist-picker-search">
+          搜索
           <input
             v-model="playlistTrackPickerQuery"
-            type="search"
-            placeholder="搜索歌名、歌手、分类或标签"
-            aria-label="搜索可加入歌单的歌曲"
+            autocomplete="off"
+            placeholder="搜索歌名或歌手"
           />
-          <button
-            type="button"
-            :disabled="!playlistTrackPickerQuery"
-            title="清空搜索"
-            aria-label="清空搜索"
-            @click="playlistTrackPickerQuery = ''"
-          >
-            ×
-          </button>
-        </div>
+        </label>
 
         <div v-if="playlistTrackPickerAvailableTracks.length > 0" class="music-playlist-picker-list">
           <label
@@ -5236,12 +9811,13 @@ function clamp(value: number, min: number, max: number) {
               @change="togglePlaylistTrackPickerSelection(track.id)"
             />
             <span>{{ track.title }}</span>
-            <small>{{ trackArtistLabel(track) }} · {{ formatTrackListMeta(track) }}</small>
+            <small>{{ trackArtistLabel(track) }} · {{ formatTrackDuration(track) }}</small>
           </label>
         </div>
+
         <div v-else class="music-empty">
           <strong>没有可添加的歌曲</strong>
-          <span>当前歌单可能已包含全部匹配歌曲。</span>
+          <span>当前歌单可能已经包含全部匹配歌曲。</span>
         </div>
 
         <footer class="music-dialog-actions">

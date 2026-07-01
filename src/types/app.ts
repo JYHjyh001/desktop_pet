@@ -95,6 +95,37 @@ export interface StorageSettings {
 
 export type AiProvider = 'openai' | 'deepseek' | 'anthropic' | 'gemini' | 'ollama' | 'custom'
 export type DrawerTheme = 'light' | 'animal-island'
+export type MusicImmersiveTheme =
+  | DrawerTheme
+  | 'cinema'
+  | 'galaxy'
+  | 'neon'
+  | 'sunset'
+  | 'midnight'
+export type MusicImmersiveThemePreference = 'follow' | MusicImmersiveTheme
+export type MusicSpectrumStyle = 'bars' | 'mirror' | 'orbit' | 'particles' | 'ribbon' | 'none'
+export type MusicLineStyle = 'wave' | 'beam' | 'scan' | 'constellation' | 'none'
+export type MusicRippleStyle = 'rings' | 'water' | 'heartbeat' | 'halo' | 'none'
+export type MusicVisualStagePreset = 'default' | 'galaxy' | 'cinematic' | 'dj' | 'lyric'
+export interface MusicStageTuning {
+  height: number
+  response: number
+  density: number
+  wave: number
+  trigger: number
+  camera: number
+  layerHeight: number
+}
+
+export const DEFAULT_MUSIC_STAGE_TUNING: Readonly<MusicStageTuning> = {
+  height: 1,
+  response: 1,
+  density: 1,
+  wave: 1,
+  trigger: 1,
+  camera: 1,
+  layerHeight: 1,
+}
 export type ChatEmojiFrequency = 'none' | 'low' | 'normal' | 'high'
 export type PetActionBinding =
   | 'smartCodexOrDrawer'
@@ -503,6 +534,7 @@ export interface PetDrawerConfig {
     width: number
     height: number
     theme: DrawerTheme | string
+    musicImmersiveTheme?: MusicImmersiveThemePreference | string
     chatTypewriterEnabled?: boolean
     chatNarrationEnabled?: boolean
     chatMusicLinkEnabled?: boolean

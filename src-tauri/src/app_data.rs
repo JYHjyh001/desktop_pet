@@ -132,6 +132,8 @@ pub struct DrawerSettings {
     pub height: u32,
     #[serde(default = "default_drawer_theme")]
     pub theme: String,
+    #[serde(default = "default_music_immersive_theme")]
+    pub music_immersive_theme: String,
     #[serde(default = "default_true")]
     pub chat_typewriter_enabled: bool,
     #[serde(default)]
@@ -488,6 +490,7 @@ impl Default for PetDrawerConfig {
                 width: 760,
                 height: 540,
                 theme: default_drawer_theme(),
+                music_immersive_theme: default_music_immersive_theme(),
                 chat_typewriter_enabled: true,
                 chat_narration_enabled: false,
                 chat_music_link_enabled: true,
@@ -524,6 +527,10 @@ pub fn normalize_pet_size(size: u32) -> u32 {
 
 fn default_drawer_theme() -> String {
     "light".to_string()
+}
+
+fn default_music_immersive_theme() -> String {
+    "follow".to_string()
 }
 
 fn default_toggle_drawer_shortcut() -> String {
