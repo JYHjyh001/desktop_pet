@@ -33,6 +33,7 @@ type MusicPanelView = 'library' | 'netease' | 'kugou'
 type MusicRecommendationSource = 'smart' | 'tags' | 'favorites' | 'recent'
 type MusicVisualMode = 'rhythm' | 'dance' | 'focus' | 'sleep'
 type MusicStageTuningMap = Record<MusicVisualStagePreset, MusicStageTuning>
+type MusicLyricStagePreset = 'clear' | 'projection' | 'float'
 interface MusicStagePresetOption {
   value: MusicVisualStagePreset
   label: string
@@ -53,6 +54,20 @@ interface MusicStageTuningOption {
   max: number
   step: number
   ariaLabel: string
+}
+interface MusicLyricStagePresetOption {
+  value: MusicLyricStagePreset
+  label: string
+  kicker: string
+  description: string
+}
+interface MusicLyricStageDefaults {
+  depth: number
+  tilt: number
+  glow: number
+  beatGlow: boolean
+  particles: boolean
+  cameraLock: boolean
 }
 type MusicActionType =
   | 'play_music'
@@ -428,6 +443,32 @@ const IMMERSIVE_STAGE_MAX_YAW = 22
 const IMMERSIVE_STAGE_MAX_PITCH = 12
 const IMMERSIVE_STAGE_DRAG_YAW_FACTOR = 0.085
 const IMMERSIVE_STAGE_DRAG_PITCH_FACTOR = 0.062
+const LYRIC_STAGE_PRESET_DEFAULTS: Record<MusicLyricStagePreset, MusicLyricStageDefaults> = {
+  clear: {
+    depth: 0.64,
+    tilt: 0.08,
+    glow: 0.28,
+    beatGlow: true,
+    particles: false,
+    cameraLock: false,
+  },
+  projection: {
+    depth: 0.42,
+    tilt: 0.48,
+    glow: 0.48,
+    beatGlow: true,
+    particles: false,
+    cameraLock: false,
+  },
+  float: {
+    depth: 0.76,
+    tilt: 0.58,
+    glow: 0.56,
+    beatGlow: true,
+    particles: true,
+    cameraLock: true,
+  },
+}
 const IMMERSIVE_FREE_CAMERA_DEFAULT = {
   x: 0,
   y: 0.7,
@@ -502,6 +543,26 @@ const stagePresetOptions: MusicStagePresetOption[] = [
     rippleStyle: 'heartbeat',
     swatches: ['#00f5d4', '#ff4fd8', '#7df9ff'],
     metrics: ['柱阵起', '扫描快'],
+  },
+]
+const lyricStagePresetOptions: MusicLyricStagePresetOption[] = [
+  {
+    value: 'clear',
+    label: '清晰前景',
+    kicker: 'FOCUS',
+    description: '稳定靠前，优先保证歌词阅读。',
+  },
+  {
+    value: 'projection',
+    label: '舞台投影',
+    kicker: 'STAGE',
+    description: '带景深和轻倾角，贴近舞台光场。',
+  },
+  {
+    value: 'float',
+    label: '沉浸漂浮',
+    kicker: 'FLOAT',
+    description: '跟随镜头和音乐能量轻微漂浮。',
   },
 ]
 const galaxyStageTuningOptions: MusicStageTuningOption[] = [
@@ -672,6 +733,13 @@ const visualReducedMotion = ref(false)
 const visualStageTunings = ref<MusicStageTuningMap>(createDefaultMusicStageTunings())
 const stageTuningOptions = computed(() => stageTuningOptionsForPreset(visualStagePreset.value))
 const visualStageTuning = computed(() => visualStageTunings.value[visualStagePreset.value])
+const lyricStagePreset = ref<MusicLyricStagePreset>('projection')
+const lyricStageDepth = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.depth)
+const lyricStageTilt = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.tilt)
+const lyricStageGlow = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.glow)
+const lyricStageBeatGlow = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.beatGlow)
+const lyricStageParticles = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.particles)
+const lyricStageCameraLock = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.cameraLock)
 const webglStarfieldUnavailable = ref(false)
 const immersiveStageDragging = ref(false)
 const immersiveStageYaw = ref(0)
@@ -1578,6 +1646,10 @@ const immersiveLyricsLayoutStyle = computed(() => {
     nextLine,
   )
 })
+const immersiveLyricsStageStyle = computed(() => ({
+  ...immersiveLyricsLayoutStyle.value,
+  ...resolveImmersiveLyricStageStyle(),
+}))
 const lyricOffsetLabel = computed(() => {
   const value = Math.round(lyricOffsetMs.value)
   if (value === 0) {
@@ -1586,6 +1658,9 @@ const lyricOffsetLabel = computed(() => {
 
   return value > 0 ? `提前 ${value} ms` : `延后 ${Math.abs(value)} ms`
 })
+const lyricStageDepthLabel = computed(() => `${Math.round(clamp(lyricStageDepth.value, 0, 1) * 100)}%`)
+const lyricStageTiltLabel = computed(() => `${Math.round(clamp(lyricStageTilt.value, 0, 1) * 100)}%`)
+const lyricStageGlowLabel = computed(() => `${Math.round(clamp(lyricStageGlow.value, 0, 1) * 100)}%`)
 const visualizerStatusLabel = computed(() => {
   if (!currentTrack.value) {
     return '待机'
@@ -1765,6 +1840,13 @@ watch(
     visualRippleStyle,
     visualIntensity,
     visualReducedMotion,
+    lyricStagePreset,
+    lyricStageDepth,
+    lyricStageTilt,
+    lyricStageGlow,
+    lyricStageBeatGlow,
+    lyricStageParticles,
+    lyricStageCameraLock,
     lyricOffsetMs,
   ],
   saveSettings,
@@ -1908,6 +1990,13 @@ function restoreSettings() {
       visualReducedMotion?: boolean
       visualStageTuning?: Partial<MusicStageTuning>
       visualStageTunings?: Partial<Record<MusicVisualStagePreset, Partial<MusicStageTuning>>>
+      lyricStagePreset?: MusicLyricStagePreset
+      lyricStageDepth?: number
+      lyricStageTilt?: number
+      lyricStageGlow?: number
+      lyricStageBeatGlow?: boolean
+      lyricStageParticles?: boolean
+      lyricStageCameraLock?: boolean
       lyricOffsetMs?: number
     }
 
@@ -1941,6 +2030,19 @@ function restoreSettings() {
     }
     visualReducedMotion.value = Boolean(saved.visualReducedMotion)
     visualStageTunings.value = normalizeMusicStageTunings(saved.visualStageTunings, saved.visualStageTuning)
+    if (isMusicLyricStagePreset(saved.lyricStagePreset)) {
+      lyricStagePreset.value = saved.lyricStagePreset
+    }
+    const lyricDefaults = lyricStageDefaultsForPreset(lyricStagePreset.value)
+    lyricStageDepth.value = normalizeUnitSetting(saved.lyricStageDepth, lyricDefaults.depth)
+    lyricStageTilt.value = normalizeUnitSetting(saved.lyricStageTilt, lyricDefaults.tilt)
+    lyricStageGlow.value = normalizeUnitSetting(saved.lyricStageGlow, lyricDefaults.glow)
+    lyricStageBeatGlow.value =
+      typeof saved.lyricStageBeatGlow === 'boolean' ? saved.lyricStageBeatGlow : lyricDefaults.beatGlow
+    lyricStageParticles.value =
+      typeof saved.lyricStageParticles === 'boolean' ? saved.lyricStageParticles : lyricDefaults.particles
+    lyricStageCameraLock.value =
+      typeof saved.lyricStageCameraLock === 'boolean' ? saved.lyricStageCameraLock : lyricDefaults.cameraLock
     if (typeof saved.lyricOffsetMs === 'number') {
       lyricOffsetMs.value = clamp(Math.round(saved.lyricOffsetMs), -2000, 2000)
     }
@@ -2074,6 +2176,13 @@ function saveSettings() {
       visualIntensity: clamp(visualIntensity.value, 0.2, 1),
       visualReducedMotion: visualReducedMotion.value,
       visualStageTunings: normalizeMusicStageTunings(visualStageTunings.value),
+      lyricStagePreset: lyricStagePreset.value,
+      lyricStageDepth: normalizeUnitSetting(lyricStageDepth.value, LYRIC_STAGE_PRESET_DEFAULTS.projection.depth),
+      lyricStageTilt: normalizeUnitSetting(lyricStageTilt.value, LYRIC_STAGE_PRESET_DEFAULTS.projection.tilt),
+      lyricStageGlow: normalizeUnitSetting(lyricStageGlow.value, LYRIC_STAGE_PRESET_DEFAULTS.projection.glow),
+      lyricStageBeatGlow: lyricStageBeatGlow.value,
+      lyricStageParticles: lyricStageParticles.value,
+      lyricStageCameraLock: lyricStageCameraLock.value,
       lyricOffsetMs: clamp(Math.round(lyricOffsetMs.value), -2000, 2000),
     }),
   )
@@ -3873,12 +3982,39 @@ function resetVisualStageTuning() {
   }
 }
 
+function lyricStageDefaultsForPreset(preset: MusicLyricStagePreset) {
+  return LYRIC_STAGE_PRESET_DEFAULTS[preset] ?? LYRIC_STAGE_PRESET_DEFAULTS.projection
+}
+
+function setLyricStagePreset(preset: MusicLyricStagePreset) {
+  if (!isMusicLyricStagePreset(preset)) {
+    return
+  }
+
+  const defaults = lyricStageDefaultsForPreset(preset)
+  lyricStagePreset.value = preset
+  lyricStageDepth.value = defaults.depth
+  lyricStageTilt.value = defaults.tilt
+  lyricStageGlow.value = defaults.glow
+  lyricStageBeatGlow.value = defaults.beatGlow
+  lyricStageParticles.value = defaults.particles
+  lyricStageCameraLock.value = defaults.cameraLock
+}
+
 function isMusicVisualMode(value?: string | null): value is MusicVisualMode {
   return visualModeOptions.some((option) => option.value === value)
 }
 
 function isMusicVisualStagePreset(value?: string | null): value is MusicVisualStagePreset {
   return stagePresetOptions.some((option) => option.value === value)
+}
+
+function isMusicLyricStagePreset(value?: string | null): value is MusicLyricStagePreset {
+  return lyricStagePresetOptions.some((option) => option.value === value)
+}
+
+function normalizeUnitSetting(value: unknown, fallback: number) {
+  return typeof value === 'number' ? clamp(value, 0, 1) : clamp(fallback, 0, 1)
 }
 
 function applyVisualStagePreset(preset: MusicVisualStagePreset) {
@@ -6519,7 +6655,18 @@ function handleImmersiveFreeCameraKeyUp(event: KeyboardEvent) {
 }
 
 function consumeImmersiveFreeCameraKey(event: KeyboardEvent, isDown: boolean) {
-  if (!immersiveMode.value || isEditableEventTarget(event.target) || event.altKey || event.metaKey) {
+  if (!immersiveMode.value || event.altKey || event.metaKey) {
+    return false
+  }
+
+  if (isDown && event.code === 'Escape' && immersiveStageOnlyMode.value) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    setImmersiveStageOnlyMode(false)
+    return true
+  }
+
+  if (isEditableEventTarget(event.target)) {
     return false
   }
 
@@ -7493,6 +7640,45 @@ function resolveImmersiveLyricsLayoutStyle(current: string, previous: string, ne
   }
 }
 
+function resolveImmersiveLyricStageStyle() {
+  const preset = lyricStagePreset.value
+  const depth = clamp(lyricStageDepth.value, 0, 1)
+  const tilt = clamp(lyricStageTilt.value, 0, 1)
+  const glow = clamp(lyricStageGlow.value, 0, 1)
+  const energy = visualEnergyFrame.value
+  const motionScale = visualReducedMotion.value ? 0 : 1
+  const stageOnlyBoost = immersiveStageOnlyMode.value ? 1 : 0
+  const beatGlow = playing.value && lyricStageBeatGlow.value && !visualReducedMotion.value
+    ? clamp(energy.beat * 0.72 + energy.bass * 0.44, 0, 1)
+    : 0
+  const floatDrive = playing.value && preset === 'float' && !visualReducedMotion.value
+    ? Math.sin(visualTimeValue.value * 1.12) * (4 + energy.mid * 5)
+    : 0
+  const presetYOffset = preset === 'clear' ? -8 : preset === 'float' ? -18 : 6
+  const presetZOffset = preset === 'clear' ? 54 : preset === 'float' ? 82 : 22
+  const stagePresetYOffset = visualStagePreset.value === 'dj' ? -22 : visualStagePreset.value === 'galaxy' ? -8 : 0
+  const lockFactor = lyricStageCameraLock.value ? 0.08 : 1
+  const tiltX = ((preset === 'projection' ? -3.2 : preset === 'float' ? -1.8 : 0) + immersiveStagePitch.value * 0.18 * lockFactor) * tilt
+  const tiltY = ((preset === 'projection' ? 2.2 : preset === 'float' ? 1.4 : 0) - immersiveStageYaw.value * 0.16 * lockFactor) * tilt
+  const z = 62 + depth * 132 + presetZOffset + stageOnlyBoost * 18
+  const scale = 1 + beatGlow * 0.016 * motionScale + (preset === 'float' ? energy.volume * 0.008 * motionScale : 0)
+  const particleOpacity = lyricStageParticles.value && !visualReducedMotion.value
+    ? clamp(0.04 + glow * 0.22 + beatGlow * 0.34 + energy.treble * 0.12, 0, 0.62)
+    : 0
+
+  return {
+    '--lyric-stage-x': '0px',
+    '--lyric-stage-y': `${(presetYOffset + stagePresetYOffset + floatDrive).toFixed(1)}px`,
+    '--lyric-stage-z': `${Math.round(z)}px`,
+    '--lyric-stage-scale': scale.toFixed(4),
+    '--lyric-stage-tilt-x': `${tiltX.toFixed(2)}deg`,
+    '--lyric-stage-tilt-y': `${tiltY.toFixed(2)}deg`,
+    '--lyric-stage-glow-strength': (0.16 + glow * 0.72).toFixed(3),
+    '--lyric-stage-beat-glow': beatGlow.toFixed(3),
+    '--lyric-stage-particle-opacity': particleOpacity.toFixed(3),
+  }
+}
+
 function estimateImmersiveLyricLineCount(text: string, charsPerLine: number, maxLines: number) {
   const normalized = text.trim()
   if (!normalized) {
@@ -7726,7 +7912,6 @@ function clamp(value: number, min: number, max: number) {
           <div class="music-immersive-vignette" aria-hidden="true" />
 
           <section
-            v-if="!immersiveStageOnlyMode"
             class="music-immersive-lyrics"
             :class="{
               'is-synced': immersiveLyrics.synced,
@@ -7736,8 +7921,14 @@ function clamp(value: number, min: number, max: number) {
               'is-interlude': immersiveLyrics.interlude,
               'is-reduced-motion': visualReducedMotion,
               'is-idle': !currentTrack,
+              'is-stage-only': immersiveStageOnlyMode,
+              'is-lyric-stage-clear': lyricStagePreset === 'clear',
+              'is-lyric-stage-projection': lyricStagePreset === 'projection',
+              'is-lyric-stage-float': lyricStagePreset === 'float',
+              'is-camera-locked': lyricStageCameraLock,
+              'has-lyric-particles': lyricStageParticles,
             }"
-            :style="immersiveLyricsLayoutStyle"
+            :style="immersiveLyricsStageStyle"
             aria-label="沉浸歌词"
           >
             <Transition name="immersive-lyric-status" mode="out-in">
@@ -7781,13 +7972,17 @@ function clamp(value: number, min: number, max: number) {
       <button
         v-if="immersiveStageOnlyMode"
         type="button"
-        class="music-immersive-stage-only-restore"
+        class="music-immersive-stage-only-restore music-immersive-icon-button"
         title="显示完整沉浸界面"
-        aria-label="显示完整沉浸界面"
+        aria-label="显示完整沉浸界面，可按 Esc 退出只看舞台"
         @pointerdown.stop
         @click="setImmersiveStageOnlyMode(false)"
       >
-        显示界面
+        <svg class="music-action-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+          <circle cx="12" cy="12" r="2.7" />
+        </svg>
+        <span class="music-icon-only-label">显示界面</span>
       </button>
 
       <header v-if="!immersiveStageOnlyMode" class="music-immersive-header">
@@ -7799,31 +7994,32 @@ function clamp(value: number, min: number, max: number) {
         <div class="music-immersive-actions" @pointerdown.stop>
           <button
             type="button"
-            :class="{ active: immersivePlaylistVisible }"
-            :title="immersivePlaylistVisible ? '隐藏播放列表' : '显示播放列表'"
-            @click="toggleImmersivePlaylistVisible"
-          >
-            {{ immersivePlaylistVisible ? '隐藏列表' : '显示列表' }}
-          </button>
-          <button
-            type="button"
-            :class="{ active: immersiveRhythmPanelVisible }"
-            :title="immersiveRhythmPanelVisible ? '隐藏韵律面板' : '显示韵律面板'"
-            @click="toggleImmersiveRhythmPanelVisible"
-          >
-            {{ immersiveRhythmPanelVisible ? '隐藏韵律' : '显示韵律' }}
-          </button>
-          <button
-            type="button"
+            class="music-immersive-icon-button"
             :class="{ active: immersiveStageOnlyMode }"
             title="隐藏界面控件，只显示音乐舞台"
+            aria-label="只看舞台"
             :aria-pressed="immersiveStageOnlyMode"
             @click="toggleImmersiveStageOnlyMode"
           >
-            只看舞台
+            <svg class="music-action-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+              <circle cx="12" cy="12" r="2.7" />
+            </svg>
+            <span class="music-icon-only-label">只看舞台</span>
           </button>
-          <button type="button" title="返回普通播放器" @click="setImmersiveMode(false)">返回</button>
-          <button type="button" title="切换小悬浮播放器" @click="setMiniPlayerMode(true)">迷你</button>
+          <button
+            type="button"
+            class="music-immersive-icon-button"
+            title="返回普通播放器"
+            aria-label="返回普通播放器"
+            @click="setImmersiveMode(false)"
+          >
+            <svg class="music-action-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M19 12H5" />
+              <path d="M12 5l-7 7 7 7" />
+            </svg>
+            <span class="music-icon-only-label">返回普通播放器</span>
+          </button>
           <button type="button" class="window-close" title="隐藏播放器" @click="hideMusicPlayer">
             ×
           </button>
@@ -7831,14 +8027,54 @@ function clamp(value: number, min: number, max: number) {
       </header>
 
       <aside
-        v-if="immersivePlaylistVisible && !immersiveStageOnlyMode"
+        v-if="!immersiveStageOnlyMode"
         class="music-immersive-playlist"
+        :class="{ 'is-collapsed': !immersivePlaylistVisible }"
         @pointerdown.stop
       >
+        <button
+          v-if="!immersivePlaylistVisible"
+          type="button"
+          class="music-immersive-card-icon-button"
+          title="显示播放列表"
+          aria-label="显示播放列表"
+          @click="toggleImmersivePlaylistVisible"
+        >
+          <svg class="music-action-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M8 6h12" />
+            <path d="M8 12h12" />
+            <path d="M8 18h12" />
+            <path d="M4 6h.01" />
+            <path d="M4 12h.01" />
+            <path d="M4 18h.01" />
+          </svg>
+          <span class="music-icon-only-label">显示播放列表</span>
+        </button>
+
+        <template v-else>
         <div class="music-immersive-playlist-heading">
-          <div class="music-immersive-playlist-title">
-            <strong>播放列表</strong>
-            <span>{{ immersivePlaylistCountLabel }}</span>
+          <div class="music-immersive-card-header">
+            <div class="music-immersive-playlist-title">
+              <strong>播放列表</strong>
+              <span>{{ immersivePlaylistCountLabel }}</span>
+            </div>
+            <button
+              type="button"
+              class="music-immersive-card-icon-button"
+              title="隐藏播放列表"
+              aria-label="隐藏播放列表"
+              @click="toggleImmersivePlaylistVisible"
+            >
+              <svg class="music-action-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M8 6h12" />
+                <path d="M8 12h12" />
+                <path d="M8 18h12" />
+                <path d="M4 6h.01" />
+                <path d="M4 12h.01" />
+                <path d="M4 18h.01" />
+              </svg>
+              <span class="music-icon-only-label">隐藏播放列表</span>
+            </button>
           </div>
           <div class="music-immersive-playlist-source" role="tablist" aria-label="播放列表来源">
             <button
@@ -7973,16 +8209,47 @@ function clamp(value: number, min: number, max: number) {
         <div v-else class="music-immersive-playlist-empty">
           {{ immersivePlaylistEmptyLabel }}
         </div>
+        </template>
       </aside>
 
       <aside
-        v-if="immersiveRhythmPanelVisible && !immersiveStageOnlyMode"
+        v-if="!immersiveStageOnlyMode"
         class="music-immersive-panel"
+        :class="{ 'is-collapsed': !immersiveRhythmPanelVisible }"
         @pointerdown.stop
       >
+        <button
+          v-if="!immersiveRhythmPanelVisible"
+          type="button"
+          class="music-immersive-card-icon-button"
+          title="显示韵律面板"
+          aria-label="显示韵律面板"
+          @click="toggleImmersiveRhythmPanelVisible"
+        >
+          <svg class="music-action-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M3 12h3l2-6 4 12 3-8 2 2h4" />
+          </svg>
+          <span class="music-icon-only-label">显示韵律面板</span>
+        </button>
+
+        <template v-else>
         <div class="music-immersive-panel-heading">
-          <strong>{{ visualStagePresetLabel }}</strong>
-          <span>能量 {{ visualizerEnergyLabel }}</span>
+          <div>
+            <strong>{{ visualStagePresetLabel }}</strong>
+            <span>能量 {{ visualizerEnergyLabel }}</span>
+          </div>
+          <button
+            type="button"
+            class="music-immersive-card-icon-button"
+            title="隐藏韵律面板"
+            aria-label="隐藏韵律面板"
+            @click="toggleImmersiveRhythmPanelVisible"
+          >
+            <svg class="music-action-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M3 12h3l2-6 4 12 3-8 2 2h4" />
+            </svg>
+            <span class="music-icon-only-label">隐藏韵律面板</span>
+          </button>
         </div>
 
         <div class="music-immersive-panel-section">
@@ -8092,6 +8359,77 @@ function clamp(value: number, min: number, max: number) {
           <output>{{ lyricOffsetLabel }}</output>
         </label>
 
+        <div class="music-immersive-panel-section music-lyric-stage-panel">
+          <span>歌词舞台</span>
+          <div class="music-lyric-stage-preset-grid" role="tablist" aria-label="歌词舞台预设">
+            <button
+              v-for="option in lyricStagePresetOptions"
+              :key="option.value"
+              type="button"
+              :class="{ active: lyricStagePreset === option.value }"
+              :title="option.description"
+              role="tab"
+              :aria-selected="lyricStagePreset === option.value"
+              @click="setLyricStagePreset(option.value)"
+            >
+              <span>{{ option.kicker }}</span>
+              <strong>{{ option.label }}</strong>
+            </button>
+          </div>
+          <div class="music-lyric-stage-controls">
+            <label class="music-immersive-range music-lyric-stage-range">
+              <span>景深</span>
+              <input
+                v-model.number="lyricStageDepth"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                aria-label="歌词舞台景深"
+              />
+              <output>{{ lyricStageDepthLabel }}</output>
+            </label>
+            <label class="music-immersive-range music-lyric-stage-range">
+              <span>倾角</span>
+              <input
+                v-model.number="lyricStageTilt"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                aria-label="歌词舞台倾角"
+              />
+              <output>{{ lyricStageTiltLabel }}</output>
+            </label>
+            <label class="music-immersive-range music-lyric-stage-range">
+              <span>溢光</span>
+              <input
+                v-model.number="lyricStageGlow"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                aria-label="歌词舞台溢光"
+              />
+              <output>{{ lyricStageGlowLabel }}</output>
+            </label>
+          </div>
+          <div class="music-lyric-stage-switches">
+            <label class="music-immersive-check music-lyric-stage-check">
+              <input v-model="lyricStageBeatGlow" type="checkbox" />
+              <span>鼓点溢光</span>
+            </label>
+            <label class="music-immersive-check music-lyric-stage-check">
+              <input v-model="lyricStageParticles" type="checkbox" />
+              <span>歌词光粒</span>
+            </label>
+            <label class="music-immersive-check music-lyric-stage-check">
+              <input v-model="lyricStageCameraLock" type="checkbox" />
+              <span>镜头绑定</span>
+            </label>
+          </div>
+        </div>
+
         <label class="music-immersive-check">
           <input v-model="visualReducedMotion" type="checkbox" />
           <span>降低动态</span>
@@ -8106,6 +8444,7 @@ function clamp(value: number, min: number, max: number) {
         <p v-else class="music-immersive-hint">
           {{ visualizerHintLabel }}
         </p>
+        </template>
       </aside>
 
       <div v-if="!currentTrack && !immersiveStageOnlyMode" class="music-immersive-empty" @pointerdown.stop>
@@ -8814,20 +9153,20 @@ function clamp(value: number, min: number, max: number) {
             <div v-else class="music-platform-avatar" aria-hidden="true">
               云
             </div>
-            <div>
+            <div class="music-platform-profile-main">
               <strong>{{ neteaseProfile.nickname }}</strong>
               <span>用户 ID {{ neteaseProfile.userId }}</span>
-              <span
-                class="music-platform-membership"
-                :class="{ active: neteaseProfile.membership?.active }"
-              >
-                <span>{{ platformMembershipStatusLabel(neteaseProfile.membership) }}</span>
-                <small>{{ platformMembershipDetailLabel(neteaseProfile.membership) }}</small>
-              </span>
               <small v-if="neteaseLoginStatus?.savedAt">
                 本机保存于 {{ formatNeteaseTimestamp(neteaseLoginStatus.savedAt) }}
               </small>
             </div>
+            <span
+              class="music-platform-membership"
+              :class="{ active: neteaseProfile.membership?.active }"
+            >
+              <span>{{ platformMembershipStatusLabel(neteaseProfile.membership) }}</span>
+              <small>{{ platformMembershipDetailLabel(neteaseProfile.membership) }}</small>
+            </span>
           </div>
 
           <div v-else class="music-platform-empty">
@@ -9173,20 +9512,20 @@ function clamp(value: number, min: number, max: number) {
             <div v-else class="music-platform-avatar" aria-hidden="true">
               酷
             </div>
-            <div>
+            <div class="music-platform-profile-main">
               <strong>{{ kugouProfile.nickname }}</strong>
               <span>用户 ID {{ kugouProfile.userId }}</span>
-              <span
-                class="music-platform-membership"
-                :class="{ active: kugouProfile.membership?.active }"
-              >
-                <span>{{ platformMembershipStatusLabel(kugouProfile.membership) }}</span>
-                <small>{{ platformMembershipDetailLabel(kugouProfile.membership) }}</small>
-              </span>
               <small v-if="kugouLoginStatus?.savedAt">
                 本机保存于 {{ formatNeteaseTimestamp(kugouLoginStatus.savedAt) }}
               </small>
             </div>
+            <span
+              class="music-platform-membership"
+              :class="{ active: kugouProfile.membership?.active }"
+            >
+              <span>{{ platformMembershipStatusLabel(kugouProfile.membership) }}</span>
+              <small>{{ platformMembershipDetailLabel(kugouProfile.membership) }}</small>
+            </span>
           </div>
 
           <div v-else class="music-platform-empty">

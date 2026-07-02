@@ -19,7 +19,7 @@
 - 不允许把本机 `config.json`、`apps.json`、`.env*`、证书、token、key、应用数据目录或打包缓存推送到 GitHub。
 - 提交前必须检查 `git status --short`、`.gitignore` 和疑似密钥关键词扫描结果。
 
-## 桌宠重启规则
+## 桌宠修改后重启规则
 
 Windows 下不要用 `cargo build`、`cargo build --release` 或 `src-tauri\target\debug\pet_drawer.exe` 作为完整桌宠 UI 重启方式。
 
