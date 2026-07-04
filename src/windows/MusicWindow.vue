@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
-import { LogicalSize } from '@tauri-apps/api/dpi'
+import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { emit as emitEvent, listen } from '@tauri-apps/api/event'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { currentMonitor, getCurrentWindow, primaryMonitor, type Monitor } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import MusicVisualizerCanvas from '../components/MusicVisualizerCanvas.vue'
 import MusicWebglStarfield from '../components/MusicWebglStarfield.vue'
@@ -32,8 +32,29 @@ type MusicLibraryView = 'all' | 'favorites' | 'recent' | 'queue'
 type MusicPanelView = 'library' | 'netease' | 'kugou'
 type MusicRecommendationSource = 'smart' | 'tags' | 'favorites' | 'recent'
 type MusicVisualMode = 'rhythm' | 'dance' | 'focus' | 'sleep'
+type KugouContentSource = 'personal' | 'recommended' | ''
 type MusicStageTuningMap = Record<MusicVisualStagePreset, MusicStageTuning>
 type MusicLyricStagePreset = 'clear' | 'projection' | 'float'
+type OnlinePlaybackQualityPlatform = 'general' | 'netease' | 'kugou'
+type OnlinePlaybackQuality =
+  | 'highest'
+  | 'jymaster'
+  | 'sky'
+  | 'jyeffect'
+  | 'hires'
+  | 'lossless'
+  | 'exhigh'
+  | 'high'
+  | 'standard'
+  | 'viper_clear'
+  | 'viper_hifi'
+  | 'viper_tape'
+  | 'viper_atmos'
+  | 'multitrack'
+  | 'super'
+  | 'flac'
+  | '320'
+  | '128'
 interface MusicStagePresetOption {
   value: MusicVisualStagePreset
   label: string
@@ -46,7 +67,7 @@ interface MusicStagePresetOption {
   swatches: string[]
   metrics: string[]
 }
-type MusicStageTuningKey = keyof MusicStageTuning
+type MusicStageTuningKey = Exclude<keyof MusicStageTuning, 'centerPulse'>
 interface MusicStageTuningOption {
   key: MusicStageTuningKey
   label: string
@@ -55,16 +76,34 @@ interface MusicStageTuningOption {
   step: number
   ariaLabel: string
 }
-interface MusicLyricStagePresetOption {
-  value: MusicLyricStagePreset
+interface OnlinePlaybackQualityOption {
+  value: OnlinePlaybackQuality
   label: string
-  kicker: string
   description: string
+  disabled?: boolean
+  availabilityStatus?: KugouQualityAvailabilityStatus
+  availabilityReason?: string
+  availabilityDetail?: string
+}
+
+type KugouQualityAvailabilityStatus = 'available' | 'unavailable' | 'unknown'
+
+interface KugouQualityAvailabilityItem {
+  quality: OnlinePlaybackQuality
+  label: string
+  status: KugouQualityAvailabilityStatus
+  reason?: string | null
+  detail?: string | null
 }
 interface MusicLyricStageDefaults {
   depth: number
   tilt: number
   glow: number
+  fontScale: number
+  vertical: number
+  width: number
+  sideOpacity: number
+  progressGlow: number
   beatGlow: boolean
   particles: boolean
   cameraLock: boolean
@@ -99,6 +138,10 @@ interface MusicTrack {
   tags: string[]
   url: string
   duration: number | null
+  playbackLevel?: string | null
+  playbackBitrate?: number | null
+  playbackFileType?: string | null
+  playbackSize?: number | null
   favorite: boolean
   playCount: number
   lastPlayedAt: string | null
@@ -343,6 +386,14 @@ interface KugouPlaylistDetail {
   message: string
 }
 
+interface KugouRecommendedPlaylists {
+  playlists: KugouPlaylistSummary[]
+  total: number
+  page: number
+  truncated: boolean
+  message: string
+}
+
 interface KugouLyricsResult {
   songId: string
   content: string
@@ -354,6 +405,8 @@ interface KugouLyricsResult {
 interface KugouPlaybackUrl {
   hash: string
   url: string
+  qualityLevel?: string | null
+  qualityLabel?: string | null
   bitrate?: number | null
   durationMs?: number | null
   fileType?: string | null
@@ -371,6 +424,13 @@ interface KugouPlaybackProxyStatus {
   lastError?: string | null
   lastRange?: string | null
   refreshCount: number
+}
+
+interface KugouQualityAvailability {
+  hash: string
+  qualities: KugouQualityAvailabilityItem[]
+  message: string
+  diagnostic?: string | null
 }
 
 type ImmersivePlaylistSource = 'local' | 'netease' | 'kugou'
@@ -394,6 +454,14 @@ interface OnlineUnavailableTrack {
   retryAfter: number
 }
 
+interface PlaybackFailureDisplay {
+  title: string
+  summary: string
+  compact: string
+  detail: string
+  hints: string[]
+}
+
 interface OnlinePlaybackOptions {
   autoSkip?: boolean
 }
@@ -415,20 +483,90 @@ interface ImmersiveFreeCameraView {
   fov: number
 }
 
+type MiniEdgeDockSide = 'left' | 'right' | 'top' | 'bottom'
+
+interface MiniEdgeDockState {
+  side: MiniEdgeDockSide
+  hiddenX: number
+  hiddenY: number
+  expandedX: number
+  expandedY: number
+}
+
+interface MiniEdgeWindowMoveOptions {
+  animated?: boolean
+  durationMs?: number
+}
+
+interface ScreenWorkArea {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
 const ALL_CATEGORY = '全部'
 const ALL_TAG = '全部标签'
 const DEFAULT_CATEGORY = '未分类'
 const MAX_PLAY_HISTORY_PER_TRACK = 30
 const MAX_TRACK_TAGS = 12
 const MAX_TRACK_TAG_LENGTH = 24
-const FULL_MUSIC_WINDOW_SIZE = { width: 860, height: 680 }
+const FULL_MUSIC_WINDOW_SIZE = { width: 960, height: 700 }
 const MINI_MUSIC_WINDOW_SIZE = { width: 344, height: 154 }
+const MINI_EDGE_SNAP_DISTANCE = 96
+const MINI_EDGE_VISIBLE_STRIP = 32
+const MINI_EDGE_REVEAL_MARGIN = 10
+const MINI_EDGE_MOVE_DEBOUNCE_MS = 360
+const MINI_EDGE_REHIDE_DELAY_MS = 520
+const MINI_EDGE_AUTO_HIDE_DELAY_MS = 1000
+const MINI_EDGE_POSITION_SUPPRESS_MS = 500
+const MINI_EDGE_DRAG_POLL_INTERVAL_MS = 160
+const MINI_EDGE_DRAG_POLL_IDLE_TICKS = 3
+const MINI_EDGE_DRAG_POLL_MAX_MS = 4200
+const MINI_EDGE_ANIMATION_STEP_MS = 16
+const MINI_EDGE_SNAP_ANIMATION_MS = 180
+const MINI_EDGE_HIDE_ANIMATION_MS = 240
+const MINI_EDGE_REVEAL_ANIMATION_MS = 180
 const TRACKS_STORAGE_KEY = 'pet-drawer-music-tracks'
 const SETTINGS_STORAGE_KEY = 'pet-drawer-music-settings'
 const PLAYLISTS_STORAGE_KEY = 'pet-drawer-music-playlists'
 const ONLINE_PLAYBACK_CACHE_TTL_MS = 8 * 60 * 1000
 const ONLINE_UNAVAILABLE_RETRY_AFTER_MS = 10 * 60 * 1000
 const ONLINE_PLAYBACK_PREFETCH_DELAY_MS = 2600
+const KUGOU_QUALITY_AVAILABILITY_CACHE_TTL_MS = 5 * 60 * 1000
+const DEFAULT_ONLINE_PLAYBACK_QUALITY: OnlinePlaybackQuality = 'highest'
+const DEFAULT_NETEASE_ONLINE_PLAYBACK_QUALITY: OnlinePlaybackQuality = 'highest'
+const DEFAULT_KUGOU_ONLINE_PLAYBACK_QUALITY: OnlinePlaybackQuality = 'viper_clear'
+const GENERAL_ONLINE_PLAYBACK_QUALITY_OPTIONS: OnlinePlaybackQualityOption[] = [
+  { value: 'highest', label: '最高可用', description: '按当前平台最高规格优先' },
+  { value: 'lossless', label: '无损优先', description: '平台无损或 FLAC 优先' },
+  { value: 'high', label: '高音质', description: '320kbps 优先' },
+  { value: 'standard', label: '标准', description: '128kbps' },
+]
+const NETEASE_ONLINE_PLAYBACK_QUALITY_OPTIONS: OnlinePlaybackQualityOption[] = [
+  { value: 'highest', label: '超清母带', description: 'SVIP / 最高规格可用时优先' },
+  { value: 'sky', label: '沉浸环绕', description: '空间音频优先' },
+  { value: 'jyeffect', label: '高清环绕', description: '环绕音效优先' },
+  { value: 'hires', label: 'Hi-Res', description: '高解析优先' },
+  { value: 'lossless', label: '无损 SQ', description: 'FLAC 优先' },
+  { value: 'exhigh', label: '极高 HQ', description: '320kbps' },
+  { value: 'standard', label: '标准', description: '128kbps' },
+]
+const KUGOU_ONLINE_PLAYBACK_QUALITY_OPTIONS: OnlinePlaybackQualityOption[] = [
+  { value: 'viper_clear', label: '蝰蛇母带音质', description: '超级 VIP 独享 / 传统 CD 音质 4 倍' },
+  { value: 'super', label: '蝰蛇超清音质', description: '超级 VIP 独享 / 比黑胶唱片更清晰' },
+  { value: 'viper_hifi', label: '蝰蛇HIFI音质', description: '超级 VIP 独享 / 低频震撼高频通透' },
+  { value: 'viper_atmos', label: '蝰蛇全景声2.0', description: '超级 VIP 独享 / 沉浸式音乐环境感' },
+  { value: 'hires', label: 'Hi-Res音质', description: '高解析音频优先' },
+  { value: 'flac', label: '无损音质', description: 'FLAC 优先' },
+  { value: 'high', label: '高品音质', description: '320kbps' },
+  { value: 'standard', label: '标准音质', description: '128kbps' },
+]
+const ALL_ONLINE_PLAYBACK_QUALITY_OPTIONS = [
+  ...GENERAL_ONLINE_PLAYBACK_QUALITY_OPTIONS,
+  ...NETEASE_ONLINE_PLAYBACK_QUALITY_OPTIONS,
+  ...KUGOU_ONLINE_PLAYBACK_QUALITY_OPTIONS,
+]
 const IMMERSIVE_CONTENT_PREP_DELAY_MS = 1400
 const PLATFORM_SEARCH_PAGE_SIZE = 50
 const MAX_PLATFORM_SEARCH_PAGE = 20
@@ -443,11 +581,34 @@ const IMMERSIVE_STAGE_MAX_YAW = 22
 const IMMERSIVE_STAGE_MAX_PITCH = 12
 const IMMERSIVE_STAGE_DRAG_YAW_FACTOR = 0.085
 const IMMERSIVE_STAGE_DRAG_PITCH_FACTOR = 0.062
+const LYRIC_STAGE_FONT_SCALE_MIN = 0.66
+const LYRIC_STAGE_FONT_SCALE_MAX = 1.38
+const LYRIC_STAGE_VERTICAL_OFFSET_SPAN_PX = 520
+const LYRIC_STAGE_DISTANCE_DEFAULT = 0.5
+const LYRIC_STAGE_DISTANCE_OFFSET_SPAN_PX = 360
+const LYRIC_STAGE_DISTANCE_SCALE_MIN = 0.96
+const LYRIC_STAGE_DISTANCE_SCALE_MAX = 1.04
+const DJ_FLOAT_LYRIC_Y_OFFSET = 58
+const DJ_FLOAT_LYRIC_Z_OFFSET = 42
+const DJ_FLOAT_LYRIC_SCALE = 0.94
+const LYRIC_MUSIC_ENVELOPE_ZERO = {
+  pulse: 0,
+  breath: 0,
+  phrase: 0,
+  air: 0,
+  drift: 0,
+  focus: 0,
+}
 const LYRIC_STAGE_PRESET_DEFAULTS: Record<MusicLyricStagePreset, MusicLyricStageDefaults> = {
   clear: {
     depth: 0.64,
     tilt: 0.08,
     glow: 0.28,
+    fontScale: 0.56,
+    vertical: 0.44,
+    width: 0.52,
+    sideOpacity: 0.43,
+    progressGlow: 0.54,
     beatGlow: true,
     particles: false,
     cameraLock: false,
@@ -456,6 +617,11 @@ const LYRIC_STAGE_PRESET_DEFAULTS: Record<MusicLyricStagePreset, MusicLyricStage
     depth: 0.42,
     tilt: 0.48,
     glow: 0.48,
+    fontScale: 0.5,
+    vertical: 0.5,
+    width: 0.5,
+    sideOpacity: 0.87,
+    progressGlow: 0.8,
     beatGlow: true,
     particles: false,
     cameraLock: false,
@@ -464,6 +630,11 @@ const LYRIC_STAGE_PRESET_DEFAULTS: Record<MusicLyricStagePreset, MusicLyricStage
     depth: 0.76,
     tilt: 0.58,
     glow: 0.56,
+    fontScale: 0.48,
+    vertical: 0.38,
+    width: 0.55,
+    sideOpacity: 0.72,
+    progressGlow: 0.72,
     beatGlow: true,
     particles: true,
     cameraLock: true,
@@ -545,26 +716,9 @@ const stagePresetOptions: MusicStagePresetOption[] = [
     metrics: ['柱阵起', '扫描快'],
   },
 ]
-const lyricStagePresetOptions: MusicLyricStagePresetOption[] = [
-  {
-    value: 'clear',
-    label: '清晰前景',
-    kicker: 'FOCUS',
-    description: '稳定靠前，优先保证歌词阅读。',
-  },
-  {
-    value: 'projection',
-    label: '舞台投影',
-    kicker: 'STAGE',
-    description: '带景深和轻倾角，贴近舞台光场。',
-  },
-  {
-    value: 'float',
-    label: '沉浸漂浮',
-    kicker: 'FLOAT',
-    description: '跟随镜头和音乐能量轻微漂浮。',
-  },
-]
+const defaultVisualStagePreset: MusicVisualStagePreset = 'dj'
+const defaultVisualStagePresetOption =
+  stagePresetOptions.find((option) => option.value === defaultVisualStagePreset) ?? stagePresetOptions[0]
 const galaxyStageTuningOptions: MusicStageTuningOption[] = [
   { key: 'density', label: '星量', min: 0.35, max: 2, step: 0.01, ariaLabel: '星河漫游粒子数量' },
   { key: 'response', label: '流速', min: 0.25, max: 2.4, step: 0.01, ariaLabel: '星河漫游星尘流速' },
@@ -688,6 +842,7 @@ const musicTagPresetGroups: MusicTagPresetGroup[] = [
 ]
 const musicTagPresetOptions = musicTagPresetGroups.flatMap((group) => group.tags)
 const audio = ref<HTMLAudioElement | null>(null)
+const miniPlayerElement = ref<HTMLElement | null>(null)
 const neteasePlaylistDetailSection = ref<HTMLElement | null>(null)
 const kugouPlaylistDetailSection = ref<HTMLElement | null>(null)
 const musicWindow = getCurrentWindow()
@@ -711,35 +866,43 @@ const playlistTrackPickerQuery = ref('')
 const playlistTrackPickerSelectedIds = ref<string[]>([])
 const importCategory = ref(DEFAULT_CATEGORY)
 const musicStorageDir = ref('')
+const onlinePlaybackQuality = ref<OnlinePlaybackQuality>(DEFAULT_ONLINE_PLAYBACK_QUALITY)
+const neteaseOnlinePlaybackQuality = ref<OnlinePlaybackQuality>(DEFAULT_NETEASE_ONLINE_PLAYBACK_QUALITY)
+const kugouOnlinePlaybackQuality = ref<OnlinePlaybackQuality>(DEFAULT_KUGOU_ONLINE_PLAYBACK_QUALITY)
+const onlinePlaybackQualitySwitching = ref(false)
+const immersiveQualityMenuOpen = ref(false)
+const playerErrorDetailOpen = ref(false)
 const drawerTheme = ref<DrawerTheme>('light')
 const musicImmersiveThemePreference = ref<MusicImmersiveThemePreference>('follow')
 const immersiveThemeSaving = ref(false)
 const immersiveThemeError = ref('')
 const settingsVisible = ref(false)
 const miniPlayerMode = ref(false)
+const miniEdgeDockSide = ref<MiniEdgeDockSide | null>(null)
+const miniEdgeDockExpanded = ref(false)
 const immersiveMode = ref(false)
 const immersiveStageOnlyMode = ref(false)
 const listFocusMode = ref(false)
 const immersivePlaylistVisible = ref(true)
 const immersiveRhythmPanelVisible = ref(true)
 const immersivePlaylistSource = ref<ImmersivePlaylistSource>('local')
-const visualStagePreset = ref<MusicVisualStagePreset>('galaxy')
-const visualMode = ref<MusicVisualMode>('rhythm')
-const visualSpectrumStyle = ref<MusicSpectrumStyle>('bars')
-const visualLineStyle = ref<MusicLineStyle>('wave')
-const visualRippleStyle = ref<MusicRippleStyle>('rings')
+const visualStagePreset = ref<MusicVisualStagePreset>(defaultVisualStagePresetOption.value)
+const visualMode = ref<MusicVisualMode>(defaultVisualStagePresetOption.mode)
+const visualSpectrumStyle = ref<MusicSpectrumStyle>(defaultVisualStagePresetOption.spectrumStyle)
+const visualLineStyle = ref<MusicLineStyle>(defaultVisualStagePresetOption.lineStyle)
+const visualRippleStyle = ref<MusicRippleStyle>(defaultVisualStagePresetOption.rippleStyle)
 const visualIntensity = ref(0.72)
 const visualReducedMotion = ref(false)
 const visualStageTunings = ref<MusicStageTuningMap>(createDefaultMusicStageTunings())
 const stageTuningOptions = computed(() => stageTuningOptionsForPreset(visualStagePreset.value))
 const visualStageTuning = computed(() => visualStageTunings.value[visualStagePreset.value])
-const lyricStagePreset = ref<MusicLyricStagePreset>('projection')
-const lyricStageDepth = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.depth)
 const lyricStageTilt = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.tilt)
 const lyricStageGlow = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.glow)
+const lyricStageFontScale = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.fontScale)
+const lyricStageVertical = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.vertical)
+const lyricStageDistance = ref(LYRIC_STAGE_DISTANCE_DEFAULT)
+const lyricStageSideOpacity = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.sideOpacity)
 const lyricStageBeatGlow = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.beatGlow)
-const lyricStageParticles = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.particles)
-const lyricStageCameraLock = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.cameraLock)
 const webglStarfieldUnavailable = ref(false)
 const immersiveStageDragging = ref(false)
 const immersiveStageYaw = ref(0)
@@ -796,11 +959,24 @@ const kugouLoginNotice = ref('')
 const kugouLoginError = ref('')
 const kugouPlaylists = ref<KugouPlaylistSummary[]>([])
 const kugouSelectedPlaylistId = ref('')
+const kugouSelectedRecommendedPlaylistId = ref('')
+const kugouSelectedContentSource = ref<KugouContentSource>('')
 const kugouPlaylistDetail = ref<KugouPlaylistDetail | null>(null)
 const kugouPlaylistsLoading = ref(false)
 const kugouPlaylistDetailLoading = ref(false)
 const kugouPlaylistDetailPage = ref(0)
 const kugouPlaylistError = ref('')
+const kugouRecommendedPlaylists = ref<KugouPlaylistSummary[]>([])
+const kugouRecommendedPlaylistsLoading = ref(false)
+const kugouRecommendedPlaylistPage = ref(0)
+const kugouRecommendedPlaylistTotal = ref(0)
+const kugouRecommendedPlaylistHasMore = ref(false)
+const kugouRecommendedPlaylistError = ref('')
+const kugouRecommendedPlaylistNotice = ref('')
+const kugouDailyRecommendation = ref<KugouSearchResult | null>(null)
+const kugouDailyRecommendationLoading = ref(false)
+const kugouDailyRecommendationError = ref('')
+const kugouDailyRecommendationNotice = ref('')
 const kugouSearchQuery = ref('')
 const kugouSearchResult = ref<KugouSearchResult | null>(null)
 const kugouSearchLoading = ref(false)
@@ -812,12 +988,16 @@ const kugouLyricsTrack = ref<KugouSearchTrack | null>(null)
 const kugouLyricsResult = ref<KugouLyricsResult | null>(null)
 const kugouLyricsLoading = ref(false)
 const kugouLyricsError = ref('')
-const neteasePlaybackCache = new Map<number, OnlinePlaybackCacheEntry<NeteasePlaybackUrl>>()
+const neteasePlaybackCache = new Map<string, OnlinePlaybackCacheEntry<NeteasePlaybackUrl>>()
 const kugouPlaybackCache = new Map<string, OnlinePlaybackCacheEntry<KugouPlaybackUrl>>()
-const neteasePlaybackInflight = new Map<number, Promise<NeteasePlaybackUrl>>()
+const kugouQualityAvailabilityCache = reactive(new Map<string, OnlinePlaybackCacheEntry<KugouQualityAvailability>>())
+const neteasePlaybackInflight = new Map<string, Promise<NeteasePlaybackUrl>>()
 const kugouPlaybackInflight = new Map<string, Promise<KugouPlaybackUrl>>()
+const kugouQualityAvailabilityInflight = new Map<string, Promise<KugouQualityAvailability>>()
 const neteaseUnavailableTracks = reactive(new Map<number, OnlineUnavailableTrack>())
 const kugouUnavailableTracks = reactive(new Map<string, OnlineUnavailableTrack>())
+const kugouQualityAvailabilityLoading = ref(false)
+const kugouQualityAvailabilityError = ref('')
 const playing = ref(false)
 const currentTime = ref(0)
 const visualPlaybackTime = ref(0)
@@ -852,6 +1032,7 @@ const {
   frequencyDataAt: beatMapFrequencyDataAt,
   resetBeatMap,
 } = useMusicBeatMapAnalyzer()
+const lyricMusicEnvelope = ref({ ...LYRIC_MUSIC_ENVELOPE_ZERO })
 const {
   lyricsStatus,
   lyricsError,
@@ -861,10 +1042,49 @@ const {
 } = useMusicLyrics()
 
 const currentTrack = computed(() => neteaseCurrentTrack.value ?? tracks.value[currentIndex.value] ?? null)
+const currentKugouQualityTrack = computed(() => resolveCurrentKugouQualityTrack())
+const currentKugouQualityAvailability = computed(() =>
+  currentKugouQualityTrack.value
+    ? getCachedKugouQualityAvailability(currentKugouQualityTrack.value)
+    : null,
+)
+const onlinePlaybackQualityPlatform = computed<OnlinePlaybackQualityPlatform>(() =>
+  currentOnlinePlaybackQualityPlatform(),
+)
+const onlinePlaybackQualityOptions = computed(() =>
+  onlinePlaybackQualityViewOptionsForPlatform(onlinePlaybackQualityPlatform.value),
+)
+const activeOnlinePlaybackQuality = computed(() =>
+  onlinePlaybackQualityForPlatform(onlinePlaybackQualityPlatform.value),
+)
+const onlinePlaybackQualityLabel = computed(() =>
+  onlinePlaybackQualityOptionLabel(
+    activeOnlinePlaybackQuality.value,
+    onlinePlaybackQualityPlatform.value,
+  ),
+)
+const onlinePlaybackQualityPlatformLabel = computed(() =>
+  onlinePlaybackQualityPlatformText(onlinePlaybackQualityPlatform.value),
+)
+const onlinePlaybackQualityStatusHint = computed(() => {
+  if (onlinePlaybackQualitySwitching.value) {
+    return '正在切换当前在线歌曲音质...'
+  }
+  if (onlinePlaybackQualityPlatform.value === 'kugou' && kugouQualityAvailabilityLoading.value) {
+    return '正在预检当前酷狗歌曲可用音质...'
+  }
+  if (onlinePlaybackQualityPlatform.value === 'kugou' && kugouQualityAvailabilityError.value) {
+    return `酷狗音质预检失败：${kugouQualityAvailabilityError.value}`
+  }
+  return `${onlinePlaybackQualityPlatformLabel.value}：${onlinePlaybackQualityLabel.value} · 播放中切换会从当前进度继续`
+})
 const editingTrack = computed(() =>
   editingTrackId.value ? trackById(editingTrackId.value) : null,
 )
 const hasTracks = computed(() => tracks.value.length > 0 || Boolean(neteaseCurrentTrack.value))
+const playerErrorDisplay = computed(() =>
+  playerError.value ? formatPlaybackFailureDisplay(playerError.value) : null,
+)
 const hasQueue = computed(() => playQueue.value.length > 0)
 const resolvedImmersiveTheme = computed<MusicImmersiveTheme>(() =>
   musicImmersiveThemePreference.value === 'follow'
@@ -872,6 +1092,17 @@ const resolvedImmersiveTheme = computed<MusicImmersiveTheme>(() =>
     : musicImmersiveThemePreference.value,
 )
 const themeClass = computed(() => `theme-${immersiveMode.value ? resolvedImmersiveTheme.value : drawerTheme.value}`)
+const miniEdgeDockClass = computed(() => {
+  if (!miniEdgeDockSide.value) {
+    return []
+  }
+
+  return [
+    'music-window-mini-edge-docked',
+    `music-window-mini-edge-${miniEdgeDockSide.value}`,
+    miniEdgeDockExpanded.value ? 'music-window-mini-edge-expanded' : 'music-window-mini-edge-hidden',
+  ]
+})
 const categoryOptions = computed(() => {
   const categories = tracks.value
     .map((track) => normalizeMusicCategory(track.category))
@@ -1047,6 +1278,19 @@ const leftKugouPlaylistStatusLabel = computed(() => {
   return kugouPlaylists.value.length > 0
     ? `${kugouPlaylists.value.length} 个我的歌单`
     : '未读取歌单'
+})
+const leftKugouRecommendedPlaylistStatusLabel = computed(() => {
+  if (kugouRecommendedPlaylistsLoading.value) {
+    return '读取中'
+  }
+
+  if (kugouRecommendedPlaylistError.value) {
+    return '读取失败'
+  }
+
+  return kugouRecommendedPlaylists.value.length > 0
+    ? `${kugouRecommendedPlaylists.value.length} 个推荐`
+    : '未读取推荐'
 })
 const taggedTrackCount = computed(
   () => tracks.value.filter((track) => normalizeTrackTags(track.tags).length > 0).length,
@@ -1308,12 +1552,32 @@ const kugouQrExpired = computed(() => {
 const kugouSelectedPlaylist = computed(
   () => kugouPlaylists.value.find((playlist) => playlist.listId === kugouSelectedPlaylistId.value) ?? null,
 )
+const kugouSelectedRecommendedPlaylist = computed(
+  () =>
+    kugouRecommendedPlaylists.value.find(
+      (playlist) => kugouPlaylistKey(playlist) === kugouSelectedRecommendedPlaylistId.value,
+    ) ?? null,
+)
+const kugouActivePlaylist = computed(() => {
+  if (kugouSelectedContentSource.value === 'recommended') {
+    return kugouSelectedRecommendedPlaylist.value
+  }
+
+  return kugouSelectedPlaylist.value
+})
+const kugouActivePlaylistSourceLabel = computed(() =>
+  kugouSelectedContentSource.value === 'recommended' ? '推荐歌单' : '我的歌单',
+)
 const kugouPlaylistStatusLabel = computed(() => {
   if (kugouPlaylistError.value) {
     return kugouPlaylistError.value
   }
 
-  if (!kugouLoggedIn.value) {
+  if (kugouSelectedContentSource.value === 'recommended' && kugouRecommendedPlaylistsLoading.value) {
+    return '正在读取推荐歌单...'
+  }
+
+  if (!kugouLoggedIn.value && kugouSelectedContentSource.value !== 'recommended') {
     return '登录后可以读取你的酷狗个人歌单。'
   }
 
@@ -1329,11 +1593,17 @@ const kugouPlaylistStatusLabel = computed(() => {
     return kugouPlaylistDetail.value.message
   }
 
+  if (kugouSelectedContentSource.value === 'recommended' && kugouRecommendedPlaylists.value.length > 0) {
+    return '选择一个推荐歌单查看歌曲摘要。'
+  }
+
   if (kugouPlaylists.value.length > 0) {
     return '选择一个歌单查看歌曲摘要。'
   }
 
-  return '点击读取歌单获取酷狗个人歌单列表。'
+  return kugouSelectedContentSource.value === 'recommended'
+    ? '点击刷新推荐获取酷狗推荐歌单。'
+    : '点击读取歌单获取酷狗个人歌单列表。'
 })
 const kugouPlaylistHasMore = computed(() =>
   Boolean(
@@ -1353,6 +1623,7 @@ const kugouPlaylistLoadedLabel = computed(() => {
     : `${detail.tracks.length} 首`
 })
 const kugouSearchTracks = computed(() => kugouSearchResult.value?.tracks ?? [])
+const kugouDailyRecommendationTracks = computed(() => kugouDailyRecommendation.value?.tracks ?? [])
 const kugouSearchHasMore = computed(() => {
   const result = kugouSearchResult.value
   return Boolean(
@@ -1366,6 +1637,16 @@ const kugouSearchLoadedLabel = computed(() => {
   const result = kugouSearchResult.value
   if (!result) {
     return '输入关键词后搜索'
+  }
+
+  return result.total > 0
+    ? `${result.tracks.length} / ${result.total} 首`
+    : `${result.tracks.length} 首`
+})
+const kugouDailyRecommendationLoadedLabel = computed(() => {
+  const result = kugouDailyRecommendation.value
+  if (!result) {
+    return '点击读取每日推荐'
   }
 
   return result.total > 0
@@ -1388,6 +1669,17 @@ const kugouSearchStatusDetail = computed(() => {
   }
 
   return '输入关键词搜索酷狗歌曲；搜索结果只作为临时播放列表，不写入本机曲库。'
+})
+const kugouDailyRecommendationStatusDetail = computed(() => {
+  if (kugouDailyRecommendationError.value) {
+    return kugouDailyRecommendationError.value
+  }
+
+  if (kugouDailyRecommendationNotice.value) {
+    return kugouDailyRecommendationNotice.value
+  }
+
+  return '每日推荐只作为当前运行态在线列表，不写入本机曲库。'
 })
 const repeatModeLabel = computed(() => {
   if (repeatMode.value === 'one') {
@@ -1415,7 +1707,7 @@ const visualModeLabel = computed(
   () => visualModeOptions.find((option) => option.value === visualMode.value)?.label ?? '韵律',
 )
 const visualStagePresetOption = computed(
-  () => stagePresetOptions.find((option) => option.value === visualStagePreset.value) ?? stagePresetOptions[0],
+  () => stagePresetOptions.find((option) => option.value === visualStagePreset.value) ?? defaultVisualStagePresetOption,
 )
 const visualStagePresetLabel = computed(() => visualStagePresetOption.value.label)
 const visualStagePresetDetail = computed(
@@ -1563,10 +1855,18 @@ const immersivePlaylistCountLabel = computed(() => {
       return '正在搜索酷狗'
     }
 
+    if (kugouDailyRecommendationLoading.value) {
+      return '正在读取酷狗每日推荐'
+    }
+
     const count = immersiveKugouPlaylistTracks.value.length
     const total = currentKugouImmersiveSourceTracks().length
     if (count > 0 && kugouPlaylistDetail.value) {
       return `${kugouPlaylistDetail.value.playlist.name} · 当前附近 ${count} / ${total} 首`
+    }
+
+    if (count > 0 && kugouDailyRecommendationTracks.value.length > 0) {
+      return `酷狗每日推荐 · 当前附近 ${count} / ${total} 首`
     }
 
     return count > 0 ? `酷狗搜索 · 当前附近 ${count} / ${total} 首` : '等待酷狗搜索或歌单'
@@ -1604,7 +1904,11 @@ const immersivePlaylistEmptyLabel = computed(() => {
       return '正在搜索酷狗歌曲'
     }
 
-    return '先在酷狗页搜索歌曲或读取歌单'
+    if (kugouDailyRecommendationLoading.value) {
+      return '正在读取酷狗每日推荐'
+    }
+
+    return '先在酷狗页搜索歌曲、读取歌单或每日推荐'
   }
 
   return '暂无歌曲'
@@ -1658,9 +1962,26 @@ const lyricOffsetLabel = computed(() => {
 
   return value > 0 ? `提前 ${value} ms` : `延后 ${Math.abs(value)} ms`
 })
-const lyricStageDepthLabel = computed(() => `${Math.round(clamp(lyricStageDepth.value, 0, 1) * 100)}%`)
 const lyricStageTiltLabel = computed(() => `${Math.round(clamp(lyricStageTilt.value, 0, 1) * 100)}%`)
 const lyricStageGlowLabel = computed(() => `${Math.round(clamp(lyricStageGlow.value, 0, 1) * 100)}%`)
+const lyricStageFontScaleLabel = computed(() => `${Math.round(lyricFontScaleValue() * 100)}%`)
+const lyricStageVerticalLabel = computed(() => {
+  const value = lyricVerticalOffsetPx()
+  if (value === 0) {
+    return '0px'
+  }
+
+  return value > 0 ? `下 ${value}px` : `上 ${Math.abs(value)}px`
+})
+const lyricStageDistanceLabel = computed(() => {
+  const value = lyricDistanceOffsetPx()
+  if (value === 0) {
+    return '默认'
+  }
+
+  return value > 0 ? `近 ${value}px` : `远 ${Math.abs(value)}px`
+})
+const lyricStageSideOpacityLabel = computed(() => `${Math.round(lyricSideOpacityValue() * 100)}%`)
 const visualizerStatusLabel = computed(() => {
   if (!currentTrack.value) {
     return '待机'
@@ -1751,11 +2072,13 @@ const visualizerHintLabel = computed(() => {
 let unlistenThemeChanged: (() => void) | null = null
 let unlistenMusicImmersiveThemeChanged: (() => void) | null = null
 let unlistenMusicAction: (() => void) | null = null
+let unlistenMusicWindowMoved: (() => void) | null = null
 let playlistsRestored = false
 let beatMapRequestedTrackId = ''
 let lyricsRequestedTrackId = ''
 let visualClockFrameId: number | null = null
 let lastVisualClockUpdate = 0
+let lastLyricMusicEnvelopeUpdate = 0
 let playbackRequestSerial = 0
 let onlinePlaybackPrefetchTimer: number | null = null
 let onlinePlaybackPrefetchSerial = 0
@@ -1780,6 +2103,17 @@ let immersiveFreeCameraPointerY = 0
 let immersiveFreeCameraResetStart = 0
 let immersiveFreeCameraResetFrom = { ...IMMERSIVE_FREE_CAMERA_DEFAULT }
 const immersiveFreeCameraKeys = new Set<string>()
+let miniEdgeDockState: MiniEdgeDockState | null = null
+let miniEdgeMoveTimer: number | null = null
+let miniEdgeHideTimer: number | null = null
+let miniEdgeDragPollTimer: number | null = null
+let miniEdgeDragPollStartedAt = 0
+let miniEdgeDragPollLastPosition: { x: number; y: number } | null = null
+let miniEdgeDragPollIdleTicks = 0
+let miniEdgeDragPollSeenMove = false
+let miniEdgeInteractionSerial = 0
+let miniEdgeWindowMoveSerial = 0
+let suppressMiniEdgeMoveUntil = 0
 let neteaseQrPollTimer: number | null = null
 let kugouQrPollTimer: number | null = null
 
@@ -1803,15 +2137,25 @@ onMounted(async () => {
   unlistenMusicAction = await listen<MusicActionRequest>('music-action-requested', (event) => {
     void handleMusicActionRequest(event.payload)
   })
+  try {
+    unlistenMusicWindowMoved = await musicWindow.onMoved(() => {
+      scheduleMiniEdgeDockCheck()
+    })
+  } catch {
+    unlistenMusicWindowMoved = null
+  }
 })
 
 onBeforeUnmount(() => {
   unlistenThemeChanged?.()
   unlistenMusicImmersiveThemeChanged?.()
   unlistenMusicAction?.()
+  unlistenMusicWindowMoved?.()
   window.removeEventListener('keydown', handleImmersiveFreeCameraKeyDown, true)
   window.removeEventListener('keyup', handleImmersiveFreeCameraKeyUp, true)
   window.removeEventListener('mousemove', handleImmersiveFreeCameraMouseMove, true)
+  clearMiniEdgeTimers()
+  cancelMiniEdgeWindowMove()
   clearOnlinePlaybackPrefetchTimer()
   clearOnlineStallRecoveryTimer()
   clearImmersiveContentPrepTimer()
@@ -1827,11 +2171,18 @@ watch(volume, () => {
   saveSettings()
 })
 
+watch(playerError, () => {
+  playerErrorDetailOpen.value = false
+})
+
 watch(
   [
     repeatMode,
     shuffleEnabled,
     musicStorageDir,
+    onlinePlaybackQuality,
+    neteaseOnlinePlaybackQuality,
+    kugouOnlinePlaybackQuality,
     importCategory,
     visualStagePreset,
     visualMode,
@@ -1840,17 +2191,21 @@ watch(
     visualRippleStyle,
     visualIntensity,
     visualReducedMotion,
-    lyricStagePreset,
-    lyricStageDepth,
     lyricStageTilt,
     lyricStageGlow,
+    lyricStageFontScale,
+    lyricStageVertical,
+    lyricStageDistance,
+    lyricStageSideOpacity,
     lyricStageBeatGlow,
-    lyricStageParticles,
-    lyricStageCameraLock,
     lyricOffsetMs,
   ],
   saveSettings,
 )
+
+watch([onlinePlaybackQuality, neteaseOnlinePlaybackQuality, kugouOnlinePlaybackQuality], () => {
+  clearOnlinePlaybackRuntimeCache()
+})
 
 watch(
   visualStageTunings,
@@ -1860,6 +2215,12 @@ watch(
   { deep: true },
 )
 
+watch(visualReducedMotion, (reducedMotion) => {
+  if (reducedMotion) {
+    resetLyricMusicEnvelope()
+  }
+})
+
 watch(() => currentTrack.value?.id ?? '', () => {
   invalidatePendingPlayback()
   clearOnlinePlaybackPrefetchTimer()
@@ -1868,11 +2229,19 @@ watch(() => currentTrack.value?.id ?? '', () => {
   beatMapRequestedTrackId = ''
   lyricsRequestedTrackId = ''
   visualPlaybackTime.value = 0
+  resetLyricMusicEnvelope()
   resetEnergyFrame()
   resetBeatMap()
   resetLyrics()
   if (immersiveMode.value && currentTrack.value) {
     scheduleImmersiveContentPreparation()
+  }
+})
+
+watch(() => currentKugouQualityTrack.value?.hash ?? '', () => {
+  const track = currentKugouQualityTrack.value
+  if (track) {
+    void ensureKugouQualityAvailability(track).catch(() => {})
   }
 })
 
@@ -1902,6 +2271,12 @@ watch(activePanelView, (view) => {
       ) {
         await refreshKugouPlaylists(false)
       }
+      if (
+        kugouRecommendedPlaylists.value.length === 0 &&
+        !kugouRecommendedPlaylistsLoading.value
+      ) {
+        await refreshKugouRecommendedPlaylists(false)
+      }
     })()
     stopNeteaseQrPolling()
     return
@@ -1918,6 +2293,7 @@ watch(playing, (isPlaying) => {
   } else {
     clearImmersiveContentPrepTimer()
     resetImmersiveStageView()
+    resetLyricMusicEnvelope()
     stopVisualClock()
     syncVisualPlaybackTime()
   }
@@ -1979,6 +2355,9 @@ function restoreSettings() {
       repeatMode?: RepeatMode
       shuffleEnabled?: boolean
       musicStorageDir?: string
+      onlinePlaybackQuality?: string
+      neteaseOnlinePlaybackQuality?: string
+      kugouOnlinePlaybackQuality?: string
       importCategory?: string
       playQueue?: string[]
       visualStagePreset?: MusicVisualStagePreset
@@ -1990,13 +2369,13 @@ function restoreSettings() {
       visualReducedMotion?: boolean
       visualStageTuning?: Partial<MusicStageTuning>
       visualStageTunings?: Partial<Record<MusicVisualStagePreset, Partial<MusicStageTuning>>>
-      lyricStagePreset?: MusicLyricStagePreset
-      lyricStageDepth?: number
       lyricStageTilt?: number
       lyricStageGlow?: number
+      lyricStageFontScale?: number
+      lyricStageVertical?: number
+      lyricStageDistance?: number
+      lyricStageSideOpacity?: number
       lyricStageBeatGlow?: boolean
-      lyricStageParticles?: boolean
-      lyricStageCameraLock?: boolean
       lyricOffsetMs?: number
     }
 
@@ -2008,6 +2387,19 @@ function restoreSettings() {
     }
     shuffleEnabled.value = Boolean(saved.shuffleEnabled)
     musicStorageDir.value = saved.musicStorageDir?.trim() ?? ''
+    const restoredOnlinePlaybackQuality = normalizeOnlinePlaybackQuality(saved.onlinePlaybackQuality)
+    onlinePlaybackQuality.value = normalizeOnlinePlaybackQualityForPlatform(
+      restoredOnlinePlaybackQuality,
+      'general',
+    )
+    neteaseOnlinePlaybackQuality.value = normalizeOnlinePlaybackQualityForPlatform(
+      saved.neteaseOnlinePlaybackQuality ?? restoredOnlinePlaybackQuality,
+      'netease',
+    )
+    kugouOnlinePlaybackQuality.value = normalizeOnlinePlaybackQualityForPlatform(
+      saved.kugouOnlinePlaybackQuality ?? restoredOnlinePlaybackQuality,
+      'kugou',
+    )
     importCategory.value = normalizeMusicCategory(saved.importCategory)
     playQueue.value = normalizeQueueIds(saved.playQueue)
     if (isMusicVisualMode(saved.visualMode)) {
@@ -2030,19 +2422,15 @@ function restoreSettings() {
     }
     visualReducedMotion.value = Boolean(saved.visualReducedMotion)
     visualStageTunings.value = normalizeMusicStageTunings(saved.visualStageTunings, saved.visualStageTuning)
-    if (isMusicLyricStagePreset(saved.lyricStagePreset)) {
-      lyricStagePreset.value = saved.lyricStagePreset
-    }
-    const lyricDefaults = lyricStageDefaultsForPreset(lyricStagePreset.value)
-    lyricStageDepth.value = normalizeUnitSetting(saved.lyricStageDepth, lyricDefaults.depth)
+    const lyricDefaults = lyricStageDefaultsForPreset('projection')
     lyricStageTilt.value = normalizeUnitSetting(saved.lyricStageTilt, lyricDefaults.tilt)
     lyricStageGlow.value = normalizeUnitSetting(saved.lyricStageGlow, lyricDefaults.glow)
+    lyricStageFontScale.value = normalizeUnitSetting(saved.lyricStageFontScale, lyricDefaults.fontScale)
+    lyricStageVertical.value = normalizeUnitSetting(saved.lyricStageVertical, lyricDefaults.vertical)
+    lyricStageDistance.value = normalizeUnitSetting(saved.lyricStageDistance, LYRIC_STAGE_DISTANCE_DEFAULT)
+    lyricStageSideOpacity.value = normalizeUnitSetting(saved.lyricStageSideOpacity, lyricDefaults.sideOpacity)
     lyricStageBeatGlow.value =
       typeof saved.lyricStageBeatGlow === 'boolean' ? saved.lyricStageBeatGlow : lyricDefaults.beatGlow
-    lyricStageParticles.value =
-      typeof saved.lyricStageParticles === 'boolean' ? saved.lyricStageParticles : lyricDefaults.particles
-    lyricStageCameraLock.value =
-      typeof saved.lyricStageCameraLock === 'boolean' ? saved.lyricStageCameraLock : lyricDefaults.cameraLock
     if (typeof saved.lyricOffsetMs === 'number') {
       lyricOffsetMs.value = clamp(Math.round(saved.lyricOffsetMs), -2000, 2000)
     }
@@ -2166,6 +2554,9 @@ function saveSettings() {
       repeatMode: repeatMode.value,
       shuffleEnabled: shuffleEnabled.value,
       musicStorageDir: musicStorageDir.value,
+      onlinePlaybackQuality: onlinePlaybackQuality.value,
+      neteaseOnlinePlaybackQuality: neteaseOnlinePlaybackQuality.value,
+      kugouOnlinePlaybackQuality: kugouOnlinePlaybackQuality.value,
       importCategory: normalizeMusicCategory(importCategory.value),
       playQueue: sanitizeQueueIds(playQueue.value),
       visualStagePreset: visualStagePreset.value,
@@ -2176,13 +2567,22 @@ function saveSettings() {
       visualIntensity: clamp(visualIntensity.value, 0.2, 1),
       visualReducedMotion: visualReducedMotion.value,
       visualStageTunings: normalizeMusicStageTunings(visualStageTunings.value),
-      lyricStagePreset: lyricStagePreset.value,
-      lyricStageDepth: normalizeUnitSetting(lyricStageDepth.value, LYRIC_STAGE_PRESET_DEFAULTS.projection.depth),
       lyricStageTilt: normalizeUnitSetting(lyricStageTilt.value, LYRIC_STAGE_PRESET_DEFAULTS.projection.tilt),
       lyricStageGlow: normalizeUnitSetting(lyricStageGlow.value, LYRIC_STAGE_PRESET_DEFAULTS.projection.glow),
+      lyricStageFontScale: normalizeUnitSetting(
+        lyricStageFontScale.value,
+        LYRIC_STAGE_PRESET_DEFAULTS.projection.fontScale,
+      ),
+      lyricStageVertical: normalizeUnitSetting(
+        lyricStageVertical.value,
+        LYRIC_STAGE_PRESET_DEFAULTS.projection.vertical,
+      ),
+      lyricStageDistance: normalizeUnitSetting(lyricStageDistance.value, LYRIC_STAGE_DISTANCE_DEFAULT),
+      lyricStageSideOpacity: normalizeUnitSetting(
+        lyricStageSideOpacity.value,
+        LYRIC_STAGE_PRESET_DEFAULTS.projection.sideOpacity,
+      ),
       lyricStageBeatGlow: lyricStageBeatGlow.value,
-      lyricStageParticles: lyricStageParticles.value,
-      lyricStageCameraLock: lyricStageCameraLock.value,
       lyricOffsetMs: clamp(Math.round(lyricOffsetMs.value), -2000, 2000),
     }),
   )
@@ -2354,6 +2754,434 @@ function createTrackId() {
 
 function normalizeTrackId(value?: string | null) {
   return value?.trim() ?? ''
+}
+
+function normalizeOnlinePlaybackQuality(value?: string | null): OnlinePlaybackQuality {
+  const normalized = value?.trim().toLowerCase()
+  return ALL_ONLINE_PLAYBACK_QUALITY_OPTIONS.some((option) => option.value === normalized)
+    ? (normalized as OnlinePlaybackQuality)
+    : DEFAULT_ONLINE_PLAYBACK_QUALITY
+}
+
+function onlinePlaybackQualityOptionsForPlatform(platform: OnlinePlaybackQualityPlatform) {
+  if (platform === 'netease') {
+    return NETEASE_ONLINE_PLAYBACK_QUALITY_OPTIONS
+  }
+  if (platform === 'kugou') {
+    return KUGOU_ONLINE_PLAYBACK_QUALITY_OPTIONS
+  }
+  return GENERAL_ONLINE_PLAYBACK_QUALITY_OPTIONS
+}
+
+function onlinePlaybackQualityViewOptionsForPlatform(platform: OnlinePlaybackQualityPlatform) {
+  const options = onlinePlaybackQualityOptionsForPlatform(platform)
+  if (platform !== 'kugou') {
+    return options
+  }
+
+  return options.map((option) => {
+    const availability = kugouQualityAvailabilityForOption(option.value)
+    if (!availability) {
+      return option
+    }
+
+    const reason = availability.reason?.trim() || ''
+    const statusLabel = kugouQualityAvailabilityStatusLabel(availability.status)
+    return {
+      ...option,
+      disabled: availability.status === 'unavailable',
+      availabilityStatus: availability.status,
+      availabilityReason: reason,
+      availabilityDetail: availability.detail?.trim() || '',
+      description:
+        availability.status === 'available'
+          ? `${option.description} · ${statusLabel}`
+          : reason
+            ? `${option.description} · ${statusLabel}：${reason}`
+            : `${option.description} · ${statusLabel}`,
+    }
+  })
+}
+
+function kugouQualityAvailabilityStatusLabel(status: KugouQualityAvailabilityStatus) {
+  if (status === 'available') {
+    return '当前歌曲可用'
+  }
+  if (status === 'unavailable') {
+    return '当前歌曲不可用'
+  }
+  return '未确认'
+}
+
+function kugouQualityAvailabilityForOption(value: OnlinePlaybackQuality) {
+  const availability = currentKugouQualityAvailability.value
+  if (!availability) {
+    return null
+  }
+
+  return availability.qualities.find((item) => item.quality === value) ?? null
+}
+
+function onlinePlaybackQualityOptionDisabled(option: OnlinePlaybackQualityOption) {
+  return Boolean(option.disabled)
+}
+
+function onlinePlaybackQualityOptionTitle(option: OnlinePlaybackQualityOption) {
+  const status = option.availabilityStatus
+  const reason = option.availabilityReason?.trim()
+  const detail = option.availabilityDetail?.trim()
+  const parts = [`${option.label}：${option.description}`]
+  if (status) {
+    parts.push(kugouQualityAvailabilityStatusLabel(status))
+  }
+  if (reason) {
+    parts.push(reason)
+  }
+  if (detail) {
+    parts.push(detail)
+  }
+  return parts.join('；')
+}
+
+function onlinePlaybackQualityPlatformText(platform: OnlinePlaybackQualityPlatform) {
+  if (platform === 'netease') {
+    return '网易云音质'
+  }
+  if (platform === 'kugou') {
+    return '酷狗音质'
+  }
+  return '在线播放音质'
+}
+
+function currentOnlinePlaybackQualityPlatform(): OnlinePlaybackQualityPlatform {
+  const source = currentTrack.value?.source
+  if (source === 'netease' || source === 'kugou') {
+    return source
+  }
+  if (activePanelView.value === 'netease' || activePanelView.value === 'kugou') {
+    return activePanelView.value
+  }
+  if (immersivePlaylistSource.value === 'netease' || immersivePlaylistSource.value === 'kugou') {
+    return immersivePlaylistSource.value
+  }
+  return 'general'
+}
+
+function onlinePlaybackQualityPlatformForTrack(track: MusicTrack | null): OnlinePlaybackQualityPlatform {
+  if (track?.source === 'netease' || track?.source === 'kugou') {
+    return track.source
+  }
+  return onlinePlaybackQualityPlatform.value
+}
+
+function mapOnlinePlaybackQualityToPlatform(
+  value: OnlinePlaybackQuality,
+  platform: OnlinePlaybackQualityPlatform,
+) {
+  if (platform === 'netease') {
+    if (
+      value === 'highest' ||
+      value === 'jymaster' ||
+      value === 'viper_clear' ||
+      value === 'viper_hifi' ||
+      value === 'viper_tape' ||
+      value === 'viper_atmos' ||
+      value === 'multitrack' ||
+      value === 'super'
+    ) {
+      return 'highest'
+    }
+    if (value === 'flac') {
+      return 'lossless'
+    }
+    if (value === 'high' || value === '320') {
+      return 'exhigh'
+    }
+    if (value === '128') {
+      return 'standard'
+    }
+  } else if (platform === 'kugou') {
+    if (value === 'highest' || value === 'jymaster' || value === 'sky' || value === 'jyeffect') {
+      return 'viper_clear'
+    }
+    if (value === 'lossless') {
+      return 'flac'
+    }
+    if (value === 'exhigh' || value === '320') {
+      return 'high'
+    }
+    if (value === '128') {
+      return 'standard'
+    }
+  } else {
+    if (
+      value === 'jymaster' ||
+      value === 'sky' ||
+      value === 'jyeffect' ||
+      value === 'hires' ||
+      value === 'viper_clear' ||
+      value === 'viper_hifi' ||
+      value === 'viper_tape' ||
+      value === 'viper_atmos' ||
+      value === 'multitrack' ||
+      value === 'super'
+    ) {
+      return 'highest'
+    }
+    if (value === 'flac') {
+      return 'lossless'
+    }
+    if (value === 'exhigh' || value === '320') {
+      return 'high'
+    }
+    if (value === '128') {
+      return 'standard'
+    }
+  }
+  return value
+}
+
+function normalizeOnlinePlaybackQualityForPlatform(
+  value: string | OnlinePlaybackQuality | null | undefined,
+  platform: OnlinePlaybackQualityPlatform,
+) {
+  const normalized = normalizeOnlinePlaybackQuality(value)
+  const mapped = mapOnlinePlaybackQualityToPlatform(normalized, platform)
+  const options = onlinePlaybackQualityOptionsForPlatform(platform)
+  return options.some((option) => option.value === mapped) ? mapped : options[0].value
+}
+
+function onlinePlaybackQualityForPlatform(platform: OnlinePlaybackQualityPlatform) {
+  if (platform === 'netease') {
+    return normalizeOnlinePlaybackQualityForPlatform(neteaseOnlinePlaybackQuality.value, platform)
+  }
+  if (platform === 'kugou') {
+    return normalizeOnlinePlaybackQualityForPlatform(kugouOnlinePlaybackQuality.value, platform)
+  }
+  return normalizeOnlinePlaybackQualityForPlatform(onlinePlaybackQuality.value, platform)
+}
+
+function setOnlinePlaybackQualityPreference(
+  platform: OnlinePlaybackQualityPlatform,
+  value: OnlinePlaybackQuality,
+) {
+  const nextQuality = normalizeOnlinePlaybackQualityForPlatform(value, platform)
+  if (platform === 'netease') {
+    neteaseOnlinePlaybackQuality.value = nextQuality
+  } else if (platform === 'kugou') {
+    kugouOnlinePlaybackQuality.value = nextQuality
+  } else {
+    onlinePlaybackQuality.value = nextQuality
+  }
+  onlinePlaybackQuality.value = normalizeOnlinePlaybackQualityForPlatform(nextQuality, 'general')
+  return nextQuality
+}
+
+function onlinePlaybackQualityOption(value: OnlinePlaybackQuality, platform: OnlinePlaybackQualityPlatform) {
+  const platformOptions = onlinePlaybackQualityOptionsForPlatform(platform)
+  return (
+    platformOptions.find((option) => option.value === value) ??
+    ALL_ONLINE_PLAYBACK_QUALITY_OPTIONS.find((option) => option.value === value) ??
+    platformOptions[0]
+  )
+}
+
+function onlinePlaybackQualityOptionLabel(
+  value: OnlinePlaybackQuality,
+  platform: OnlinePlaybackQualityPlatform,
+) {
+  return onlinePlaybackQualityOption(value, platform).label
+}
+
+function toggleImmersiveQualityMenu() {
+  if (onlinePlaybackQualitySwitching.value) {
+    return
+  }
+  if (
+    !immersiveQualityMenuOpen.value &&
+    onlinePlaybackQualityPlatform.value === 'kugou' &&
+    currentKugouQualityTrack.value
+  ) {
+    void ensureKugouQualityAvailability(currentKugouQualityTrack.value).catch(() => {})
+  }
+  immersiveQualityMenuOpen.value = !immersiveQualityMenuOpen.value
+}
+
+function closeImmersiveQualityMenuOnFocusOut(event: FocusEvent) {
+  const current = event.currentTarget
+  const next = event.relatedTarget
+  if (current instanceof HTMLElement && next instanceof Node && current.contains(next)) {
+    return
+  }
+  immersiveQualityMenuOpen.value = false
+}
+
+async function selectImmersiveOnlinePlaybackQuality(value: OnlinePlaybackQuality) {
+  immersiveQualityMenuOpen.value = false
+  await setOnlinePlaybackQuality(value)
+}
+
+async function setOnlinePlaybackQuality(value: OnlinePlaybackQuality) {
+  if (onlinePlaybackQualitySwitching.value) {
+    return
+  }
+
+  const platform = onlinePlaybackQualityPlatform.value
+  if (!(await canApplyOnlinePlaybackQuality(value, platform))) {
+    immersiveQualityMenuOpen.value = false
+    return
+  }
+
+  const previousQuality = onlinePlaybackQualityForPlatform(platform)
+  const nextQuality = setOnlinePlaybackQualityPreference(platform, value)
+  immersiveQualityMenuOpen.value = false
+  clearOnlinePlaybackRuntimeCache()
+  await applyOnlinePlaybackQualityToCurrentTrack(nextQuality, platform, previousQuality)
+}
+
+async function canApplyOnlinePlaybackQuality(
+  value: OnlinePlaybackQuality,
+  platform: OnlinePlaybackQualityPlatform,
+) {
+  if (platform !== 'kugou') {
+    return true
+  }
+
+  const nextQuality = normalizeOnlinePlaybackQualityForPlatform(value, platform)
+  const track = currentKugouQualityTrack.value
+  if (!track) {
+    return true
+  }
+
+  try {
+    const availability = await ensureKugouQualityAvailability(track)
+    const unavailableReason = kugouQualityUnavailableReason(availability, nextQuality)
+    if (!unavailableReason) {
+      return true
+    }
+
+    const label = onlinePlaybackQualityOptionLabel(nextQuality, platform)
+    playerStatus.value = ''
+    playerError.value = `酷狗音质不可用：当前歌曲不能切换到「${label}」。${unavailableReason}`
+    return false
+  } catch (err) {
+    if (nextQuality !== 'hires') {
+      return true
+    }
+
+    playerStatus.value = ''
+    playerError.value = `酷狗音质不可用：Hi-Res 预检失败，已停止切换。${normalizeOnlinePlaybackFailureReason(err)}`
+    return false
+  }
+}
+
+async function applyOnlinePlaybackQualityToCurrentTrack(
+  nextQuality: OnlinePlaybackQuality,
+  platform: OnlinePlaybackQualityPlatform,
+  previousQuality: OnlinePlaybackQuality,
+) {
+  const expectedTrack = currentTrack.value
+  const playbackPlatform = onlinePlaybackQualityPlatformForTrack(expectedTrack)
+  const label = onlinePlaybackQualityOptionLabel(nextQuality, platform)
+  const platformLabel = onlinePlaybackQualityPlatformText(playbackPlatform)
+  if (
+    !expectedTrack ||
+    !currentTrackOnline.value ||
+    !playing.value ||
+    !audio.value ||
+    !audio.value.src
+  ) {
+    playerError.value = ''
+    playerStatus.value = currentTrackOnline.value
+      ? `${platformLabel}已设为「${label}」，下次播放或重新播放当前歌曲时生效。`
+      : `${platformLabel}已设为「${label}」。`
+    return
+  }
+
+  const resumeTime = Math.max(audio.value.currentTime || currentTime.value || 0, 0)
+  const previousAudioSource = audio.value.currentSrc || audio.value.src || expectedTrack.url
+  onlinePlaybackQualitySwitching.value = true
+  resetOnlineStallRecovery()
+  playerError.value = ''
+  playerStatus.value = `正在切换${platformLabel}到「${label}」，将从 ${formatTime(resumeTime)} 继续...`
+
+  try {
+    await refreshCurrentOnlinePlaybackAt(resumeTime, expectedTrack, { reason: 'quality-switch' })
+  } catch (err) {
+    if (sameMusicTrackIdentity(currentTrack.value, expectedTrack)) {
+      const reason = normalizeOnlinePlaybackFailureReason(err)
+      const previousLabel = onlinePlaybackQualityOptionLabel(previousQuality, platform)
+      setOnlinePlaybackQualityPreference(platform, previousQuality)
+      clearOnlinePlaybackRuntimeCache()
+      const restored = await restoreCurrentOnlinePlaybackAfterQualitySwitch(
+        expectedTrack,
+        resumeTime,
+        previousAudioSource,
+      )
+      playerStatus.value = restored
+        ? `${platformLabel}「${label}」不可用，已恢复「${previousLabel}」并从 ${formatTime(resumeTime)} 继续播放。`
+        : `已恢复${platformLabel}偏好为「${previousLabel}」，但当前播放链路需要重新播放。`
+      playerError.value = `${platformLabel}切换失败：${reason}`
+    }
+  } finally {
+    onlinePlaybackQualitySwitching.value = false
+  }
+}
+
+async function restoreCurrentOnlinePlaybackAfterQualitySwitch(
+  previousTrack: MusicTrack,
+  resumeTime: number,
+  previousAudioSource: string,
+) {
+  if (!sameMusicTrackIdentity(currentTrack.value, previousTrack)) {
+    return false
+  }
+
+  neteaseCurrentTrack.value = previousTrack
+  currentTime.value = resumeTime
+  visualPlaybackTime.value = resumeTime
+  playerError.value = ''
+  await nextTick()
+
+  if (!audio.value || !sameMusicTrackIdentity(currentTrack.value, previousTrack)) {
+    return false
+  }
+
+  const resumed = await loadAndPlayCurrentAudioAt(
+    previousTrack,
+    resumeTime,
+    previousAudioSource || previousTrack.url,
+  )
+  if (!resumed) {
+    return false
+  }
+
+  try {
+    await waitForOnlinePlaybackProgress(previousTrack, resumeTime, { requireAdvance: false })
+  } catch {
+    return playing.value && !playerError.value
+  }
+  return true
+}
+
+function normalizePlaybackLevel(value?: string | null) {
+  return value?.trim() || null
+}
+
+function normalizePlaybackBitrate(value?: number | null) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : null
+}
+
+function normalizePlaybackFileType(value?: string | null) {
+  return value?.trim().toLowerCase() || null
+}
+
+function normalizePlaybackSize(value?: number | null) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : null
 }
 
 function safeConvertFileSrc(path: string) {
@@ -3029,10 +3857,11 @@ function writeOnlinePlaybackCache<T, K>(
   cache: Map<K, OnlinePlaybackCacheEntry<T>>,
   key: K,
   playback: T,
+  ttlMs = ONLINE_PLAYBACK_CACHE_TTL_MS,
 ) {
   cache.set(key, {
     playback,
-    expiresAt: Date.now() + ONLINE_PLAYBACK_CACHE_TTL_MS,
+    expiresAt: Date.now() + ttlMs,
   })
 }
 
@@ -3044,6 +3873,155 @@ function normalizeOnlinePlaybackFailureReason(err: unknown) {
     .replace(/^酷狗在线播放失败：/, '')
     .trim()
   return message || '平台没有返回可播放链接。'
+}
+
+function stripPlaybackFailurePrefix(value: string) {
+  return value
+    .replace(/^Error:\s*/i, '')
+    .replace(/^InvokeError:\s*/i, '')
+    .replace(/^网易云在线播放失败：/, '')
+    .replace(/^酷狗在线播放失败：/, '')
+    .replace(/^网易云切换失败：/, '')
+    .replace(/^酷狗切换失败：/, '')
+    .trim()
+}
+
+function truncatePlaybackFailureText(value: string, maxLength = 96) {
+  const text = value.replace(/\s+/g, ' ').trim()
+  if (text.length <= maxLength) {
+    return text
+  }
+  return `${text.slice(0, maxLength).trim()}...`
+}
+
+function formatPlaybackFailureDisplay(value: string): PlaybackFailureDisplay {
+  const raw = stripPlaybackFailurePrefix(value)
+  const fallbackSummary = truncatePlaybackFailureText(raw || value || '平台没有返回可播放链接。', 128)
+  const display: PlaybackFailureDisplay = {
+    title: '播放失败',
+    summary: fallbackSummary,
+    compact: fallbackSummary,
+    detail: shouldShowPlaybackFailureDetail(raw, fallbackSummary) ? raw : '',
+    hints: [],
+  }
+
+  if (!raw) {
+    display.summary = '平台没有返回具体失败原因。'
+    display.compact = display.summary
+    return display
+  }
+
+  if (raw.includes('当前酷狗在线音乐无法继续读取')) {
+    display.title = '酷狗代理读取中断'
+    display.summary = raw.includes('播放代理预检通过')
+      ? '播放地址预检可读，但实际播放到后段时 Range 续读失败。'
+      : '本机播放代理没有继续读到后续音频数据。'
+    display.compact = display.title
+    display.hints = [
+      '通常与 CDN 临时波动、链接过期或拖动进度后的 Range 请求中断有关。',
+      '可以重试当前歌曲，或切换音质重新获取播放链路。',
+    ]
+    display.detail = shouldShowPlaybackFailureDetail(raw, display.summary) ? raw : ''
+    return display
+  }
+
+  if (raw.includes('酷狗 Hi-Res 播放源获取失败')) {
+    display.title = '酷狗 Hi-Res 当前不可用'
+    display.summary = raw.includes('auth_through=空数组') || raw.includes('priv_status=0')
+      ? '登录态没有拿到 Hi-Res 授权，接口未返回 Hi-Res 播放源。'
+      : '登录态 /v5/url 没有返回 Hi-Res 播放源。'
+    display.compact = display.title
+    display.hints = [
+      '切换到无损、高品或标准音质可继续尝试播放。',
+      '官方客户端可播不代表当前接口能拿到同等设备或风控授权。',
+    ]
+    return display
+  }
+
+  if (
+    raw.includes('没有拿到完整播放授权') ||
+    raw.includes('需要会员/付费授权') ||
+    (raw.includes('需要付费') && raw.includes('试听片段'))
+  ) {
+    display.title = '平台未返回完整播放授权'
+    display.summary = '当前账号在项目内没有拿到完整音频授权，已停止使用试听片段。'
+    display.compact = display.title
+    display.hints = ['可切换较低音质、重新登录平台账号，或等待后续客户端/网页播放兜底。']
+    return display
+  }
+
+  if (raw.includes('该音质不可用') || raw.includes('不满足所选')) {
+    display.title = '所选音质当前不可用'
+    display.summary = '平台返回的播放源不满足当前选择的音质，已拒绝把低音质当作切换成功。'
+    display.compact = display.title
+    display.hints = ['可改选平台实际返回的较低音质后重试。']
+    return display
+  }
+
+  if (raw.includes('播放链接为空') || raw.includes('没有返回播放链接') || raw.includes('未返回可访问音频链接')) {
+    display.title = '平台没有返回播放源'
+    display.summary = '接口没有返回可播放音频链接，可能与版权、会员、地区、设备授权或当前音质有关。'
+    display.compact = display.title
+    return display
+  }
+
+  if (raw.includes('版权')) {
+    display.title = '当前歌曲版权受限'
+    display.summary = '平台没有向项目返回这首歌的可播放链接。'
+    display.compact = display.title
+    return display
+  }
+
+  if (raw.includes('会员') || raw.includes('付费')) {
+    display.title = '当前歌曲需要平台授权'
+    display.summary = '平台没有向当前接口返回完整播放源，可能需要会员包、付费授权或官方客户端授权。'
+    display.compact = display.title
+    return display
+  }
+
+  return display
+}
+
+function shouldShowPlaybackFailureDetail(raw: string, summary: string) {
+  if (!raw.trim()) {
+    return false
+  }
+
+  const normalizedRaw = raw.replace(/\s+/g, ' ').trim()
+  const normalizedSummary = summary.replace(/\s+/g, ' ').trim()
+  if (normalizedRaw === normalizedSummary || normalizedRaw.length <= normalizedSummary.length + 12) {
+    return false
+  }
+
+  return [
+    'status=',
+    'error_code=',
+    'auth_through',
+    'priv_status',
+    'trans_param',
+    'fail_process',
+    'tracker_through',
+    'data字段=',
+    '失败位置：',
+    '已刷新',
+  ].some((keyword) => normalizedRaw.includes(keyword))
+}
+
+function compactPlaybackFailureReason(value: string) {
+  return formatPlaybackFailureDisplay(value).compact
+}
+
+function playbackFailureDetailTitle(value: string) {
+  const display = formatPlaybackFailureDisplay(value)
+  return display.detail
+    ? `${display.title}：${display.summary}\n\n${display.detail}`
+    : `${display.title}：${display.summary}`
+}
+
+function handlePlayerErrorDetailToggle(event: Event) {
+  if (event.target instanceof HTMLDetailsElement) {
+    playerErrorDetailOpen.value = event.target.open
+  }
 }
 
 function normalizeOnlineStallRecoveryFailureReason(err: unknown) {
@@ -3121,27 +4099,165 @@ function clearKugouTrackUnavailable(track: KugouSearchTrack) {
   }
 }
 
+function kugouQualityAvailabilityCacheKey(track: KugouSearchTrack) {
+  const key = kugouPlaybackCacheKey(track)
+  return key ? `${key}:${track.albumAudioId ?? 0}:${track.audioId ?? 0}` : ''
+}
+
+function getCachedKugouQualityAvailability(track: KugouSearchTrack) {
+  const key = kugouQualityAvailabilityCacheKey(track)
+  return key ? readOnlinePlaybackCache(kugouQualityAvailabilityCache, key) : null
+}
+
+function cacheKugouQualityAvailability(track: KugouSearchTrack, availability: KugouQualityAvailability) {
+  const key = kugouQualityAvailabilityCacheKey(track)
+  if (key) {
+    writeOnlinePlaybackCache(
+      kugouQualityAvailabilityCache,
+      key,
+      availability,
+      KUGOU_QUALITY_AVAILABILITY_CACHE_TTL_MS,
+    )
+  }
+}
+
+function clearKugouQualityAvailabilityRuntimeCache() {
+  kugouQualityAvailabilityCache.clear()
+  kugouQualityAvailabilityInflight.clear()
+  kugouQualityAvailabilityLoading.value = false
+  kugouQualityAvailabilityError.value = ''
+}
+
+function fetchKugouQualityAvailability(track: KugouSearchTrack) {
+  const key = kugouQualityAvailabilityCacheKey(track)
+  if (!key) {
+    return Promise.reject(new Error('酷狗歌曲缺少 hash，无法预检音质。'))
+  }
+
+  const existing = kugouQualityAvailabilityInflight.get(key)
+  if (existing) {
+    return existing
+  }
+
+  const request = invoke<KugouQualityAvailability>('get_kugou_song_quality_availability', {
+    hash: track.hash,
+    hashCandidates: track.hashCandidates ?? [track.hash],
+    albumAudioId: track.albumAudioId ?? null,
+  }).finally(() => {
+    kugouQualityAvailabilityInflight.delete(key)
+  })
+  kugouQualityAvailabilityInflight.set(key, request)
+  return request
+}
+
+async function ensureKugouQualityAvailability(track: KugouSearchTrack) {
+  const cached = getCachedKugouQualityAvailability(track)
+  if (cached) {
+    return cached
+  }
+
+  kugouQualityAvailabilityLoading.value = true
+  kugouQualityAvailabilityError.value = ''
+  try {
+    const availability = await fetchKugouQualityAvailability(track)
+    cacheKugouQualityAvailability(track, availability)
+    return availability
+  } catch (err) {
+    const reason = normalizeOnlinePlaybackFailureReason(err)
+    kugouQualityAvailabilityError.value = reason
+    throw err
+  } finally {
+    kugouQualityAvailabilityLoading.value = false
+  }
+}
+
+function kugouQualityAvailabilityItem(
+  availability: KugouQualityAvailability | null,
+  quality: OnlinePlaybackQuality,
+) {
+  return availability?.qualities.find((item) => item.quality === quality) ?? null
+}
+
+function kugouQualityUnavailableReason(
+  availability: KugouQualityAvailability | null,
+  quality: OnlinePlaybackQuality,
+) {
+  const item = kugouQualityAvailabilityItem(availability, quality)
+  return item?.status === 'unavailable'
+    ? item.reason?.trim() || `${onlinePlaybackQualityOptionLabel(quality, 'kugou')}当前不可用。`
+    : ''
+}
+
+function firstPlayableKugouQuality(availability: KugouQualityAvailability | null) {
+  const options = KUGOU_ONLINE_PLAYBACK_QUALITY_OPTIONS.filter((option) => option.value !== 'hires')
+  const available = options.find((option) =>
+    kugouQualityAvailabilityItem(availability, option.value)?.status === 'available',
+  )
+  if (available) {
+    return available.value
+  }
+
+  const notUnavailable = options.find((option) =>
+    kugouQualityAvailabilityItem(availability, option.value)?.status !== 'unavailable',
+  )
+  return notUnavailable?.value ?? 'standard'
+}
+
+async function applyKugouQualityAvailabilityBeforePlayback(track: KugouSearchTrack) {
+  const desiredQuality = onlinePlaybackQualityForPlatform('kugou')
+  let availability: KugouQualityAvailability | null = null
+  try {
+    availability = await ensureKugouQualityAvailability(track)
+  } catch {
+    if (desiredQuality === 'hires') {
+      const fallback: OnlinePlaybackQuality = 'flac'
+      setOnlinePlaybackQualityPreference('kugou', fallback)
+      playerStatus.value = `酷狗 Hi-Res 暂不能完成预检，已先改用「${onlinePlaybackQualityOptionLabel(fallback, 'kugou')}」。`
+    }
+    return
+  }
+
+  const unavailableReason = kugouQualityUnavailableReason(availability, desiredQuality)
+  if (!unavailableReason) {
+    return
+  }
+
+  const fallback = firstPlayableKugouQuality(availability)
+  const fallbackLabel = onlinePlaybackQualityOptionLabel(fallback, 'kugou')
+  setOnlinePlaybackQualityPreference('kugou', fallback)
+  playerStatus.value = `所选酷狗音质「${onlinePlaybackQualityOptionLabel(
+    desiredQuality,
+    'kugou',
+  )}」当前不可用，已改用「${fallbackLabel}」。${unavailableReason}`
+}
+
+function neteasePlaybackCacheKey(track: NeteasePlaylistTrack) {
+  return `${track.id}:${onlinePlaybackQualityForPlatform('netease')}`
+}
+
 function getCachedNeteasePlayback(track: NeteasePlaylistTrack) {
-  return readOnlinePlaybackCache(neteasePlaybackCache, track.id)
+  return readOnlinePlaybackCache(neteasePlaybackCache, neteasePlaybackCacheKey(track))
 }
 
 function cacheNeteasePlayback(track: NeteasePlaylistTrack, playback: NeteasePlaybackUrl) {
-  writeOnlinePlaybackCache(neteasePlaybackCache, track.id, playback)
+  writeOnlinePlaybackCache(neteasePlaybackCache, neteasePlaybackCacheKey(track), playback)
 }
 
 function fetchNeteasePlayback(track: NeteasePlaylistTrack) {
-  const existing = neteasePlaybackInflight.get(track.id)
+  const quality = onlinePlaybackQualityForPlatform('netease')
+  const key = `${track.id}:${quality}`
+  const existing = neteasePlaybackInflight.get(key)
   if (existing) {
     return existing
   }
 
   const request = invoke<NeteasePlaybackUrl>('get_netease_song_playback_url', {
     songId: track.id,
-    level: 'standard',
+    level: quality,
   }).finally(() => {
-    neteasePlaybackInflight.delete(track.id)
+    neteasePlaybackInflight.delete(key)
   })
-  neteasePlaybackInflight.set(track.id, request)
+  neteasePlaybackInflight.set(key, request)
   return request
 }
 
@@ -3160,24 +4276,31 @@ function kugouPlaybackCacheKey(track: KugouSearchTrack) {
   return track.hash.trim()
 }
 
-function getCachedKugouPlayback(track: KugouSearchTrack) {
+function kugouPlaybackQualityCacheKey(track: KugouSearchTrack) {
   const key = kugouPlaybackCacheKey(track)
+  return key ? `${key}:${onlinePlaybackQualityForPlatform('kugou')}` : ''
+}
+
+function getCachedKugouPlayback(track: KugouSearchTrack) {
+  const key = kugouPlaybackQualityCacheKey(track)
   return key ? readOnlinePlaybackCache(kugouPlaybackCache, key) : null
 }
 
 function cacheKugouPlayback(track: KugouSearchTrack, playback: KugouPlaybackUrl) {
-  const key = kugouPlaybackCacheKey(track)
+  const key = kugouPlaybackQualityCacheKey(track)
   if (key) {
     writeOnlinePlaybackCache(kugouPlaybackCache, key, playback)
   }
 }
 
 function fetchKugouPlayback(track: KugouSearchTrack) {
-  const key = kugouPlaybackCacheKey(track)
-  if (!key) {
+  const hashKey = kugouPlaybackCacheKey(track)
+  if (!hashKey) {
     return Promise.reject(new Error('酷狗歌曲缺少 hash，无法获取播放地址。'))
   }
 
+  const quality = onlinePlaybackQualityForPlatform('kugou')
+  const key = `${hashKey}:${quality}`
   const existing = kugouPlaybackInflight.get(key)
   if (existing) {
     return existing
@@ -3188,6 +4311,7 @@ function fetchKugouPlayback(track: KugouSearchTrack) {
     hashCandidates: track.hashCandidates ?? [track.hash],
     albumAudioId: track.albumAudioId ?? null,
     audioId: track.audioId ?? null,
+    playbackQuality: quality,
   }).finally(() => {
     kugouPlaybackInflight.delete(key)
   })
@@ -3206,17 +4330,43 @@ async function resolveKugouTrackPlayback(track: KugouSearchTrack) {
   return { playback, cached: false }
 }
 
+function clearOnlinePlaybackRuntimeCache() {
+  clearOnlinePlaybackPrefetchTimer()
+  neteasePlaybackCache.clear()
+  kugouPlaybackCache.clear()
+  neteasePlaybackInflight.clear()
+  kugouPlaybackInflight.clear()
+}
+
 function invalidateCurrentOnlinePlaybackCache() {
   const track = currentTrack.value
   if (track?.source === 'netease' && track.neteaseSongId) {
-    neteasePlaybackCache.delete(track.neteaseSongId)
-    neteasePlaybackInflight.delete(track.neteaseSongId)
+    const prefix = `${track.neteaseSongId}:`
+    for (const key of Array.from(neteasePlaybackCache.keys())) {
+      if (key.startsWith(prefix)) {
+        neteasePlaybackCache.delete(key)
+      }
+    }
+    for (const key of Array.from(neteasePlaybackInflight.keys())) {
+      if (key.startsWith(prefix)) {
+        neteasePlaybackInflight.delete(key)
+      }
+    }
     return
   }
 
   if (track?.source === 'kugou' && track.kugouSongHash) {
-    kugouPlaybackCache.delete(track.kugouSongHash)
-    kugouPlaybackInflight.delete(track.kugouSongHash)
+    const prefix = `${track.kugouSongHash}:`
+    for (const key of Array.from(kugouPlaybackCache.keys())) {
+      if (key.startsWith(prefix)) {
+        kugouPlaybackCache.delete(key)
+      }
+    }
+    for (const key of Array.from(kugouPlaybackInflight.keys())) {
+      if (key.startsWith(prefix)) {
+        kugouPlaybackInflight.delete(key)
+      }
+    }
   }
 }
 
@@ -3339,6 +4489,7 @@ async function refreshKugouLoginStatus(showStatus = true) {
   try {
     const status = await invoke<KugouLoginStatus>('get_kugou_login_status')
     kugouLoginStatus.value = status
+    clearKugouQualityAvailabilityRuntimeCache()
     if (!status.loggedIn) {
       resetKugouPlaylistState()
     }
@@ -3427,6 +4578,7 @@ async function checkKugouQrLogin() {
         message: result.message,
       }
       await refreshKugouLoginStatus(false)
+      clearKugouQualityAvailabilityRuntimeCache()
       await refreshKugouPlaylists(false)
       playerStatus.value = '酷狗音乐登录成功。'
     } else if (kugouQrStatus.value === 'expired') {
@@ -3457,6 +4609,7 @@ async function clearKugouLogin() {
     kugouQrLogin.value = null
     kugouQrStatus.value = 'idle'
     kugouLoginNotice.value = status.message
+    clearKugouQualityAvailabilityRuntimeCache()
     resetKugouPlaylistState()
   } catch (err) {
     kugouLoginError.value = `清除酷狗登录状态失败：${String(err)}`
@@ -3483,8 +4636,9 @@ async function refreshKugouPlaylists(showStatus = true) {
     kugouPlaylistDetail.value = null
     kugouPlaylistDetailPage.value = 0
     kugouSelectedPlaylistId.value = playlists[0]?.listId ?? ''
+    kugouSelectedContentSource.value = playlists[0] ? 'personal' : kugouSelectedContentSource.value
     if (playlists[0]) {
-      await loadKugouPlaylistDetail(playlists[0], false)
+      await loadKugouPlaylistDetail(playlists[0], false, false, 'personal')
     }
     if (showStatus) {
       kugouLoginNotice.value =
@@ -3501,10 +4655,21 @@ async function loadKugouPlaylistDetail(
   playlist: KugouPlaylistSummary,
   showStatus = true,
   loadMore = false,
+  source: Exclude<KugouContentSource, ''> = 'personal',
 ) {
-  const isSamePlaylist = kugouPlaylistDetail.value?.playlist.listId === playlist.listId
+  const playlistKey = kugouPlaylistKey(playlist)
+  const currentDetailKey = kugouPlaylistDetail.value
+    ? kugouPlaylistKey(kugouPlaylistDetail.value.playlist)
+    : ''
+  const isSamePlaylist =
+    kugouSelectedContentSource.value === source && currentDetailKey === playlistKey
   const nextPage = loadMore && isSamePlaylist ? kugouPlaylistDetailPage.value + 1 : 1
-  kugouSelectedPlaylistId.value = playlist.listId
+  kugouSelectedContentSource.value = source
+  if (source === 'recommended') {
+    kugouSelectedRecommendedPlaylistId.value = playlistKey
+  } else {
+    kugouSelectedPlaylistId.value = playlist.listId
+  }
   kugouPlaylistDetailLoading.value = true
   kugouPlaylistError.value = ''
   if (!loadMore || !isSamePlaylist) {
@@ -3518,11 +4683,18 @@ async function loadKugouPlaylistDetail(
   }
 
   try {
-    const result = await invoke<KugouPlaylistDetail>('get_kugou_playlist_detail', {
-      listId: playlist.listId,
-      page: nextPage,
-      limit: PLATFORM_PLAYLIST_PAGE_SIZE,
-    })
+    const result =
+      source === 'recommended'
+        ? await invoke<KugouPlaylistDetail>('get_kugou_recommended_playlist_detail', {
+            playlistId: playlistKey,
+            page: nextPage,
+            limit: PLATFORM_PLAYLIST_PAGE_SIZE,
+          })
+        : await invoke<KugouPlaylistDetail>('get_kugou_playlist_detail', {
+            listId: playlist.listId,
+            page: nextPage,
+            limit: PLATFORM_PLAYLIST_PAGE_SIZE,
+          })
     if (loadMore && isSamePlaylist && kugouPlaylistDetail.value) {
       const mergedTracks = mergeKugouSearchTracks(
         kugouPlaylistDetail.value.tracks,
@@ -3571,12 +4743,13 @@ async function loadKugouPlaylistDetail(
 }
 
 async function loadMoreKugouPlaylistTracks() {
-  const playlist = kugouSelectedPlaylist.value
+  const playlist = kugouActivePlaylist.value
+  const source = kugouSelectedContentSource.value === 'recommended' ? 'recommended' : 'personal'
   if (!playlist || !kugouPlaylistHasMore.value || kugouPlaylistDetailLoading.value) {
     return
   }
 
-  await loadKugouPlaylistDetail(playlist, true, true)
+  await loadKugouPlaylistDetail(playlist, true, true, source)
 }
 
 async function openKugouLoginFromLeft() {
@@ -3591,18 +4764,102 @@ async function refreshKugouPlaylistsFromLeft() {
 
 async function openKugouPlaylistFromLeft(playlist: KugouPlaylistSummary) {
   activePanelView.value = 'kugou'
-  await loadKugouPlaylistDetail(playlist)
+  await loadKugouPlaylistDetail(playlist, true, false, 'personal')
   await scrollPlaylistDetailIntoView('kugou')
 }
 
+async function refreshKugouRecommendedPlaylists(showStatus = true, loadMore = false) {
+  if (kugouRecommendedPlaylistsLoading.value) {
+    return
+  }
+
+  const nextPage = loadMore ? kugouRecommendedPlaylistPage.value + 1 : 1
+  kugouRecommendedPlaylistsLoading.value = true
+  kugouRecommendedPlaylistError.value = ''
+  if (!loadMore) {
+    kugouRecommendedPlaylistNotice.value = ''
+  }
+  if (showStatus) {
+    kugouRecommendedPlaylistNotice.value = loadMore
+      ? '正在加载更多酷狗推荐歌单...'
+      : '正在读取酷狗推荐歌单...'
+  }
+
+  try {
+    const result = await invoke<KugouRecommendedPlaylists>('list_kugou_recommended_playlists', {
+      page: nextPage,
+      limit: PLATFORM_SEARCH_PAGE_SIZE,
+    })
+    const playlists = loadMore
+      ? mergeKugouPlaylists(kugouRecommendedPlaylists.value, result.playlists)
+      : result.playlists
+    kugouRecommendedPlaylists.value = playlists
+    kugouRecommendedPlaylistPage.value = result.page
+    kugouRecommendedPlaylistTotal.value = result.total
+    kugouRecommendedPlaylistHasMore.value = result.truncated
+    kugouRecommendedPlaylistNotice.value = result.message
+    if (!loadMore && playlists.length > 0 && !kugouActivePlaylist.value) {
+      await loadKugouPlaylistDetail(playlists[0], false, false, 'recommended')
+    }
+  } catch (err) {
+    kugouRecommendedPlaylistError.value = `酷狗推荐歌单读取失败：${String(err)}`
+  } finally {
+    kugouRecommendedPlaylistsLoading.value = false
+  }
+}
+
+async function refreshKugouRecommendedPlaylistsFromLeft(loadMore = false) {
+  activePanelView.value = 'kugou'
+  await refreshKugouRecommendedPlaylists(true, loadMore)
+}
+
+async function openKugouRecommendedPlaylistFromLeft(playlist: KugouPlaylistSummary) {
+  activePanelView.value = 'kugou'
+  await loadKugouPlaylistDetail(playlist, true, false, 'recommended')
+  await scrollPlaylistDetailIntoView('kugou')
+}
+
+async function loadKugouDailyRecommendations(showStatus = true) {
+  if (kugouDailyRecommendationLoading.value) {
+    return
+  }
+
+  kugouDailyRecommendationLoading.value = true
+  kugouDailyRecommendationError.value = ''
+  if (showStatus) {
+    kugouDailyRecommendationNotice.value = '正在读取酷狗每日推荐...'
+  }
+
+  try {
+    const result = await invoke<KugouSearchResult>('get_kugou_daily_recommended_songs')
+    kugouDailyRecommendation.value = result
+    kugouDailyRecommendationNotice.value = result.message
+    if (immersiveMode.value) {
+      immersivePlaylistSource.value = 'kugou'
+    }
+  } catch (err) {
+    kugouDailyRecommendationError.value = `酷狗每日推荐读取失败：${String(err)}`
+  } finally {
+    kugouDailyRecommendationLoading.value = false
+  }
+}
+
 function resetKugouPlaylistState() {
+  const keepRecommendedDetail = kugouSelectedContentSource.value === 'recommended'
   kugouPlaylists.value = []
   kugouSelectedPlaylistId.value = ''
-  kugouPlaylistDetail.value = null
-  kugouPlaylistDetailPage.value = 0
+  if (!keepRecommendedDetail) {
+    kugouSelectedContentSource.value = ''
+    kugouPlaylistDetail.value = null
+    kugouPlaylistDetailPage.value = 0
+  }
   kugouPlaylistsLoading.value = false
   kugouPlaylistDetailLoading.value = false
   kugouPlaylistError.value = ''
+  kugouDailyRecommendation.value = null
+  kugouDailyRecommendationLoading.value = false
+  kugouDailyRecommendationError.value = ''
+  kugouDailyRecommendationNotice.value = ''
 }
 
 async function searchKugouSongs(loadMore = false) {
@@ -3673,6 +4930,7 @@ async function playKugouTrack(
   playerStatus.value = `正在获取酷狗《${track.name}》的在线播放地址并创建本机播放代理...`
 
   try {
+    await applyKugouQualityAvailabilityBeforePlayback(track)
     const { playback, cached } = await resolveKugouTrackPlayback(track)
     clearKugouTrackUnavailable(track)
     const onlineTrack = createKugouMusicTrack(track, playback)
@@ -3786,6 +5044,10 @@ function createNeteaseMusicTrack(
     tags: [],
     url: playback.url,
     duration: durationSeconds,
+    playbackLevel: normalizePlaybackLevel(playback.level),
+    playbackBitrate: normalizePlaybackBitrate(playback.bitrate),
+    playbackFileType: normalizePlaybackFileType(playback.fileType),
+    playbackSize: normalizePlaybackSize(playback.size),
     favorite: false,
     playCount: 0,
     lastPlayedAt: null,
@@ -3811,6 +5073,10 @@ function createKugouMusicTrack(track: KugouSearchTrack, playback: KugouPlaybackU
     tags: [],
     url: playback.url,
     duration: durationSeconds,
+    playbackLevel: normalizePlaybackLevel(playback.qualityLevel ?? playback.qualityLabel),
+    playbackBitrate: normalizePlaybackBitrate(playback.bitrate),
+    playbackFileType: normalizePlaybackFileType(playback.fileType),
+    playbackSize: normalizePlaybackSize(playback.size),
     favorite: false,
     playCount: 0,
     lastPlayedAt: null,
@@ -3929,11 +5195,8 @@ function normalizeMusicCategory(value?: string | null) {
 
 function createDefaultMusicStageTunings(): MusicStageTuningMap {
   return {
-    default: { ...DEFAULT_MUSIC_STAGE_TUNING },
     galaxy: { ...DEFAULT_MUSIC_STAGE_TUNING },
-    cinematic: { ...DEFAULT_MUSIC_STAGE_TUNING },
     dj: { ...DEFAULT_MUSIC_STAGE_TUNING },
-    lyric: { ...DEFAULT_MUSIC_STAGE_TUNING },
   }
 }
 
@@ -3952,22 +5215,21 @@ function normalizeMusicStageTuning(
     next[option.key] =
       typeof rawValue === 'number' ? clamp(rawValue, option.min, option.max) : DEFAULT_MUSIC_STAGE_TUNING[option.key]
   }
+  next.centerPulse = false
 
   return next
 }
 
 function normalizeMusicStageTunings(
-  value?: Partial<Record<MusicVisualStagePreset, Partial<MusicStageTuning>>> | null,
+  value?: Partial<Record<string, Partial<MusicStageTuning>>> | null,
   legacyValue?: Partial<MusicStageTuning> | null,
 ): MusicStageTuningMap {
   const source = value ?? {}
+  const legacyDjValue = source.dj ?? legacyValue
 
   return {
-    default: normalizeMusicStageTuning(source.default ?? legacyValue, 'dj'),
     galaxy: normalizeMusicStageTuning(source.galaxy, 'galaxy'),
-    cinematic: normalizeMusicStageTuning(source.cinematic ?? legacyValue, 'dj'),
-    dj: normalizeMusicStageTuning(source.dj ?? legacyValue, 'dj'),
-    lyric: normalizeMusicStageTuning(source.lyric ?? legacyValue, 'dj'),
+    dj: normalizeMusicStageTuning(legacyDjValue, 'dj'),
   }
 }
 
@@ -3986,19 +5248,41 @@ function lyricStageDefaultsForPreset(preset: MusicLyricStagePreset) {
   return LYRIC_STAGE_PRESET_DEFAULTS[preset] ?? LYRIC_STAGE_PRESET_DEFAULTS.projection
 }
 
-function setLyricStagePreset(preset: MusicLyricStagePreset) {
-  if (!isMusicLyricStagePreset(preset)) {
-    return
-  }
-
-  const defaults = lyricStageDefaultsForPreset(preset)
-  lyricStagePreset.value = preset
-  lyricStageDepth.value = defaults.depth
+function resetLyricStageParameters() {
+  const defaults = lyricStageDefaultsForPreset('projection')
   lyricStageTilt.value = defaults.tilt
   lyricStageGlow.value = defaults.glow
+  lyricStageFontScale.value = defaults.fontScale
+  lyricStageVertical.value = defaults.vertical
+  lyricStageDistance.value = LYRIC_STAGE_DISTANCE_DEFAULT
+  lyricStageSideOpacity.value = defaults.sideOpacity
   lyricStageBeatGlow.value = defaults.beatGlow
-  lyricStageParticles.value = defaults.particles
-  lyricStageCameraLock.value = defaults.cameraLock
+}
+
+function lyricFontScaleValue() {
+  return (
+    LYRIC_STAGE_FONT_SCALE_MIN +
+    clamp(lyricStageFontScale.value, 0, 1) * (LYRIC_STAGE_FONT_SCALE_MAX - LYRIC_STAGE_FONT_SCALE_MIN)
+  )
+}
+
+function lyricVerticalOffsetPx() {
+  return Math.round((clamp(lyricStageVertical.value, 0, 1) - 0.5) * LYRIC_STAGE_VERTICAL_OFFSET_SPAN_PX)
+}
+
+function lyricDistanceOffsetPx() {
+  return Math.round((clamp(lyricStageDistance.value, 0, 1) - 0.5) * LYRIC_STAGE_DISTANCE_OFFSET_SPAN_PX)
+}
+
+function lyricDistanceScaleValue() {
+  return (
+    LYRIC_STAGE_DISTANCE_SCALE_MIN +
+    clamp(lyricStageDistance.value, 0, 1) * (LYRIC_STAGE_DISTANCE_SCALE_MAX - LYRIC_STAGE_DISTANCE_SCALE_MIN)
+  )
+}
+
+function lyricSideOpacityValue() {
+  return 0.32 + clamp(lyricStageSideOpacity.value, 0, 1) * 0.46
 }
 
 function isMusicVisualMode(value?: string | null): value is MusicVisualMode {
@@ -4009,16 +5293,12 @@ function isMusicVisualStagePreset(value?: string | null): value is MusicVisualSt
   return stagePresetOptions.some((option) => option.value === value)
 }
 
-function isMusicLyricStagePreset(value?: string | null): value is MusicLyricStagePreset {
-  return lyricStagePresetOptions.some((option) => option.value === value)
-}
-
 function normalizeUnitSetting(value: unknown, fallback: number) {
   return typeof value === 'number' ? clamp(value, 0, 1) : clamp(fallback, 0, 1)
 }
 
 function applyVisualStagePreset(preset: MusicVisualStagePreset) {
-  const option = stagePresetOptions.find((item) => item.value === preset) ?? stagePresetOptions[0]
+  const option = stagePresetOptions.find((item) => item.value === preset) ?? defaultVisualStagePresetOption
   visualStagePreset.value = option.value
   visualMode.value = option.mode
   visualSpectrumStyle.value = option.spectrumStyle
@@ -4406,6 +5686,29 @@ function uniqueKugouPlaybackTracks(trackList: KugouSearchTrack[]) {
   })
 }
 
+function kugouPlaylistKey(playlist: KugouPlaylistSummary) {
+  return String(playlist.globalCollectionId || playlist.id || playlist.listId || '').trim()
+}
+
+function mergeKugouPlaylists(
+  currentPlaylists: KugouPlaylistSummary[],
+  nextPlaylists: KugouPlaylistSummary[],
+) {
+  const seenKeys = new Set(currentPlaylists.map(kugouPlaylistKey).filter(Boolean))
+  const merged = [...currentPlaylists]
+  for (const playlist of nextPlaylists) {
+    const key = kugouPlaylistKey(playlist)
+    if (!key || seenKeys.has(key)) {
+      continue
+    }
+
+    seenKeys.add(key)
+    merged.push(playlist)
+  }
+
+  return merged
+}
+
 function resolveKugouPlaybackTracks(track: KugouSearchTrack, contextTracks?: KugouSearchTrack[]) {
   const explicitTracks = uniqueKugouPlaybackTracks(contextTracks ?? [])
   if (explicitTracks.some((candidate) => candidate.hash === track.hash)) {
@@ -4438,9 +5741,20 @@ function currentKugouPlaybackTracks() {
 
   const sourceTracks = uniqueKugouPlaybackTracks([
     ...playlistTracks,
+    ...kugouDailyRecommendationTracks.value,
     ...kugouSearchTracks.value,
   ])
   return currentHash && sourceTracks.some((track) => track.hash === currentHash) ? sourceTracks : []
+}
+
+function resolveCurrentKugouQualityTrack() {
+  const currentHash = currentTrack.value?.kugouSongHash
+  if (!currentHash) {
+    return null
+  }
+
+  const sourceTracks = currentKugouPlaybackTracks()
+  return sourceTracks.find((track) => track.hash === currentHash) ?? null
 }
 
 function currentKugouImmersiveSourceTracks() {
@@ -4452,6 +5766,11 @@ function currentKugouImmersiveSourceTracks() {
   const playlistTracks = uniqueKugouPlaybackTracks(kugouPlaylistDetail.value?.tracks ?? [])
   if (playlistTracks.length > 0) {
     return playlistTracks
+  }
+
+  const dailyTracks = uniqueKugouPlaybackTracks(kugouDailyRecommendationTracks.value)
+  if (dailyTracks.length > 0) {
+    return dailyTracks
   }
 
   const searchTracks = uniqueKugouPlaybackTracks(kugouSearchTracks.value)
@@ -4487,7 +5806,8 @@ async function maybeLoadMoreNeteaseTracksForPlayback(sourceTracks: NeteasePlayli
 
 async function maybeLoadMoreKugouTracksForPlayback(sourceTracks: KugouSearchTrack[]) {
   const currentHash = currentTrack.value?.kugouSongHash
-  const playlist = kugouSelectedPlaylist.value
+  const playlist = kugouActivePlaylist.value
+  const source = kugouSelectedContentSource.value === 'recommended' ? 'recommended' : 'personal'
   if (
     !currentHash ||
     !playlist ||
@@ -4507,7 +5827,7 @@ async function maybeLoadMoreKugouTracksForPlayback(sourceTracks: KugouSearchTrac
   }
 
   const beforeCount = kugouPlaylistDetail.value.tracks.length
-  await loadKugouPlaylistDetail(playlist, false, true)
+  await loadKugouPlaylistDetail(playlist, false, true, source)
   const expandedTracks = currentKugouPlaybackTracks()
   return expandedTracks.length > beforeCount ? expandedTracks : sourceTracks
 }
@@ -5339,6 +6659,108 @@ async function playCurrent(resetTime = false) {
   }
 }
 
+function waitForAudioReadyForPlayback(player: HTMLAudioElement, timeoutMs = 2500) {
+  if (player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    return Promise.resolve()
+  }
+
+  return new Promise<void>((resolve) => {
+    let settled = false
+    let timer: number | null = null
+    const cleanup = () => {
+      player.removeEventListener('loadedmetadata', settle)
+      player.removeEventListener('loadeddata', settle)
+      player.removeEventListener('canplay', settle)
+      player.removeEventListener('error', settle)
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+    }
+    const settle = () => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      resolve()
+    }
+
+    player.addEventListener('loadedmetadata', settle)
+    player.addEventListener('loadeddata', settle)
+    player.addEventListener('canplay', settle)
+    player.addEventListener('error', settle)
+    timer = window.setTimeout(settle, timeoutMs)
+  })
+}
+
+async function loadAndPlayCurrentAudioAt(
+  track: MusicTrack,
+  resumeTime: number,
+  sourceOverride?: string,
+) {
+  if (!audio.value || !sameMusicTrackIdentity(currentTrack.value, track)) {
+    return false
+  }
+
+  const player = audio.value
+  const requestSerial = ++playbackRequestSerial
+  const nextSource = sourceOverride?.trim() || track.url
+  if (nextSource && player.src !== nextSource) {
+    player.src = nextSource
+  }
+
+  player.load()
+  await waitForAudioReadyForPlayback(player)
+  await nextTick()
+
+  if (
+    requestSerial !== playbackRequestSerial ||
+    !sameMusicTrackIdentity(currentTrack.value, track)
+  ) {
+    return false
+  }
+
+  const nextTime = Math.max(resumeTime, 0)
+  try {
+    player.currentTime = nextTime
+    currentTime.value = nextTime
+    visualPlaybackTime.value = nextTime
+  } catch {
+    currentTime.value = 0
+    visualPlaybackTime.value = 0
+  }
+
+  try {
+    await player.play()
+  } catch (err) {
+    if (
+      requestSerial !== playbackRequestSerial ||
+      !sameMusicTrackIdentity(currentTrack.value, track) ||
+      isInterruptedPlayError(err)
+    ) {
+      return false
+    }
+    playing.value = false
+    playerError.value = `无法播放该音频：${String(err)}`
+    return false
+  }
+
+  if (
+    requestSerial !== playbackRequestSerial ||
+    !sameMusicTrackIdentity(currentTrack.value, track)
+  ) {
+    return false
+  }
+
+  playing.value = true
+  playerError.value = ''
+  if (immersiveMode.value) {
+    void prepareImmersiveVisualization()
+  }
+  return true
+}
+
 function invalidatePendingPlayback() {
   playbackRequestSerial += 1
 }
@@ -5627,7 +7049,11 @@ function sameMusicTrackIdentity(left: MusicTrack | null | undefined, right: Musi
   return left.id === right.id
 }
 
-function waitForOnlinePlaybackProgress(track: MusicTrack, resumeTime: number) {
+function waitForOnlinePlaybackProgress(
+  track: MusicTrack,
+  resumeTime: number,
+  options: { requireAdvance?: boolean } = {},
+) {
   return new Promise<void>((resolve, reject) => {
     const element = audio.value
     if (!element) {
@@ -5638,6 +7064,7 @@ function waitForOnlinePlaybackProgress(track: MusicTrack, resumeTime: number) {
     const player = element
     let settled = false
     let timer: number | null = null
+    const requireAdvance = options.requireAdvance ?? true
     const durationLimit = Number.isFinite(player.duration) && player.duration > 0
       ? Math.max(resumeTime, player.duration - 0.25)
       : resumeTime + ONLINE_STALL_RECOVERY_PROGRESS_SECONDS
@@ -5674,6 +7101,16 @@ function waitForOnlinePlaybackProgress(track: MusicTrack, resumeTime: number) {
       }
 
       const time = player.currentTime || currentTime.value
+      if (
+        !requireAdvance &&
+        !player.paused &&
+        player.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        time >= Math.max(resumeTime - 0.25, 0)
+      ) {
+        settle(() => resolve())
+        return
+      }
+
       if (player.ended || (!player.paused && time > targetTime)) {
         settle(() => resolve())
       }
@@ -5784,7 +7221,11 @@ async function recoverOnlinePlaybackStall(
   }
 }
 
-async function refreshCurrentOnlinePlaybackAt(resumeTime: number, expectedTrack: MusicTrack) {
+async function refreshCurrentOnlinePlaybackAt(
+  resumeTime: number,
+  expectedTrack: MusicTrack,
+  options: { reason?: 'stall' | 'quality-switch' } = {},
+) {
   const sourceTrack = platformTrackForCurrentPlayback(expectedTrack)
   if (!sourceTrack) {
     throw new Error('没有找到当前在线歌曲的源列表信息。')
@@ -5811,25 +7252,26 @@ async function refreshCurrentOnlinePlaybackAt(resumeTime: number, expectedTrack:
   visualPlaybackTime.value = resumeTime
   await nextTick()
 
-  if (!audio.value || currentTrack.value !== refreshedTrack) {
-    return
+  if (!audio.value || !sameMusicTrackIdentity(currentTrack.value, refreshedTrack)) {
+    throw new Error('新音质播放源已获取，但当前播放目标已变化。')
   }
 
-  audio.value.load()
-  await nextTick()
-  try {
-    audio.value.currentTime = resumeTime
-  } catch {
-    currentTime.value = 0
-    visualPlaybackTime.value = 0
+  const resumed = await loadAndPlayCurrentAudioAt(refreshedTrack, resumeTime)
+  if (!resumed) {
+    throw new Error(playerError.value || '刷新播放链路后未能继续播放。')
   }
-  await playCurrent(false)
-  if (playerError.value) {
-    throw new Error(playerError.value)
-  }
-  await waitForOnlinePlaybackProgress(refreshedTrack, resumeTime)
+  await waitForOnlinePlaybackProgress(refreshedTrack, resumeTime, {
+    requireAdvance: options.reason !== 'quality-switch',
+  })
   if (!playerError.value) {
-    playerStatus.value = `已刷新${currentTrackPlatformLabel.value}播放链路，继续播放《${refreshedTrack.title}》。`
+    if (options.reason === 'quality-switch') {
+      const qualityText = formatTrackPlaybackQuality(refreshedTrack).replace(/^音质：/, '')
+      playerStatus.value = qualityText
+        ? `已切换在线播放音质，实际播放：${qualityText}。`
+        : `已切换在线播放音质，继续播放《${refreshedTrack.title}》。`
+    } else {
+      playerStatus.value = `已刷新${currentTrackPlatformLabel.value}播放链路，继续播放《${refreshedTrack.title}》。`
+    }
     scheduleOnlinePlaybackPrefetch()
   }
 }
@@ -5873,7 +7315,7 @@ async function updateKugouProxyErrorDetail(track: MusicTrack) {
     const status = await invoke<KugouPlaybackProxyStatus>('get_kugou_playback_proxy_status', {
       proxyUrl: track.url,
     })
-    if (currentTrack.value !== track) {
+    if (!sameMusicTrackIdentity(currentTrack.value, track)) {
       return
     }
 
@@ -5886,7 +7328,7 @@ async function updateKugouProxyErrorDetail(track: MusicTrack) {
       ? `当前酷狗在线音乐无法继续读取。${detailParts.join('；')}`
       : '当前酷狗在线音乐无法继续读取，代理没有返回更多诊断信息。'
   } catch (err) {
-    if (currentTrack.value !== track) {
+    if (!sameMusicTrackIdentity(currentTrack.value, track)) {
       return
     }
     playerError.value =
@@ -5976,6 +7418,7 @@ function startVisualClock() {
   }
 
   lastVisualClockUpdate = 0
+  lastLyricMusicEnvelopeUpdate = 0
 
   const tick = (timestamp: number) => {
     visualClockFrameId = window.requestAnimationFrame(tick)
@@ -5989,6 +7432,7 @@ function startVisualClock() {
 
     lastVisualClockUpdate = timestamp
     syncVisualPlaybackTime()
+    updateLyricMusicEnvelope(timestamp)
   }
 
   visualClockFrameId = window.requestAnimationFrame(tick)
@@ -6005,6 +7449,51 @@ function syncVisualPlaybackTime() {
   const time = audio.value?.currentTime ?? currentTime.value
   if (Number.isFinite(time)) {
     visualPlaybackTime.value = time
+  }
+}
+
+function resetLyricMusicEnvelope() {
+  lyricMusicEnvelope.value = { ...LYRIC_MUSIC_ENVELOPE_ZERO }
+  lastLyricMusicEnvelopeUpdate = 0
+}
+
+function updateLyricMusicEnvelope(timestamp: number) {
+  if (!immersiveMode.value || !playing.value || !currentTrack.value || visualReducedMotion.value) {
+    resetLyricMusicEnvelope()
+    return
+  }
+
+  const deltaSeconds = lastLyricMusicEnvelopeUpdate
+    ? clamp((timestamp - lastLyricMusicEnvelopeUpdate) / 1000, 1 / 90, 0.16)
+    : 1 / 30
+  lastLyricMusicEnvelopeUpdate = timestamp
+
+  const energy = visualEnergyFrame.value
+  const lyric = immersiveLyrics.value
+  const progress = clamp(lyric.progress, 0, 1)
+  const lyricActive = lyric.status === 'ready' && !lyric.interlude
+  const intro = lyricActive ? 1 - smoothUnitRange(progress, 0.02, 0.26) : 0
+  const vocalArc = lyricActive ? Math.sin(Math.PI * progress) : 0
+  const phraseTarget = clamp(intro * 0.62 + vocalArc * 0.34, 0, 1)
+  const rawPulse = lyricStageBeatGlow.value
+    ? Math.pow(clamp(energy.beat * 0.74 + energy.bass * 0.48, 0, 1), 1.45)
+    : 0
+  const pulseTarget = clamp(rawPulse * 0.72 + intro * 0.22, 0, 1)
+  const breathTarget = clamp(energy.volume * 0.54 + energy.mid * 0.28 + vocalArc * 0.18, 0, 1)
+  const airTarget = clamp(energy.treble * 0.48 + energy.mid * 0.28 + vocalArc * 0.14, 0, 1)
+  const focusTarget = clamp(0.22 + phraseTarget * 0.44 + pulseTarget * 0.18 + breathTarget * 0.16, 0, 1)
+  const driftTarget =
+    Math.sin(visualTimeValue.value * 0.48 + energy.mid * 1.4) *
+    clamp(0.24 + breathTarget * 0.5 + airTarget * 0.26, 0, 1)
+  const current = lyricMusicEnvelope.value
+
+  lyricMusicEnvelope.value = {
+    pulse: smoothEnvelopeValue(current.pulse, pulseTarget, 0.045, 0.34, deltaSeconds),
+    breath: smoothEnvelopeValue(current.breath, breathTarget, 0.3, 0.62, deltaSeconds),
+    phrase: smoothEnvelopeValue(current.phrase, phraseTarget, 0.12, 0.42, deltaSeconds),
+    air: smoothEnvelopeValue(current.air, airTarget, 0.18, 0.5, deltaSeconds),
+    drift: smoothEnvelopeValue(current.drift, driftTarget, 0.34, 0.42, deltaSeconds),
+    focus: smoothEnvelopeValue(current.focus, focusTarget, 0.12, 0.36, deltaSeconds),
   }
 }
 
@@ -7123,6 +8612,425 @@ function clearImmersiveStageMomentum() {
   }
 }
 
+function clearMiniEdgeMoveTimer() {
+  if (miniEdgeMoveTimer !== null) {
+    window.clearTimeout(miniEdgeMoveTimer)
+    miniEdgeMoveTimer = null
+  }
+}
+
+function clearMiniEdgeHideTimer() {
+  if (miniEdgeHideTimer !== null) {
+    window.clearTimeout(miniEdgeHideTimer)
+    miniEdgeHideTimer = null
+  }
+}
+
+function clearMiniEdgeDragPollTimer() {
+  if (miniEdgeDragPollTimer !== null) {
+    window.clearTimeout(miniEdgeDragPollTimer)
+    miniEdgeDragPollTimer = null
+  }
+}
+
+function clearMiniEdgeTimers() {
+  clearMiniEdgeMoveTimer()
+  clearMiniEdgeHideTimer()
+  clearMiniEdgeDragPollTimer()
+}
+
+function cancelMiniEdgeWindowMove() {
+  miniEdgeWindowMoveSerial += 1
+}
+
+function waitMiniEdgeAnimationStep() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, MINI_EDGE_ANIMATION_STEP_MS)
+  })
+}
+
+function workAreaFromMonitor(monitor: Monitor): ScreenWorkArea {
+  const workArea = monitor.workArea
+  return {
+    left: workArea.position.x,
+    top: workArea.position.y,
+    right: workArea.position.x + workArea.size.width,
+    bottom: workArea.position.y + workArea.size.height,
+  }
+}
+
+function clampMiniEdgePosition(value: number, min: number, max: number) {
+  return max < min ? min : clamp(value, min, max)
+}
+
+function easeMiniEdgeWindowMove(progress: number) {
+  return 1 - (1 - progress) ** 3
+}
+
+async function setMiniEdgeWindowPosition(
+  x: number,
+  y: number,
+  options: MiniEdgeWindowMoveOptions = {},
+) {
+  const targetX = Math.round(x)
+  const targetY = Math.round(y)
+  const moveSerial = miniEdgeWindowMoveSerial + 1
+  miniEdgeWindowMoveSerial = moveSerial
+  suppressMiniEdgeMoveUntil = Date.now() + MINI_EDGE_POSITION_SUPPRESS_MS
+
+  const durationMs = options.animated ? Math.max(0, options.durationMs ?? MINI_EDGE_SNAP_ANIMATION_MS) : 0
+  if (durationMs <= 0) {
+    await musicWindow.setPosition(new PhysicalPosition(targetX, targetY))
+    return
+  }
+
+  let startPosition: { x: number; y: number }
+  try {
+    startPosition = await musicWindow.outerPosition()
+  } catch {
+    await musicWindow.setPosition(new PhysicalPosition(targetX, targetY))
+    return
+  }
+
+  const startX = startPosition.x
+  const startY = startPosition.y
+  const deltaX = targetX - startX
+  const deltaY = targetY - startY
+  if (Math.abs(deltaX) <= 1 && Math.abs(deltaY) <= 1) {
+    await musicWindow.setPosition(new PhysicalPosition(targetX, targetY))
+    return
+  }
+
+  const steps = Math.max(2, Math.ceil(durationMs / MINI_EDGE_ANIMATION_STEP_MS))
+  for (let step = 1; step <= steps; step += 1) {
+    if (moveSerial !== miniEdgeWindowMoveSerial) {
+      return
+    }
+
+    const progress = easeMiniEdgeWindowMove(step / steps)
+    const nextX = Math.round(startX + deltaX * progress)
+    const nextY = Math.round(startY + deltaY * progress)
+    suppressMiniEdgeMoveUntil = Date.now() + MINI_EDGE_POSITION_SUPPRESS_MS
+    await musicWindow.setPosition(new PhysicalPosition(nextX, nextY))
+
+    if (step < steps) {
+      await waitMiniEdgeAnimationStep()
+    }
+  }
+}
+
+async function resolveMiniEdgeDockState(): Promise<MiniEdgeDockState | null> {
+  const [position, size, activeMonitor] = await Promise.all([
+    musicWindow.outerPosition(),
+    musicWindow.outerSize(),
+    currentMonitor().then((monitor) => monitor ?? primaryMonitor()),
+  ])
+  if (!activeMonitor) {
+    return null
+  }
+
+  const scaleFactor = Number.isFinite(activeMonitor.scaleFactor) ? activeMonitor.scaleFactor : 1
+  const snapDistance = MINI_EDGE_SNAP_DISTANCE * scaleFactor
+  const visibleStrip = MINI_EDGE_VISIBLE_STRIP * scaleFactor
+  const revealMargin = MINI_EDGE_REVEAL_MARGIN * scaleFactor
+  const workArea = workAreaFromMonitor(activeMonitor)
+  const candidates: Array<{ side: MiniEdgeDockSide; distance: number }> = [
+    { side: 'left', distance: Math.abs(position.x - workArea.left) },
+    { side: 'right', distance: Math.abs(workArea.right - (position.x + size.width)) },
+    { side: 'top', distance: Math.abs(position.y - workArea.top) },
+    { side: 'bottom', distance: Math.abs(workArea.bottom - (position.y + size.height)) },
+  ]
+  candidates.sort((a, b) => a.distance - b.distance)
+  const nearest = candidates[0]
+
+  if (!nearest || nearest.distance > snapDistance) {
+    return null
+  }
+
+  const minX = workArea.left + revealMargin
+  const maxX = workArea.right - size.width - revealMargin
+  const minY = workArea.top + revealMargin
+  const maxY = workArea.bottom - size.height - revealMargin
+  const expandedX = clampMiniEdgePosition(position.x, minX, maxX)
+  const expandedY = clampMiniEdgePosition(position.y, minY, maxY)
+
+  if (nearest.side === 'left') {
+    return {
+      side: nearest.side,
+      expandedX: workArea.left,
+      expandedY,
+      hiddenX: workArea.left - size.width + visibleStrip,
+      hiddenY: expandedY,
+    }
+  }
+
+  if (nearest.side === 'right') {
+    return {
+      side: nearest.side,
+      expandedX: workArea.right - size.width,
+      expandedY,
+      hiddenX: workArea.right - visibleStrip,
+      hiddenY: expandedY,
+    }
+  }
+
+  if (nearest.side === 'top') {
+    return {
+      side: nearest.side,
+      expandedX,
+      expandedY: workArea.top,
+      hiddenX: expandedX,
+      hiddenY: workArea.top - size.height + visibleStrip,
+    }
+  }
+
+  return {
+    side: nearest.side,
+    expandedX,
+    expandedY: workArea.bottom - size.height,
+    hiddenX: expandedX,
+    hiddenY: workArea.bottom - visibleStrip,
+  }
+}
+
+async function clearMiniEdgeDockState(restoreVisiblePosition = false) {
+  miniEdgeInteractionSerial += 1
+  clearMiniEdgeTimers()
+  cancelMiniEdgeWindowMove()
+  const previousState = miniEdgeDockState
+  miniEdgeDockState = null
+  miniEdgeDockSide.value = null
+  miniEdgeDockExpanded.value = false
+
+  if (restoreVisiblePosition && previousState) {
+    try {
+      await setMiniEdgeWindowPosition(previousState.expandedX, previousState.expandedY)
+    } catch {
+      // Restoring is best-effort when the OS is already changing the window mode.
+    }
+  }
+}
+
+function beginMiniEdgeManualDrag() {
+  miniEdgeInteractionSerial += 1
+  clearMiniEdgeTimers()
+  cancelMiniEdgeWindowMove()
+  miniEdgeDockState = null
+  miniEdgeDockSide.value = null
+  miniEdgeDockExpanded.value = false
+  suppressMiniEdgeMoveUntil = 0
+  return miniEdgeInteractionSerial
+}
+
+async function checkMiniEdgeDock(interactionSerial = miniEdgeInteractionSerial) {
+  if (interactionSerial !== miniEdgeInteractionSerial) {
+    return
+  }
+
+  if (!miniPlayerMode.value || immersiveMode.value || Date.now() < suppressMiniEdgeMoveUntil) {
+    return
+  }
+
+  if (miniEdgeDockState && !miniEdgeDockExpanded.value) {
+    return
+  }
+
+  let nextState: MiniEdgeDockState | null = null
+  try {
+    nextState = await resolveMiniEdgeDockState()
+  } catch (err) {
+    console.warn('音乐迷你窗口贴边判定失败', err)
+    return
+  }
+
+  if (interactionSerial !== miniEdgeInteractionSerial || !miniPlayerMode.value || immersiveMode.value) {
+    return
+  }
+
+  if (!nextState) {
+    await clearMiniEdgeDockState(false)
+    return
+  }
+
+  miniEdgeDockState = nextState
+  miniEdgeDockSide.value = nextState.side
+  miniEdgeDockExpanded.value = true
+
+  try {
+    await setMiniEdgeWindowPosition(nextState.expandedX, nextState.expandedY, {
+      animated: true,
+      durationMs: MINI_EDGE_SNAP_ANIMATION_MS,
+    })
+    if (interactionSerial !== miniEdgeInteractionSerial) {
+      return
+    }
+    scheduleMiniEdgeAutoHide()
+  } catch (err) {
+    console.warn('音乐迷你窗口吸附失败', err)
+    await clearMiniEdgeDockState(false)
+  }
+}
+
+function scheduleMiniEdgeDockCheck(interactionSerial = miniEdgeInteractionSerial) {
+  if (interactionSerial !== miniEdgeInteractionSerial) {
+    return
+  }
+
+  if (!miniPlayerMode.value || immersiveMode.value || Date.now() < suppressMiniEdgeMoveUntil) {
+    return
+  }
+
+  clearMiniEdgeMoveTimer()
+  miniEdgeMoveTimer = window.setTimeout(() => {
+    miniEdgeMoveTimer = null
+    void checkMiniEdgeDock(interactionSerial)
+  }, MINI_EDGE_MOVE_DEBOUNCE_MS)
+}
+
+function isMiniPlayerHovered() {
+  return Boolean(miniPlayerElement.value?.matches(':hover'))
+}
+
+function scheduleMiniEdgeAutoHide() {
+  if (!miniPlayerMode.value || immersiveMode.value || !miniEdgeDockState || !miniEdgeDockExpanded.value) {
+    return
+  }
+
+  const interactionSerial = miniEdgeInteractionSerial
+  clearMiniEdgeHideTimer()
+  miniEdgeHideTimer = window.setTimeout(() => {
+    miniEdgeHideTimer = null
+    if (interactionSerial !== miniEdgeInteractionSerial) {
+      return
+    }
+
+    if (!miniPlayerMode.value || immersiveMode.value || !miniEdgeDockState || !miniEdgeDockExpanded.value) {
+      return
+    }
+
+    if (isMiniPlayerHovered()) {
+      return
+    }
+
+    void hideMiniEdgeDock()
+  }, MINI_EDGE_AUTO_HIDE_DELAY_MS)
+}
+
+async function pollMiniEdgeDragPosition(interactionSerial: number) {
+  miniEdgeDragPollTimer = null
+  if (interactionSerial !== miniEdgeInteractionSerial || !miniPlayerMode.value || immersiveMode.value) {
+    return
+  }
+
+  let position: { x: number; y: number }
+  try {
+    position = await musicWindow.outerPosition()
+  } catch {
+    return
+  }
+
+  const lastPosition = miniEdgeDragPollLastPosition
+  if (lastPosition) {
+    const moved =
+      Math.abs(position.x - lastPosition.x) > 1 ||
+      Math.abs(position.y - lastPosition.y) > 1
+    if (moved) {
+      miniEdgeDragPollSeenMove = true
+      miniEdgeDragPollIdleTicks = 0
+      miniEdgeDragPollLastPosition = { x: position.x, y: position.y }
+    } else if (miniEdgeDragPollSeenMove) {
+      miniEdgeDragPollIdleTicks += 1
+    }
+  } else {
+    miniEdgeDragPollLastPosition = { x: position.x, y: position.y }
+  }
+
+  const elapsed = Date.now() - miniEdgeDragPollStartedAt
+  if (
+    (miniEdgeDragPollSeenMove && miniEdgeDragPollIdleTicks >= MINI_EDGE_DRAG_POLL_IDLE_TICKS) ||
+    elapsed >= MINI_EDGE_DRAG_POLL_MAX_MS
+  ) {
+    void checkMiniEdgeDock(interactionSerial)
+    return
+  }
+
+  miniEdgeDragPollTimer = window.setTimeout(() => {
+    void pollMiniEdgeDragPosition(interactionSerial)
+  }, MINI_EDGE_DRAG_POLL_INTERVAL_MS)
+}
+
+function startMiniEdgeDragPositionPoll(interactionSerial: number) {
+  if (!miniPlayerMode.value || immersiveMode.value) {
+    return
+  }
+
+  clearMiniEdgeDragPollTimer()
+  miniEdgeDragPollStartedAt = Date.now()
+  miniEdgeDragPollLastPosition = null
+  miniEdgeDragPollIdleTicks = 0
+  miniEdgeDragPollSeenMove = false
+  miniEdgeDragPollTimer = window.setTimeout(() => {
+    void pollMiniEdgeDragPosition(interactionSerial)
+  }, MINI_EDGE_DRAG_POLL_INTERVAL_MS)
+}
+
+function scheduleMiniEdgeFallbackChecks(interactionSerial: number) {
+  window.setTimeout(() => {
+    void checkMiniEdgeDock(interactionSerial)
+  }, 700)
+  window.setTimeout(() => {
+    void checkMiniEdgeDock(interactionSerial)
+  }, 1500)
+  window.setTimeout(() => {
+    void checkMiniEdgeDock(interactionSerial)
+  }, 2600)
+}
+
+async function revealMiniEdgeDock() {
+  clearMiniEdgeHideTimer()
+  if (!miniPlayerMode.value || immersiveMode.value || !miniEdgeDockState || miniEdgeDockExpanded.value) {
+    return
+  }
+
+  miniEdgeDockExpanded.value = true
+  try {
+    await setMiniEdgeWindowPosition(miniEdgeDockState.expandedX, miniEdgeDockState.expandedY, {
+      animated: true,
+      durationMs: MINI_EDGE_REVEAL_ANIMATION_MS,
+    })
+  } catch {
+    miniEdgeDockExpanded.value = false
+  }
+}
+
+async function hideMiniEdgeDock() {
+  if (!miniPlayerMode.value || immersiveMode.value || !miniEdgeDockState || !miniEdgeDockExpanded.value) {
+    return
+  }
+
+  miniEdgeDockExpanded.value = false
+  try {
+    await setMiniEdgeWindowPosition(miniEdgeDockState.hiddenX, miniEdgeDockState.hiddenY, {
+      animated: true,
+      durationMs: MINI_EDGE_HIDE_ANIMATION_MS,
+    })
+  } catch {
+    await clearMiniEdgeDockState(false)
+  }
+}
+
+function scheduleMiniEdgeRehide() {
+  if (!miniPlayerMode.value || immersiveMode.value || !miniEdgeDockState || !miniEdgeDockExpanded.value) {
+    return
+  }
+
+  clearMiniEdgeHideTimer()
+  miniEdgeHideTimer = window.setTimeout(() => {
+    miniEdgeHideTimer = null
+    void hideMiniEdgeDock()
+  }, MINI_EDGE_REHIDE_DELAY_MS)
+}
+
 function clearPlaylist() {
   pausePlayback()
   resetNeteasePlaybackState()
@@ -7140,8 +9048,18 @@ async function startDrag() {
     return
   }
 
+  let dragInteractionSerial = miniEdgeInteractionSerial
+  if (miniPlayerMode.value) {
+    dragInteractionSerial = beginMiniEdgeManualDrag()
+    startMiniEdgeDragPositionPoll(dragInteractionSerial)
+  }
+
   try {
     await musicWindow.startDragging()
+    if (miniPlayerMode.value) {
+      scheduleMiniEdgeDockCheck(dragInteractionSerial)
+      scheduleMiniEdgeFallbackChecks(dragInteractionSerial)
+    }
   } catch {
     // Dragging can fail when the pointer is already captured by an inner control.
   }
@@ -7158,6 +9076,7 @@ async function setImmersiveMode(nextImmersiveMode: boolean) {
 
   immersiveMode.value = nextImmersiveMode
   if (nextImmersiveMode) {
+    await clearMiniEdgeDockState(true)
     miniPlayerMode.value = false
     settingsVisible.value = false
     activeTrackActionsId.value = null
@@ -7188,6 +9107,12 @@ async function setMiniPlayerMode(nextMiniMode: boolean) {
     return
   }
 
+  if (!nextMiniMode) {
+    await clearMiniEdgeDockState(true)
+  } else {
+    await clearMiniEdgeDockState(false)
+  }
+
   miniPlayerMode.value = nextMiniMode
   if (nextMiniMode) {
     immersiveMode.value = false
@@ -7209,6 +9134,10 @@ async function setMiniPlayerMode(nextMiniMode: boolean) {
 
 async function applyMusicWindowDisplayMode(mode: 'full' | 'mini' | 'immersive') {
   try {
+    if (mode !== 'mini') {
+      await clearMiniEdgeDockState(true)
+    }
+
     if (mode === 'immersive') {
       await musicWindow.setFullscreen(true)
       return
@@ -7230,6 +9159,10 @@ async function toggleMiniPlayerMode() {
 }
 
 async function hideMusicPlayer() {
+  if (miniPlayerMode.value) {
+    await clearMiniEdgeDockState(true)
+  }
+
   if (immersiveMode.value) {
     immersiveMode.value = false
     clearImmersiveContentPrepTimer()
@@ -7377,7 +9310,7 @@ function formatKugouPlaylistMeta(playlist: KugouPlaylistSummary) {
   return [
     `${formatNeteaseCount(playlist.trackCount)} 首`,
     playlist.creatorNickname ? `创建者 ${playlist.creatorNickname}` : '',
-    playlist.subscribed ? '收藏歌单' : '自建歌单',
+    playlist.subscribed ? '收藏歌单' : '',
   ]
     .filter(Boolean)
     .join(' · ')
@@ -7477,11 +9410,72 @@ function formatTrackListSubline(track: MusicTrack) {
   return [trackArtistLabel(track), formatTrackListMeta(track)].filter(Boolean).join(' · ')
 }
 
+function formatTrackPlaybackQuality(track: MusicTrack) {
+  const parts = [
+    formatPlaybackLevel(track.playbackLevel),
+    formatPlaybackFileType(track.playbackFileType),
+    formatPlaybackBitrate(track.playbackBitrate),
+    formatPlaybackSize(track.playbackSize),
+  ].filter(Boolean)
+  return parts.length > 0 ? `音质：${parts.join(' · ')}` : ''
+}
+
+function formatPlaybackLevel(level?: string | null) {
+  const normalized = level?.trim().toLowerCase()
+  if (!normalized) {
+    return ''
+  }
+  const labels: Record<string, string> = {
+    jymaster: '超清母带',
+    sky: '沉浸环绕',
+    jyeffect: '高清环绕',
+    hires: 'Hi-Res',
+    lossless: '无损',
+    exhigh: '极高',
+    super: '蝰蛇超清',
+    viper_clear: '蝰蛇母带',
+    viper_hifi: '蝰蛇HIFI',
+    viper_tape: '蝰蛇磁带',
+    viper_atmos: '蝰蛇全景声',
+    multitrack: '多轨',
+    flac: '无损',
+    high: '高品',
+    '320': '320k',
+    '128': '标准',
+    standard: '标准',
+  }
+  return labels[normalized] ?? level?.trim() ?? ''
+}
+
+function formatPlaybackFileType(fileType?: string | null) {
+  const normalized = fileType?.trim()
+  return normalized ? normalized.toUpperCase() : ''
+}
+
+function formatPlaybackBitrate(bitrate?: number | null) {
+  if (!bitrate || !Number.isFinite(bitrate) || bitrate <= 0) {
+    return ''
+  }
+  const kbps = bitrate >= 1000 ? Math.round(bitrate / 1000) : Math.round(bitrate)
+  return `${kbps} kbps`
+}
+
+function formatPlaybackSize(size?: number | null) {
+  if (!size || !Number.isFinite(size) || size <= 0) {
+    return ''
+  }
+  if (size >= 1024 * 1024) {
+    return `${(size / 1024 / 1024).toFixed(1)} MB`
+  }
+  return `${Math.round(size / 1024)} KB`
+}
+
 function formatCurrentTrackDetail(track: MusicTrack) {
   if (track.source === 'netease') {
     return [
       track.album ? `专辑：${track.album}` : '',
       `时长：${formatTrackDuration(track)}`,
+      formatTrackPlaybackQuality(track),
       '来源：网易云在线',
     ]
       .filter(Boolean)
@@ -7492,6 +9486,7 @@ function formatCurrentTrackDetail(track: MusicTrack) {
     return [
       track.album ? `专辑：${track.album}` : '',
       `时长：${formatTrackDuration(track)}`,
+      formatTrackPlaybackQuality(track),
       '来源：酷狗在线',
     ]
       .filter(Boolean)
@@ -7508,6 +9503,29 @@ function formatCurrentTrackDetail(track: MusicTrack) {
   ]
     .filter(Boolean)
     .join(' · ')
+}
+
+function formatCurrentTrackTooltip(track: MusicTrack) {
+  return [
+    `歌曲：${track.title || '未命名音乐'}`,
+    `歌手：${trackArtistLabel(track)}`,
+    track.album ? `专辑：${track.album}` : '',
+    `时长：${formatTrackDuration(track)}`,
+    formatTrackPlaybackQuality(track),
+    `来源：${trackSourceLabel(track)}`,
+    `分类：${normalizeMusicCategory(track.category)}`,
+    formatTrackTagsLabel(track) ? `标签：${formatTrackTagsLabel(track)}` : '',
+    formatTrackMeta(track),
+    trackSourceTitle(track),
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+function currentTrackTooltipTitle(track: MusicTrack | null) {
+  return track
+    ? formatCurrentTrackTooltip(track)
+    : '未选择音乐\n支持 mp3、wav、flac、m4a、aac、ogg、webm。'
 }
 
 function trackArtistLabel(track: MusicTrack) {
@@ -7611,22 +9629,34 @@ function formatPlayedAt(value: string) {
 }
 
 function resolveImmersiveLyricsLayoutStyle(current: string, previous: string, next: string) {
+  const fontScale = lyricFontScaleValue()
+  const widthScale = 1
+  const lineCapacityScale = clamp(widthScale / fontScale, 0.72, 1.38)
   const currentLines = estimateImmersiveLyricLineCount(
     current,
-    14,
+    Math.max(9, Math.round(14 * lineCapacityScale)),
     IMMERSIVE_LYRIC_MAIN_MAX_LINES,
   )
   const sideLines = Math.max(
-    estimateImmersiveLyricLineCount(previous, 24, IMMERSIVE_LYRIC_SIDE_MAX_LINES),
-    estimateImmersiveLyricLineCount(next, 24, IMMERSIVE_LYRIC_SIDE_MAX_LINES),
+    estimateImmersiveLyricLineCount(
+      previous,
+      Math.max(16, Math.round(24 * lineCapacityScale)),
+      IMMERSIVE_LYRIC_SIDE_MAX_LINES,
+    ),
+    estimateImmersiveLyricLineCount(
+      next,
+      Math.max(16, Math.round(24 * lineCapacityScale)),
+      IMMERSIVE_LYRIC_SIDE_MAX_LINES,
+    ),
   )
-  const mainFontSize =
+  const baseMainFontSize =
     currentLines >= 4 ? 38 : currentLines === 3 ? 44 : currentLines === 2 ? 54 : 62
+  const mainFontSize = Math.round(baseMainFontSize * fontScale)
   const mainLineHeight = currentLines >= 3 ? 1.16 : 1.1
-  const sideFontSize = sideLines > 1 ? 20 : 24
-  const mainMinHeight = Math.ceil(currentLines * mainFontSize * mainLineHeight + 42)
+  const sideFontSize = Math.round((sideLines > 1 ? 20 : 24) * fontScale)
+  const mainMinHeight = Math.ceil(currentLines * mainFontSize * mainLineHeight + 42 * fontScale)
   const sideMinHeight = Math.max(34, Math.ceil(sideLines * sideFontSize * 1.34))
-  const stackGap = currentLines >= 3 ? 22 : currentLines === 2 ? 16 : 12
+  const stackGap = Math.round((currentLines >= 3 ? 22 : currentLines === 2 ? 16 : 12) * (0.9 + fontScale * 0.1))
 
   return {
     '--immersive-current-line-count': String(currentLines),
@@ -7641,41 +9671,106 @@ function resolveImmersiveLyricsLayoutStyle(current: string, previous: string, ne
 }
 
 function resolveImmersiveLyricStageStyle() {
-  const preset = lyricStagePreset.value
-  const depth = clamp(lyricStageDepth.value, 0, 1)
+  const defaults = lyricStageDefaultsForPreset('projection')
+  const depth = defaults.depth
+  const onDjFloat = visualStagePreset.value === 'dj'
   const tilt = clamp(lyricStageTilt.value, 0, 1)
   const glow = clamp(lyricStageGlow.value, 0, 1)
+  const verticalOffset = lyricVerticalOffsetPx()
+  const distanceOffset = lyricDistanceOffsetPx()
+  const distanceScale = lyricDistanceScaleValue()
+  const widthScale = 1
+  const sideOpacity = lyricSideOpacityValue()
+  const progressStrength = 0.55 + defaults.progressGlow * 0.55
   const energy = visualEnergyFrame.value
+  const envelope = lyricMusicEnvelope.value
   const motionScale = visualReducedMotion.value ? 0 : 1
   const stageOnlyBoost = immersiveStageOnlyMode.value ? 1 : 0
-  const beatGlow = playing.value && lyricStageBeatGlow.value && !visualReducedMotion.value
-    ? clamp(energy.beat * 0.72 + energy.bass * 0.44, 0, 1)
+  const time = visualTimeValue.value
+  const activeMusic = playing.value && Boolean(currentTrack.value)
+  const musicPulse = activeMusic && !visualReducedMotion.value ? envelope.pulse : 0
+  const musicBreath = activeMusic && !visualReducedMotion.value ? envelope.breath : 0
+  const musicPhrase = activeMusic && !visualReducedMotion.value ? envelope.phrase : 0
+  const musicAir = activeMusic && !visualReducedMotion.value ? envelope.air : 0
+  const musicDrift = activeMusic && !visualReducedMotion.value ? envelope.drift : 0
+  const musicFocus = activeMusic && !visualReducedMotion.value ? envelope.focus : 0
+  const beatGlow = lyricStageBeatGlow.value ? musicPulse : musicPhrase * 0.24
+  const musicDrive = activeMusic
+    ? clamp(musicBreath * 0.56 + musicPhrase * 0.18 + musicAir * 0.14 + energy.volume * 0.12, 0, 1)
     : 0
-  const floatDrive = playing.value && preset === 'float' && !visualReducedMotion.value
-    ? Math.sin(visualTimeValue.value * 1.12) * (4 + energy.mid * 5)
+  const bassLift = activeMusic && !visualReducedMotion.value
+    ? clamp(musicPulse * 10 + musicPhrase * 5 + musicBreath * 3, 0, onDjFloat ? 16 : 22)
     : 0
-  const presetYOffset = preset === 'clear' ? -8 : preset === 'float' ? -18 : 6
-  const presetZOffset = preset === 'clear' ? 54 : preset === 'float' ? 82 : 22
-  const stagePresetYOffset = visualStagePreset.value === 'dj' ? -22 : visualStagePreset.value === 'galaxy' ? -8 : 0
-  const lockFactor = lyricStageCameraLock.value ? 0.08 : 1
-  const tiltX = ((preset === 'projection' ? -3.2 : preset === 'float' ? -1.8 : 0) + immersiveStagePitch.value * 0.18 * lockFactor) * tilt
-  const tiltY = ((preset === 'projection' ? 2.2 : preset === 'float' ? 1.4 : 0) - immersiveStageYaw.value * 0.16 * lockFactor) * tilt
-  const z = 62 + depth * 132 + presetZOffset + stageOnlyBoost * 18
-  const scale = 1 + beatGlow * 0.016 * motionScale + (preset === 'float' ? energy.volume * 0.008 * motionScale : 0)
-  const particleOpacity = lyricStageParticles.value && !visualReducedMotion.value
-    ? clamp(0.04 + glow * 0.22 + beatGlow * 0.34 + energy.treble * 0.12, 0, 0.62)
+  const stageFloatX = activeMusic && !visualReducedMotion.value
+    ? Math.sin(time * 0.28 + musicAir * 1.1) * (onDjFloat ? 0.7 + musicAir * 1.4 : 0.9 + musicAir * 1.9) +
+      musicDrift * (onDjFloat ? 1.2 : 1.7)
     : 0
+  const stageFloatY = activeMusic && !visualReducedMotion.value
+    ? Math.cos(time * 0.24 + musicBreath * 1.2) * (onDjFloat ? 0.5 + musicBreath * 1.2 : 0.8 + musicBreath * 1.8)
+    : 0
+  const musicZLift = activeMusic && !visualReducedMotion.value
+    ? onDjFloat
+      ? musicDrive * 8 + musicFocus * 7 + beatGlow * 4
+      : musicDrive * 12 + musicFocus * 8 + beatGlow * 5
+    : 0
+  const roll = activeMusic && !visualReducedMotion.value
+    ? (Math.sin(time * 0.16) * 0.26 + musicDrift * 0.18 + (musicAir - musicPulse) * 0.08) * (onDjFloat ? 0.58 : 1)
+    : 0
+  const audioGlow = clamp(0.1 + glow * 0.34 + musicBreath * 0.24 + musicFocus * 0.18 + beatGlow * 0.26, 0, 1.12)
+  const stageAir = activeMusic && !visualReducedMotion.value ? clamp(musicAir * 0.72 + musicPhrase * 0.16, 0, 1) : 0
+  const lineLift = activeMusic && !visualReducedMotion.value ? -Math.round(bassLift * (onDjFloat ? 0.4 : 0.5)) : 0
+  const presetYOffset = onDjFloat ? DJ_FLOAT_LYRIC_Y_OFFSET : 6
+  const presetZOffset = onDjFloat ? DJ_FLOAT_LYRIC_Z_OFFSET : 22
+  const stagePresetYOffset = onDjFloat ? 0 : visualStagePreset.value === 'galaxy' ? -8 : 0
+  const tiltX = onDjFloat
+    ? 5 + tilt * 18 + immersiveStagePitch.value * 0.1
+    : (-3.2 + immersiveStagePitch.value * 0.18) * tilt
+  const tiltY = onDjFloat
+    ? (2.4 - immersiveStageYaw.value * 0.11) * (0.7 + tilt * 0.45)
+    : (2.2 - immersiveStageYaw.value * 0.16) * tilt
+  const z = 62 + depth * 132 + presetZOffset + distanceOffset + stageOnlyBoost * (onDjFloat ? 14 : 18) + musicZLift
+  const scale =
+    distanceScale *
+    (onDjFloat ? DJ_FLOAT_LYRIC_SCALE : 1) *
+    (1 +
+      beatGlow * 0.026 * motionScale +
+      musicDrive * 0.012 * motionScale)
 
   return {
-    '--lyric-stage-x': '0px',
-    '--lyric-stage-y': `${(presetYOffset + stagePresetYOffset + floatDrive).toFixed(1)}px`,
+    '--lyric-stage-x': `${stageFloatX.toFixed(1)}px`,
+    '--lyric-stage-y': `${(
+      presetYOffset +
+      stagePresetYOffset +
+      verticalOffset +
+      stageFloatY -
+      bassLift * (onDjFloat ? 0.12 : 0.18)
+    ).toFixed(1)}px`,
     '--lyric-stage-z': `${Math.round(z)}px`,
     '--lyric-stage-scale': scale.toFixed(4),
     '--lyric-stage-tilt-x': `${tiltX.toFixed(2)}deg`,
     '--lyric-stage-tilt-y': `${tiltY.toFixed(2)}deg`,
+    '--lyric-stage-roll': `${roll.toFixed(2)}deg`,
     '--lyric-stage-glow-strength': (0.16 + glow * 0.72).toFixed(3),
     '--lyric-stage-beat-glow': beatGlow.toFixed(3),
-    '--lyric-stage-particle-opacity': particleOpacity.toFixed(3),
+    '--lyric-stage-audio-glow': audioGlow.toFixed(3),
+    '--lyric-stage-air': stageAir.toFixed(3),
+    '--lyric-stage-line-lift': `${lineLift}px`,
+    '--lyric-music-pulse': beatGlow.toFixed(3),
+    '--lyric-music-breath': musicBreath.toFixed(3),
+    '--lyric-music-phrase': musicPhrase.toFixed(3),
+    '--lyric-music-drift': musicDrift.toFixed(3),
+    '--lyric-music-focus': musicFocus.toFixed(3),
+    '--lyric-stage-shadow-depth': (onDjFloat
+      ? 0.62 + musicDrive * 0.2
+      : 0.48 + depth * 0.36 + musicDrive * 0.18).toFixed(3),
+    '--lyric-stage-floor-width': (onDjFloat
+      ? 1.12 + musicDrive * 0.1
+      : 0.88 + widthScale * 0.18 + musicDrive * 0.08).toFixed(3),
+    '--lyric-stage-particle-opacity': '0.000',
+    '--lyric-appearance-width-px': `${Math.round(940 * widthScale)}px`,
+    '--lyric-appearance-width-vw': `${(66 * widthScale).toFixed(1)}vw`,
+    '--lyric-side-opacity': sideOpacity.toFixed(3),
+    '--lyric-progress-strength': progressStrength.toFixed(3),
   }
 }
 
@@ -7761,6 +9856,28 @@ function stringHashRatio(value: string) {
   return (hash >>> 0) / 4294967295
 }
 
+function smoothUnitRange(value: number, start: number, end: number) {
+  const range = end - start
+  if (range <= 0) {
+    return value >= end ? 1 : 0
+  }
+
+  const t = clamp((value - start) / range, 0, 1)
+  return t * t * (3 - 2 * t)
+}
+
+function smoothEnvelopeValue(
+  current: number,
+  target: number,
+  attackSeconds: number,
+  releaseSeconds: number,
+  deltaSeconds: number,
+) {
+  const duration = target > current ? attackSeconds : releaseSeconds
+  const factor = 1 - Math.exp(-deltaSeconds / Math.max(0.001, duration))
+  return current + (target - current) * clamp(factor, 0, 1)
+}
+
 function clamp(value: number, min: number, max: number) {
   if (!Number.isFinite(value)) {
     return min
@@ -7776,6 +9893,7 @@ function clamp(value: number, min: number, max: number) {
     :class="[
       themeClass,
       windowOpenAnimationClass,
+      miniEdgeDockClass,
       {
         'music-window-mini': miniPlayerMode,
         'music-window-immersive': immersiveMode,
@@ -7796,7 +9914,16 @@ function clamp(value: number, min: number, max: number) {
       @error="handleAudioError"
     />
 
-    <section v-if="miniPlayerMode" class="music-mini-player" @pointerdown="startDrag">
+    <section
+      v-if="miniPlayerMode"
+      ref="miniPlayerElement"
+      class="music-mini-player"
+      @pointerdown="startDrag"
+      @pointerup="scheduleMiniEdgeDockCheck()"
+      @pointercancel="scheduleMiniEdgeDockCheck()"
+      @pointerenter="revealMiniEdgeDock"
+      @pointerleave="scheduleMiniEdgeRehide"
+    >
       <div class="music-mini-disc" :class="{ 'music-disc-playing': playing }" aria-hidden="true">
         <span />
       </div>
@@ -7922,11 +10049,7 @@ function clamp(value: number, min: number, max: number) {
               'is-reduced-motion': visualReducedMotion,
               'is-idle': !currentTrack,
               'is-stage-only': immersiveStageOnlyMode,
-              'is-lyric-stage-clear': lyricStagePreset === 'clear',
-              'is-lyric-stage-projection': lyricStagePreset === 'projection',
-              'is-lyric-stage-float': lyricStagePreset === 'float',
-              'is-camera-locked': lyricStageCameraLock,
-              'has-lyric-particles': lyricStageParticles,
+              'is-dj-float': visualStagePreset === 'dj',
             }"
             :style="immersiveLyricsStageStyle"
             aria-label="沉浸歌词"
@@ -7945,17 +10068,15 @@ function clamp(value: number, min: number, max: number) {
                 </Transition>
               </div>
               <div class="music-immersive-lyrics-slot main">
-                <Transition name="immersive-lyric-main">
-                  <p
-                    :key="immersiveLyrics.currentKey"
-                    class="music-immersive-lyrics-line current"
-                    :style="{ '--lyric-progress': `${Math.round(immersiveLyrics.progress * 1000) / 10}%` }"
-                  >
-                    <span class="music-immersive-lyrics-line-text">
-                      {{ immersiveLyrics.current }}
-                    </span>
-                  </p>
-                </Transition>
+                <p
+                  :key="immersiveLyrics.currentKey"
+                  class="music-immersive-lyrics-line current"
+                  :style="{ '--lyric-progress': `${Math.round(immersiveLyrics.progress * 1000) / 10}%` }"
+                >
+                  <span class="music-immersive-lyrics-line-text">
+                    {{ immersiveLyrics.current }}
+                  </span>
+                </p>
               </div>
               <div class="music-immersive-lyrics-slot side">
                 <Transition name="immersive-lyric-side" mode="out-in">
@@ -8157,7 +10278,11 @@ function clamp(value: number, min: number, max: number) {
             }"
             :disabled="!canPlayImmersiveNeteaseTrack(track)"
             :aria-current="immersiveNeteaseTrackActive(track) ? 'true' : undefined"
-            :title="neteaseTrackUnavailableReason(track) || `${track.name} - ${formatNeteaseTrackArtists(track)}`"
+            :title="
+              neteaseTrackUnavailableReason(track)
+                ? playbackFailureDetailTitle(neteaseTrackUnavailableReason(track))
+                : `${track.name} - ${formatNeteaseTrackArtists(track)}`
+            "
             @click="playImmersiveNeteaseTrack(track)"
           >
             <span class="music-immersive-playlist-index">
@@ -8165,7 +10290,13 @@ function clamp(value: number, min: number, max: number) {
             </span>
             <span class="music-immersive-playlist-main">
               <strong>{{ track.name }}</strong>
-              <small>{{ neteaseTrackUnavailableReason(track) || formatNeteaseTrackArtists(track) }}</small>
+              <small>
+                {{
+                  neteaseTrackUnavailableReason(track)
+                    ? compactPlaybackFailureReason(neteaseTrackUnavailableReason(track))
+                    : formatNeteaseTrackArtists(track)
+                }}
+              </small>
             </span>
             <span class="music-immersive-playlist-duration">
               {{ neteaseTrackUnavailableReason(track) ? '不可播' : immersiveNeteaseTrackDurationLabel(track) }}
@@ -8190,7 +10321,11 @@ function clamp(value: number, min: number, max: number) {
             }"
             :disabled="!canPlayImmersiveKugouTrack(track)"
             :aria-current="immersiveKugouTrackActive(track) ? 'true' : undefined"
-            :title="kugouTrackUnavailableReason(track) || `${track.name} - ${formatKugouTrackArtists(track)}`"
+            :title="
+              kugouTrackUnavailableReason(track)
+                ? playbackFailureDetailTitle(kugouTrackUnavailableReason(track))
+                : `${track.name} - ${formatKugouTrackArtists(track)}`
+            "
             @click="playImmersiveKugouTrack(track)"
           >
             <span class="music-immersive-playlist-index">
@@ -8198,7 +10333,13 @@ function clamp(value: number, min: number, max: number) {
             </span>
             <span class="music-immersive-playlist-main">
               <strong>{{ track.name }}</strong>
-              <small>{{ kugouTrackUnavailableReason(track) || formatKugouTrackArtists(track) }}</small>
+              <small>
+                {{
+                  kugouTrackUnavailableReason(track)
+                    ? compactPlaybackFailureReason(kugouTrackUnavailableReason(track))
+                    : formatKugouTrackArtists(track)
+                }}
+              </small>
             </span>
             <span class="music-immersive-playlist-duration">
               {{ kugouTrackUnavailableReason(track) ? '不可播' : immersiveKugouTrackDurationLabel(track) }}
@@ -8309,20 +10450,22 @@ function clamp(value: number, min: number, max: number) {
           </div>
         </div>
 
-        <label class="music-immersive-range">
-          强度
-          <input
-            v-model.number="visualIntensity"
-            type="range"
-            min="0.2"
-            max="1"
-            step="0.01"
-            aria-label="可视化强度"
-          />
-        </label>
-
-        <div class="music-immersive-panel-section music-stage-tuning-panel">
-          <span>舞台参数</span>
+        <div class="music-immersive-panel-section music-stage-parameter-card">
+          <div class="music-stage-parameter-card-heading">
+            <span>参数调节</span>
+            <small>{{ visualStagePresetLabel }}</small>
+          </div>
+          <label class="music-immersive-range music-stage-intensity-range">
+            强度
+            <input
+              v-model.number="visualIntensity"
+              type="range"
+              min="0.2"
+              max="1"
+              step="0.01"
+              aria-label="可视化强度"
+            />
+          </label>
           <div class="music-stage-tuning-grid">
             <label
               v-for="option in stageTuningOptions"
@@ -8361,34 +10504,7 @@ function clamp(value: number, min: number, max: number) {
 
         <div class="music-immersive-panel-section music-lyric-stage-panel">
           <span>歌词舞台</span>
-          <div class="music-lyric-stage-preset-grid" role="tablist" aria-label="歌词舞台预设">
-            <button
-              v-for="option in lyricStagePresetOptions"
-              :key="option.value"
-              type="button"
-              :class="{ active: lyricStagePreset === option.value }"
-              :title="option.description"
-              role="tab"
-              :aria-selected="lyricStagePreset === option.value"
-              @click="setLyricStagePreset(option.value)"
-            >
-              <span>{{ option.kicker }}</span>
-              <strong>{{ option.label }}</strong>
-            </button>
-          </div>
           <div class="music-lyric-stage-controls">
-            <label class="music-immersive-range music-lyric-stage-range">
-              <span>景深</span>
-              <input
-                v-model.number="lyricStageDepth"
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                aria-label="歌词舞台景深"
-              />
-              <output>{{ lyricStageDepthLabel }}</output>
-            </label>
             <label class="music-immersive-range music-lyric-stage-range">
               <span>倾角</span>
               <input
@@ -8414,19 +10530,64 @@ function clamp(value: number, min: number, max: number) {
               <output>{{ lyricStageGlowLabel }}</output>
             </label>
           </div>
+          <div class="music-lyric-stage-controls music-lyric-appearance-controls">
+            <label class="music-immersive-range music-lyric-stage-range">
+              <span>字号</span>
+              <input
+                v-model.number="lyricStageFontScale"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                aria-label="沉浸歌词字号"
+              />
+              <output>{{ lyricStageFontScaleLabel }}</output>
+            </label>
+            <label class="music-immersive-range music-lyric-stage-range">
+              <span>位置</span>
+              <input
+                v-model.number="lyricStageVertical"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                aria-label="沉浸歌词垂直位置"
+              />
+              <output>{{ lyricStageVerticalLabel }}</output>
+            </label>
+            <label class="music-immersive-range music-lyric-stage-range">
+              <span>远近</span>
+              <input
+                v-model.number="lyricStageDistance"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                aria-label="沉浸歌词远近"
+              />
+              <output>{{ lyricStageDistanceLabel }}</output>
+            </label>
+            <label class="music-immersive-range music-lyric-stage-range">
+              <span>弱化</span>
+              <input
+                v-model.number="lyricStageSideOpacity"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                aria-label="沉浸歌词上下句弱化"
+              />
+              <output>{{ lyricStageSideOpacityLabel }}</output>
+            </label>
+          </div>
           <div class="music-lyric-stage-switches">
             <label class="music-immersive-check music-lyric-stage-check">
               <input v-model="lyricStageBeatGlow" type="checkbox" />
               <span>鼓点溢光</span>
             </label>
-            <label class="music-immersive-check music-lyric-stage-check">
-              <input v-model="lyricStageParticles" type="checkbox" />
-              <span>歌词光粒</span>
-            </label>
-            <label class="music-immersive-check music-lyric-stage-check">
-              <input v-model="lyricStageCameraLock" type="checkbox" />
-              <span>镜头绑定</span>
-            </label>
+          </div>
+          <div class="music-stage-tuning-actions music-lyric-stage-actions">
+            <button type="button" @click="resetLyricStageParameters">重置歌词</button>
           </div>
         </div>
 
@@ -8500,6 +10661,53 @@ function clamp(value: number, min: number, max: number) {
             @input="seek"
           />
           <span>{{ formatTime(durationValue) }}</span>
+        </div>
+
+        <div
+          class="music-immersive-quality-control"
+          :class="{ open: immersiveQualityMenuOpen }"
+          @focusout="closeImmersiveQualityMenuOnFocusOut"
+        >
+          <button
+            type="button"
+            class="music-immersive-quality-trigger"
+            :class="{ active: immersiveQualityMenuOpen }"
+            :aria-expanded="immersiveQualityMenuOpen"
+            aria-haspopup="listbox"
+            aria-label="切换沉浸模式在线播放音质"
+            :title="`${onlinePlaybackQualityPlatformLabel}：${onlinePlaybackQualityLabel}`"
+            :disabled="onlinePlaybackQualitySwitching"
+            @click="toggleImmersiveQualityMenu"
+          >
+            <span>{{ onlinePlaybackQualityPlatformLabel }}</span>
+            <strong>{{ onlinePlaybackQualityLabel }}</strong>
+          </button>
+          <div
+            v-if="immersiveQualityMenuOpen"
+            class="music-immersive-quality-options"
+            role="listbox"
+            aria-label="在线播放音质列表"
+          >
+            <button
+              v-for="option in onlinePlaybackQualityOptions"
+              :key="`immersive-quality-${option.value}`"
+              type="button"
+              :class="{
+                active: activeOnlinePlaybackQuality === option.value,
+                unavailable: onlinePlaybackQualityOptionDisabled(option),
+                unknown: option.availabilityStatus === 'unknown',
+              }"
+              role="option"
+              :aria-selected="activeOnlinePlaybackQuality === option.value"
+              :aria-label="`切换在线播放音质为${option.label}`"
+              :title="onlinePlaybackQualityOptionTitle(option)"
+              :disabled="onlinePlaybackQualitySwitching || onlinePlaybackQualityOptionDisabled(option)"
+              @click="selectImmersiveOnlinePlaybackQuality(option.value)"
+            >
+              <span>{{ option.label }}</span>
+              <small>{{ option.description }}</small>
+            </button>
+          </div>
         </div>
 
         <div class="music-immersive-options">
@@ -8676,9 +10884,22 @@ function clamp(value: number, min: number, max: number) {
             <span>{{ formatTime(durationValue) }}</span>
           </div>
         </div>
-        <div v-if="playerStatus || playerError" class="music-list-feedback">
+        <div v-if="playerStatus || playerErrorDisplay" class="music-list-feedback">
           <span v-if="playerStatus">{{ playerStatus }}</span>
-          <span v-if="playerError" class="error">{{ playerError }}</span>
+          <div
+            v-if="playerErrorDisplay"
+            class="music-error-card music-error-card-compact"
+            role="alert"
+          >
+            <div class="music-error-card-main">
+              <strong>{{ playerErrorDisplay.title }}</strong>
+              <span>{{ playerErrorDisplay.summary }}</span>
+            </div>
+            <details v-if="playerErrorDisplay.detail" class="music-error-detail">
+              <summary>诊断详情</summary>
+              <pre>{{ playerErrorDisplay.detail }}</pre>
+            </details>
+          </div>
         </div>
       </section>
       <aside class="music-player-panel" aria-label="当前播放和控制">
@@ -8697,15 +10918,21 @@ function clamp(value: number, min: number, max: number) {
               <span />
             </div>
           </div>
-          <div class="music-current-copy">
-            <strong>{{ currentTrack?.title || '未选择音乐' }}</strong>
-            <small v-if="currentTrack" class="music-current-artist">
+          <div
+            class="music-current-copy"
+            :title="currentTrackTooltipTitle(currentTrack)"
+            :aria-label="currentTrackTooltipTitle(currentTrack)"
+          >
+            <strong :title="currentTrackTooltipTitle(currentTrack)">{{ currentTrack?.title || '未选择音乐' }}</strong>
+            <small v-if="currentTrack" class="music-current-artist" :title="currentTrackTooltipTitle(currentTrack)">
               {{ trackArtistLabel(currentTrack) }}
             </small>
-            <small v-if="currentTrack" class="music-current-meta" :title="trackSourceTitle(currentTrack)">
+            <small v-if="currentTrack" class="music-current-meta" :title="currentTrackTooltipTitle(currentTrack)">
               {{ formatCurrentTrackDetail(currentTrack) }}
             </small>
-            <small v-else class="music-current-meta">支持 mp3、wav、flac、m4a、aac、ogg、webm。</small>
+            <small v-else class="music-current-meta" :title="currentTrackTooltipTitle(null)">
+              支持 mp3、wav、flac、m4a、aac、ogg、webm。
+            </small>
           </div>
         </section>
 
@@ -8797,9 +11024,26 @@ function clamp(value: number, min: number, max: number) {
           </div>
         </section>
 
-        <div v-if="playerStatus || playerError" class="music-feedback-stack">
+        <div v-if="playerStatus || playerErrorDisplay" class="music-feedback-stack">
           <p v-if="playerStatus" class="music-status">{{ playerStatus }}</p>
-          <p v-if="playerError" class="music-error">{{ playerError }}</p>
+          <div v-if="playerErrorDisplay" class="music-error-card" role="alert">
+            <div class="music-error-card-main">
+              <strong>{{ playerErrorDisplay.title }}</strong>
+              <span>{{ playerErrorDisplay.summary }}</span>
+            </div>
+            <div v-if="playerErrorDisplay.hints.length" class="music-error-actions">
+              <span v-for="hint in playerErrorDisplay.hints" :key="hint">{{ hint }}</span>
+            </div>
+            <details
+              v-if="playerErrorDisplay.detail"
+              class="music-error-detail"
+              :open="playerErrorDetailOpen"
+              @toggle="handlePlayerErrorDetailToggle"
+            >
+              <summary>诊断详情</summary>
+              <pre>{{ playerErrorDisplay.detail }}</pre>
+            </details>
+          </div>
         </div>
 
         <section class="music-playlist-section music-left-playlists" aria-label="我的歌单">
@@ -9046,6 +11290,91 @@ function clamp(value: number, min: number, max: number) {
                 <strong>{{ kugouLoggedIn ? '暂无酷狗歌单' : '未登录酷狗' }}</strong>
                 <span>{{ kugouLoggedIn ? '点击刷新读取我的歌单。' : '登录后显示酷狗我的歌单。' }}</span>
               </div>
+
+              <div class="music-left-playlist-subgroup">
+                <header class="music-left-playlist-group-header">
+                  <div>
+                    <strong>酷狗推荐歌单</strong>
+                    <span>{{ leftKugouRecommendedPlaylistStatusLabel }}</span>
+                  </div>
+                  <button
+                    type="button"
+                    :disabled="kugouRecommendedPlaylistsLoading || kugouPlaylistDetailLoading"
+                    @click="refreshKugouRecommendedPlaylistsFromLeft(false)"
+                  >
+                    {{ kugouRecommendedPlaylistsLoading ? '读取中' : '刷新' }}
+                  </button>
+                </header>
+
+                <p
+                  v-if="kugouRecommendedPlaylistError || kugouRecommendedPlaylistNotice"
+                  class="music-platform-message music-left-playlist-message"
+                  :class="{ error: Boolean(kugouRecommendedPlaylistError) }"
+                >
+                  {{ kugouRecommendedPlaylistError || kugouRecommendedPlaylistNotice }}
+                </p>
+
+                <div
+                  v-if="kugouRecommendedPlaylists.length > 0"
+                  class="music-left-source-playlists"
+                >
+                  <article
+                    v-for="playlist in kugouRecommendedPlaylists"
+                    :key="`kugou-recommend-${kugouPlaylistKey(playlist)}`"
+                    class="music-left-source-playlist-card"
+                    :class="{
+                      active:
+                        kugouSelectedContentSource === 'recommended' &&
+                        kugouPlaylistKey(playlist) === kugouSelectedRecommendedPlaylistId,
+                    }"
+                  >
+                    <button
+                      type="button"
+                      class="music-left-source-playlist-summary"
+                      :disabled="kugouPlaylistDetailLoading"
+                      @click="openKugouRecommendedPlaylistFromLeft(playlist)"
+                    >
+                      <img
+                        v-if="playlist.coverImgUrl"
+                        :src="playlist.coverImgUrl"
+                        alt=""
+                        referrerpolicy="no-referrer"
+                      />
+                      <span v-else aria-hidden="true">荐</span>
+                      <div>
+                        <strong>{{ playlist.name }}</strong>
+                        <small>{{ formatKugouPlaylistMeta(playlist) }}</small>
+                        <small v-if="formatKugouPlaylistUpdate(playlist)">
+                          {{ formatKugouPlaylistUpdate(playlist) }}
+                        </small>
+                      </div>
+                      <span class="music-playlist-card-state" aria-hidden="true">
+                        {{
+                          kugouSelectedContentSource === 'recommended' &&
+                          kugouPlaylistKey(playlist) === kugouSelectedRecommendedPlaylistId
+                            ? '当前'
+                            : '›'
+                        }}
+                      </span>
+                    </button>
+                  </article>
+                </div>
+
+                <div v-else class="music-left-playlist-empty">
+                  <strong>暂无推荐歌单</strong>
+                  <span>点击刷新读取酷狗公开推荐歌单。</span>
+                </div>
+
+                <button
+                  v-if="kugouRecommendedPlaylistHasMore"
+                  type="button"
+                  class="music-platform-load-more music-left-playlist-load-more"
+                  :disabled="kugouRecommendedPlaylistsLoading"
+                  @click="refreshKugouRecommendedPlaylistsFromLeft(true)"
+                >
+                  {{ kugouRecommendedPlaylistsLoading ? '加载中' : '加载更多推荐' }}
+                </button>
+              </div>
             </section>
           </div>
         </section>
@@ -9266,9 +11595,9 @@ function clamp(value: number, min: number, max: number) {
                 <small
                   v-if="neteaseTrackUnavailableReason(track)"
                   class="music-platform-track-warning"
-                  :title="neteaseTrackUnavailableReason(track)"
+                  :title="playbackFailureDetailTitle(neteaseTrackUnavailableReason(track))"
                 >
-                  不可播放：{{ neteaseTrackUnavailableReason(track) }}
+                  不可播放：{{ compactPlaybackFailureReason(neteaseTrackUnavailableReason(track)) }}
                 </small>
               </span>
               <span class="music-platform-track-actions">
@@ -9380,9 +11709,9 @@ function clamp(value: number, min: number, max: number) {
                   <small
                     v-if="neteaseTrackUnavailableReason(track)"
                     class="music-platform-track-warning"
-                    :title="neteaseTrackUnavailableReason(track)"
+                    :title="playbackFailureDetailTitle(neteaseTrackUnavailableReason(track))"
                   >
-                    不可播放：{{ neteaseTrackUnavailableReason(track) }}
+                    不可播放：{{ compactPlaybackFailureReason(neteaseTrackUnavailableReason(track)) }}
                   </small>
                 </span>
                 <span class="music-platform-track-actions">
@@ -9626,9 +11955,9 @@ function clamp(value: number, min: number, max: number) {
                   <small
                     v-if="kugouTrackUnavailableReason(track)"
                     class="music-platform-track-warning"
-                    :title="kugouTrackUnavailableReason(track)"
+                    :title="playbackFailureDetailTitle(kugouTrackUnavailableReason(track))"
                   >
-                    不可播放：{{ kugouTrackUnavailableReason(track) }}
+                    不可播放：{{ compactPlaybackFailureReason(kugouTrackUnavailableReason(track)) }}
                   </small>
                 </span>
                 <span class="music-platform-track-actions">
@@ -9662,14 +11991,111 @@ function clamp(value: number, min: number, max: number) {
           </section>
         </section>
 
-        <section v-if="kugouLoggedIn" class="music-platform-card">
+        <section class="music-platform-card">
           <header class="music-platform-section-header">
             <div>
-              <strong>{{ kugouSelectedPlaylist?.name || '当前歌单' }}</strong>
+              <strong>每日推荐</strong>
+              <span>{{ kugouDailyRecommendationLoadedLabel }}</span>
+            </div>
+            <button
+              type="button"
+              :disabled="kugouDailyRecommendationLoading"
+              @click="loadKugouDailyRecommendations(true)"
+            >
+              {{ kugouDailyRecommendationLoading ? '读取中' : '读取' }}
+            </button>
+          </header>
+
+          <p
+            v-if="kugouDailyRecommendationError || kugouDailyRecommendationNotice"
+            class="music-platform-message"
+            :class="{ error: Boolean(kugouDailyRecommendationError) }"
+          >
+            {{ kugouDailyRecommendationStatusDetail }}
+          </p>
+
+          <div
+            v-if="kugouDailyRecommendationLoading && kugouDailyRecommendationTracks.length === 0"
+            class="music-platform-empty"
+          >
+            <strong>正在读取酷狗每日推荐</strong>
+            <span>歌曲摘要只保存在当前运行状态，不写入本机曲库。</span>
+          </div>
+
+          <div v-else-if="kugouDailyRecommendationTracks.length === 0" class="music-platform-empty">
+            <strong>暂无每日推荐</strong>
+            <span>点击读取获取酷狗每日推荐歌曲；部分账号可能需要登录。</span>
+          </div>
+
+          <div v-else class="music-platform-track-list">
+            <article
+              v-for="(track, index) in kugouDailyRecommendationTracks"
+              :key="`kugou-daily-${track.hash}-${index}`"
+              class="music-platform-track-row"
+              :class="{
+                active: currentTrack?.source === 'kugou' && currentTrack.kugouSongHash === track.hash,
+                unavailable: Boolean(kugouTrackUnavailableReason(track)),
+              }"
+            >
+              <span class="music-platform-track-index">{{ index + 1 }}</span>
+              <img
+                v-if="track.coverImgUrl"
+                :src="track.coverImgUrl"
+                alt=""
+                referrerpolicy="no-referrer"
+              />
+              <span v-else class="music-platform-track-cover" aria-hidden="true">日</span>
+              <span class="music-platform-track-copy">
+                <strong>{{ track.name }}</strong>
+                <small :title="formatKugouTrackSubline(track)">
+                  {{ formatKugouTrackSubline(track) }}
+                </small>
+                <small
+                  v-if="kugouTrackUnavailableReason(track)"
+                  class="music-platform-track-warning"
+                  :title="playbackFailureDetailTitle(kugouTrackUnavailableReason(track))"
+                >
+                  不可播放：{{ compactPlaybackFailureReason(kugouTrackUnavailableReason(track)) }}
+                </small>
+              </span>
+              <span class="music-platform-track-actions">
+                <button
+                  type="button"
+                  :disabled="kugouLyricsLoading && kugouLyricsTrack?.hash === track.hash"
+                  @click="showKugouLyrics(track)"
+                >
+                  {{ kugouLyricsLoading && kugouLyricsTrack?.hash === track.hash ? '读取中' : '歌词' }}
+                </button>
+                <button
+                  type="button"
+                  :disabled="kugouTrackActionHash === track.hash"
+                  @click="playKugouTrack(track, kugouDailyRecommendationTracks)"
+                >
+                  {{ kugouTrackActionHash === track.hash ? '获取中' : kugouTrackUnavailableReason(track) ? '重试' : '播放' }}
+                </button>
+              </span>
+            </article>
+          </div>
+        </section>
+
+        <section
+          v-if="
+            kugouLoggedIn ||
+            kugouActivePlaylist ||
+            kugouPlaylistDetail ||
+            kugouPlaylistError ||
+            kugouPlaylistsLoading ||
+            kugouRecommendedPlaylistsLoading
+          "
+          class="music-platform-card"
+        >
+          <header class="music-platform-section-header">
+            <div>
+              <strong>{{ kugouActivePlaylist?.name || '当前歌单' }}</strong>
               <span>{{ kugouPlaylistStatusLabel }}</span>
             </div>
-            <span v-if="kugouSelectedPlaylist">
-              {{ kugouPlaylistLoadedLabel }}
+            <span v-if="kugouActivePlaylist">
+              {{ kugouActivePlaylistSourceLabel }} · {{ kugouPlaylistLoadedLabel }}
             </span>
           </header>
 
@@ -9681,24 +12107,30 @@ function clamp(value: number, min: number, max: number) {
             {{ kugouPlaylistStatusLabel }}
           </p>
 
-          <div v-if="kugouPlaylistsLoading && kugouPlaylists.length === 0" class="music-platform-empty">
-            <strong>正在读取酷狗个人歌单</strong>
+          <div
+            v-if="
+              (kugouPlaylistsLoading && kugouPlaylists.length === 0) ||
+              (kugouRecommendedPlaylistsLoading && kugouRecommendedPlaylists.length === 0)
+            "
+            class="music-platform-empty"
+          >
+            <strong>{{ kugouRecommendedPlaylistsLoading ? '正在读取酷狗推荐歌单' : '正在读取酷狗个人歌单' }}</strong>
             <span>只读取歌单和歌曲摘要，不读取播放地址。</span>
           </div>
 
-          <div v-else-if="kugouPlaylists.length === 0" class="music-platform-empty">
+          <div v-else-if="!kugouActivePlaylist" class="music-platform-empty">
             <strong>暂无酷狗歌单数据</strong>
-            <span>在左下角点击“刷新”读取酷狗我的歌单。</span>
+            <span>在左侧点击“刷新”读取我的歌单或推荐歌单。</span>
           </div>
 
           <section
-            v-else-if="kugouSelectedPlaylist"
+            v-else-if="kugouActivePlaylist"
             ref="kugouPlaylistDetailSection"
             class="music-platform-detail"
           >
             <header class="music-platform-section-header">
               <div>
-                <strong>{{ kugouSelectedPlaylist.name }}</strong>
+                <strong>{{ kugouActivePlaylist.name }}</strong>
                 <span>{{ kugouPlaylistLoadedLabel }}</span>
               </div>
               <span v-if="kugouPlaylistHasMore">可继续加载</span>
@@ -9738,9 +12170,9 @@ function clamp(value: number, min: number, max: number) {
                   <small
                     v-if="kugouTrackUnavailableReason(track)"
                     class="music-platform-track-warning"
-                    :title="kugouTrackUnavailableReason(track)"
+                    :title="playbackFailureDetailTitle(kugouTrackUnavailableReason(track))"
                   >
-                    不可播放：{{ kugouTrackUnavailableReason(track) }}
+                    不可播放：{{ compactPlaybackFailureReason(kugouTrackUnavailableReason(track)) }}
                   </small>
                 </span>
                 <span class="music-platform-track-actions">
@@ -10197,6 +12629,29 @@ function clamp(value: number, min: number, max: number) {
         <div class="music-library-actions">
           <button type="button" @click="chooseMusicFiles">添加文件</button>
           <button type="button" @click="chooseMusicFolder">添加文件夹</button>
+        </div>
+
+        <div class="music-quality-field" role="group" aria-label="在线播放音质">
+          <span>{{ onlinePlaybackQualityPlatformLabel }}</span>
+          <div class="music-quality-options">
+            <button
+              v-for="option in onlinePlaybackQualityOptions"
+              :key="option.value"
+              type="button"
+              :class="{
+                active: activeOnlinePlaybackQuality === option.value,
+                unavailable: onlinePlaybackQualityOptionDisabled(option),
+                unknown: option.availabilityStatus === 'unknown',
+              }"
+              :aria-pressed="activeOnlinePlaybackQuality === option.value"
+              :title="onlinePlaybackQualityOptionTitle(option)"
+              :disabled="onlinePlaybackQualitySwitching || onlinePlaybackQualityOptionDisabled(option)"
+              @click="setOnlinePlaybackQuality(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <small>{{ onlinePlaybackQualityStatusHint }}</small>
         </div>
 
         <label class="music-storage-field">

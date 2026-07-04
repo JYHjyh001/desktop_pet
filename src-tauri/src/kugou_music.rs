@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -62,6 +62,7 @@ const KUGOU_RSA_PUBLIC_EXPONENT_HEX: &str = "010001";
 const KUGOU_QR_EXPIRE_SECONDS: u64 = 180;
 const MAX_KUGOU_SEARCH_LIMIT: u64 = 50;
 const MAX_KUGOU_PLAYLISTS: usize = 300;
+const MAX_KUGOU_RECOMMENDED_PLAYLISTS: usize = 300;
 const MAX_KUGOU_PLAYLIST_TRACK_PAGE_LIMIT: u64 = 300;
 const MAX_KUGOU_LYRIC_CHARS: usize = 80_000;
 const MAX_KUGOU_PROXY_SESSIONS: usize = 64;
@@ -176,6 +177,16 @@ pub struct KugouPlaylistDetail {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KugouRecommendedPlaylists {
+    pub playlists: Vec<KugouPlaylistSummary>,
+    pub total: u64,
+    pub page: u64,
+    pub truncated: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KugouLyricsResult {
     pub song_id: String,
     pub content: String,
@@ -189,6 +200,8 @@ pub struct KugouLyricsResult {
 pub struct KugouPlaybackUrl {
     pub hash: String,
     pub url: String,
+    pub quality_level: Option<String>,
+    pub quality_label: Option<String>,
     pub bitrate: Option<u64>,
     pub duration_ms: Option<u64>,
     pub file_type: Option<String>,
@@ -210,11 +223,31 @@ pub struct KugouPlaybackProxyStatus {
     pub refresh_count: u32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KugouQualityAvailability {
+    pub hash: String,
+    pub qualities: Vec<KugouQualityAvailabilityItem>,
+    pub message: String,
+    pub diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KugouQualityAvailabilityItem {
+    pub quality: String,
+    pub label: String,
+    pub status: String,
+    pub reason: Option<String>,
+    pub detail: Option<String>,
+}
+
 #[derive(Clone)]
 struct KugouPlaybackSession {
     hashes: Vec<String>,
     album_audio_id: Option<u64>,
     audio_id: Option<u64>,
+    quality_preference: String,
     playback: KugouPlaybackUrl,
     probe: KugouPlaybackProbe,
     created_at_ms: u64,
@@ -551,11 +584,12 @@ pub fn list_playlists(app: &AppHandle) -> Result<Vec<KugouPlaylistSummary>, Stri
         ],
     )
     .ok_or_else(|| "酷狗歌单响应缺少列表字段。".to_string())?;
-    let playlists = items
+    let mut playlists = items
         .iter()
         .filter_map(parse_playlist_summary)
         .take(MAX_KUGOU_PLAYLISTS)
         .collect::<Vec<_>>();
+    playlists.reverse();
 
     Ok(playlists)
 }
@@ -590,53 +624,15 @@ pub fn playlist_detail(
         .cloned()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "酷狗登录状态缺少 token，请重新扫码登录。".to_string())?;
-    let body = json!({
-        "listid": list_id,
-        "userid": user_id,
-        "area_code": 1,
-        "show_relate_goods": 0,
-        "pagesize": limit,
-        "allplatform": 1,
-        "show_cover": 1,
-        "type": 0,
-        "token": token,
-        "page": page,
-    });
-    let response = kugou_android_post_json(
-        KUGOU_GATEWAY_BASE,
-        "/v4/get_list_all_file",
-        BTreeMap::new(),
-        body,
+    let response = request_kugou_playlist_detail_page(
+        &list_id,
+        &user_id,
+        &token,
+        1,
+        limit,
         &mut credential.cookies,
-        Some("cloudlist.service.kugou.com"),
     )?;
-    write_credential(app, &credential)?;
     ensure_kugou_success(&response, "酷狗歌单歌曲读取")?;
-
-    let playlist_value = response
-        .get("data")
-        .and_then(|data| {
-            data.get("list_info")
-                .or_else(|| data.get("list"))
-                .or_else(|| data.get("info"))
-        })
-        .filter(|value| value.is_object());
-    let playlist = playlist_value
-        .and_then(parse_playlist_summary)
-        .unwrap_or_else(|| KugouPlaylistSummary {
-            id: list_id.clone(),
-            list_id: list_id.clone(),
-            global_collection_id: None,
-            name: "酷狗歌单".to_string(),
-            track_count: 0,
-            cover_img_url: None,
-            creator_nickname: credential
-                .profile
-                .as_ref()
-                .map(|profile| profile.nickname.clone()),
-            subscribed: false,
-            update_time: None,
-        });
     let track_paths: &[&[&str]] = &[
         &["data", "info"],
         &["data", "song_list"],
@@ -677,48 +673,103 @@ pub fn playlist_detail(
         &["songlist"],
         &["songs"],
     ];
-    let explicit_empty_items = first_empty_array_at_paths(&response, track_paths);
-    let response_data = response.get("data").unwrap_or(&Value::Null);
-    let total_track_count = value_as_u64(response_data, "total")
-        .or_else(|| value_as_u64(response_data, "count"))
-        .or_else(|| value_as_u64(response_data, "total_count"))
-        .or_else(|| (playlist.track_count > 0).then_some(playlist.track_count))
-        .unwrap_or_default();
-    let direct_items = first_track_array_at_paths(&response, track_paths)
-        .or_else(|| find_track_array(&response))
-        .or(explicit_empty_items);
-    let decoded_snap_items =
-        value_at_path(&response, &["data", "snap"]).and_then(decode_track_items_from_value);
-    let (tracks, source_item_count) = if let Some(items) = direct_items {
-        (
-            parse_track_items(items, usize::try_from(limit).unwrap_or(usize::MAX)),
-            items.len(),
-        )
-    } else if let Some(items) = decoded_snap_items.as_ref() {
-        (
-            parse_track_items(items, usize::try_from(limit).unwrap_or(usize::MAX)),
-            items.len(),
-        )
-    } else if total_track_count == 0 {
-        (Vec::new(), 0)
+    let playlist =
+        parse_playlist_summary_from_response(&response).unwrap_or_else(|| KugouPlaylistSummary {
+            id: list_id.clone(),
+            list_id: list_id.clone(),
+            global_collection_id: None,
+            name: "酷狗歌单".to_string(),
+            track_count: 0,
+            cover_img_url: None,
+            creator_nickname: credential
+                .profile
+                .as_ref()
+                .map(|profile| profile.nickname.clone()),
+            subscribed: false,
+            update_time: None,
+        });
+    let total_track_count = kugou_playlist_total_track_count(&response, &playlist);
+    let limit_usize = usize::try_from(limit).unwrap_or(usize::MAX);
+    let (tracks, total_track_count, truncated) = if total_track_count > 0 {
+        if let Some((original_start, original_end)) =
+            reverse_playlist_page_bounds(total_track_count, page, limit)
+        {
+            let first_upstream_page = original_start / limit + 1;
+            let last_upstream_page = (original_end.saturating_sub(1)) / limit + 1;
+            let mut selected_items = Vec::new();
+
+            for upstream_page in first_upstream_page..=last_upstream_page {
+                let page_response = if upstream_page == 1 {
+                    response.clone()
+                } else {
+                    let page_response = request_kugou_playlist_detail_page(
+                        &list_id,
+                        &user_id,
+                        &token,
+                        upstream_page,
+                        limit,
+                        &mut credential.cookies,
+                    )?;
+                    ensure_kugou_success(&page_response, "酷狗歌单歌曲读取")?;
+                    page_response
+                };
+                let Some(items) =
+                    kugou_playlist_track_items_from_response(&page_response, track_paths)
+                else {
+                    return Err(format!(
+                        "酷狗歌单歌曲响应缺少歌曲列表字段（{}）。",
+                        describe_response_shape(&page_response)
+                    ));
+                };
+                let upstream_start = upstream_page.saturating_sub(1).saturating_mul(limit);
+                for (index, item) in items.into_iter().enumerate() {
+                    let original_index = upstream_start.saturating_add(index as u64);
+                    if original_index >= original_start && original_index < original_end {
+                        selected_items.push(item);
+                    }
+                }
+            }
+
+            let tracks = parse_playlist_track_items_reversed(&selected_items, limit_usize);
+            let loaded_end = page
+                .saturating_sub(1)
+                .saturating_mul(limit)
+                .saturating_add(selected_items.len().max(tracks.len()) as u64);
+            (tracks, total_track_count, loaded_end < total_track_count)
+        } else {
+            (Vec::new(), total_track_count, false)
+        }
     } else {
-        return Err(format!(
-            "酷狗歌单歌曲响应缺少歌曲列表字段（{}）。",
-            describe_response_shape(&response)
-        ));
-    };
-    let total_track_count = if total_track_count == 0 {
-        page.saturating_sub(1)
+        let page_response = if page == 1 {
+            response.clone()
+        } else {
+            let page_response = request_kugou_playlist_detail_page(
+                &list_id,
+                &user_id,
+                &token,
+                page,
+                limit,
+                &mut credential.cookies,
+            )?;
+            ensure_kugou_success(&page_response, "酷狗歌单歌曲读取")?;
+            page_response
+        };
+        let Some(items) = kugou_playlist_track_items_from_response(&page_response, track_paths)
+        else {
+            return Err(format!(
+                "酷狗歌单歌曲响应缺少歌曲列表字段（{}）。",
+                describe_response_shape(&page_response)
+            ));
+        };
+        let tracks = parse_playlist_track_items_reversed(&items, limit_usize);
+        let total_track_count = page
+            .saturating_sub(1)
             .saturating_mul(limit)
-            .saturating_add(tracks.len() as u64)
-    } else {
-        total_track_count
+            .saturating_add(items.len().max(tracks.len()) as u64);
+        let truncated = items.len() > tracks.len() || items.len() as u64 >= limit;
+        (tracks, total_track_count, truncated)
     };
-    let page_end = page
-        .saturating_sub(1)
-        .saturating_mul(limit)
-        .saturating_add(source_item_count.max(tracks.len()) as u64);
-    let truncated = source_item_count > tracks.len() || page_end < total_track_count;
+    write_credential(app, &credential)?;
     let message = if truncated {
         format!(
             "已读取第 {} 页 {} 首酷狗歌单歌曲，共 {} 首，可继续加载。",
@@ -740,6 +791,295 @@ pub fn playlist_detail(
         tracks,
         total_track_count,
         truncated,
+        message,
+    })
+}
+
+pub fn recommended_playlists(
+    app: &AppHandle,
+    page: Option<u64>,
+    limit: Option<u64>,
+) -> Result<KugouRecommendedPlaylists, String> {
+    let page = page.unwrap_or(1).clamp(1, 50);
+    let limit = limit.unwrap_or(30).clamp(1, 60);
+    let mut credential = read_credential(app)?;
+    let mut cookies = credential
+        .as_ref()
+        .map(|credential| credential.cookies.clone())
+        .unwrap_or_else(init_device_cookies);
+    let user_id = cookies
+        .get("userid")
+        .cloned()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "0".to_string());
+    let date_time = current_epoch_seconds().to_string();
+    let body = json!({
+        "appid": KUGOU_APPID,
+        "mid": cookies.get("KUGOU_API_MID").cloned().unwrap_or_else(|| "-".to_string()),
+        "clientver": KUGOU_CLIENTVER,
+        "platform": "android",
+        "clienttime": date_time,
+        "userid": user_id,
+        "module_id": 1,
+        "page": page,
+        "pagesize": limit,
+        "key": sign_params_key(&date_time),
+        "special_recommend": {
+            "withtag": 1,
+            "withsong": 1,
+            "sort": 1,
+            "ugc": 1,
+            "is_selected": 0,
+            "withrecommend": 1,
+            "area_code": 1,
+            "categoryid": 0,
+        },
+        "req_multi": 1,
+        "retrun_min": 5,
+        "return_special_falg": 1,
+    });
+    let response = kugou_android_post_json(
+        KUGOU_GATEWAY_BASE,
+        "/v2/special_recommend",
+        BTreeMap::new(),
+        body,
+        &mut cookies,
+        Some("specialrec.service.kugou.com"),
+    )?;
+    if let Some(credential) = credential.as_mut() {
+        credential.cookies = cookies;
+        write_credential(app, credential)?;
+    }
+    ensure_kugou_success(&response, "酷狗推荐歌单读取")?;
+
+    let items = first_playlist_array_at_paths(
+        &response,
+        &[
+            &["data", "special_recommend"],
+            &["data", "special_recommend", "info"],
+            &["data", "special_recommend", "list"],
+            &["data", "info"],
+            &["data", "list"],
+            &["data", "lists"],
+            &["data", "playlist"],
+            &["special_recommend"],
+            &["info"],
+            &["list"],
+        ],
+    )
+    .or_else(|| find_playlist_array(&response))
+    .ok_or_else(|| {
+        format!(
+            "酷狗推荐歌单响应缺少列表字段（{}）。",
+            describe_response_shape(&response)
+        )
+    })?;
+    let playlists = items
+        .iter()
+        .filter_map(parse_playlist_summary)
+        .take(MAX_KUGOU_RECOMMENDED_PLAYLISTS)
+        .collect::<Vec<_>>();
+    let response_data = response.get("data").unwrap_or(&Value::Null);
+    let reported_total = value_as_u64(response_data, "total")
+        .or_else(|| value_as_u64(response_data, "count"))
+        .or_else(|| value_as_u64(response_data, "total_count"));
+    let loaded_end = page
+        .saturating_sub(1)
+        .saturating_mul(limit)
+        .saturating_add(playlists.len() as u64);
+    let total = reported_total.unwrap_or(loaded_end);
+    let truncated = reported_total
+        .map(|total| loaded_end < total)
+        .unwrap_or_else(|| playlists.len() as u64 >= limit);
+    let message = if playlists.is_empty() {
+        "没有读取到酷狗推荐歌单。".to_string()
+    } else if truncated {
+        format!(
+            "已读取第 {page} 页 {} 个酷狗推荐歌单，可继续加载。",
+            playlists.len()
+        )
+    } else {
+        format!("已读取第 {page} 页 {} 个酷狗推荐歌单。", playlists.len())
+    };
+
+    Ok(KugouRecommendedPlaylists {
+        playlists,
+        total,
+        page,
+        truncated,
+        message,
+    })
+}
+
+pub fn recommended_playlist_detail(
+    app: &AppHandle,
+    playlist_id: String,
+    page: Option<u64>,
+    limit: Option<u64>,
+) -> Result<KugouPlaylistDetail, String> {
+    let playlist_id = normalize_list_id(&playlist_id)?;
+    let (page, limit) = normalize_playlist_detail_paging(page, limit);
+    let mut credential = read_credential(app)?;
+    let mut cookies = credential
+        .as_ref()
+        .map(|credential| credential.cookies.clone())
+        .unwrap_or_else(init_device_cookies);
+    let playlist =
+        request_public_playlist_summary(&playlist_id, &mut cookies).unwrap_or_else(|_| {
+            KugouPlaylistSummary {
+                id: playlist_id.clone(),
+                list_id: playlist_id.clone(),
+                global_collection_id: Some(playlist_id.clone()),
+                name: "酷狗推荐歌单".to_string(),
+                track_count: 0,
+                cover_img_url: None,
+                creator_nickname: None,
+                subscribed: false,
+                update_time: None,
+            }
+        });
+    let response = request_public_playlist_track_page(&playlist_id, page, limit, &mut cookies)?;
+    if let Some(credential) = credential.as_mut() {
+        credential.cookies = cookies;
+        write_credential(app, credential)?;
+    }
+    ensure_kugou_success(&response, "酷狗推荐歌单歌曲读取")?;
+    let track_paths: &[&[&str]] = &[
+        &["data", "info"],
+        &["data", "song_list"],
+        &["data", "songlist"],
+        &["data", "songs"],
+        &["data", "files"],
+        &["data", "list"],
+        &["data", "lists"],
+        &["data", "items"],
+        &["data", "data"],
+        &["info"],
+        &["song_list"],
+        &["songlist"],
+        &["songs"],
+    ];
+    let Some(items) = kugou_playlist_track_items_from_response(&response, track_paths) else {
+        return Err(format!(
+            "酷狗推荐歌单歌曲响应缺少歌曲列表字段（{}）。",
+            describe_response_shape(&response)
+        ));
+    };
+    let limit_usize = usize::try_from(limit).unwrap_or(usize::MAX);
+    let tracks = items
+        .iter()
+        .filter_map(parse_kugou_track)
+        .take(limit_usize)
+        .collect::<Vec<_>>();
+    let response_data = response.get("data").unwrap_or(&Value::Null);
+    let total_track_count = value_as_u64(response_data, "total")
+        .or_else(|| value_as_u64(response_data, "count"))
+        .or_else(|| value_as_u64(response_data, "total_count"))
+        .or_else(|| value_as_u64(response_data, "song_count"))
+        .or_else(|| (playlist.track_count > 0).then_some(playlist.track_count))
+        .unwrap_or_else(|| page.saturating_sub(1).saturating_mul(limit) + tracks.len() as u64);
+    let loaded_end = page
+        .saturating_sub(1)
+        .saturating_mul(limit)
+        .saturating_add(items.len().max(tracks.len()) as u64);
+    let truncated = loaded_end < total_track_count || items.len() > tracks.len();
+    let message = if truncated {
+        format!(
+            "已读取第 {} 页 {} 首酷狗推荐歌单歌曲，共 {} 首，可继续加载。",
+            page,
+            tracks.len(),
+            total_track_count
+        )
+    } else {
+        format!(
+            "已读取第 {} 页 {} 首酷狗推荐歌单歌曲，共 {} 首。",
+            page,
+            tracks.len(),
+            total_track_count
+        )
+    };
+
+    Ok(KugouPlaylistDetail {
+        playlist,
+        tracks,
+        total_track_count,
+        truncated,
+        message,
+    })
+}
+
+pub fn daily_recommended_songs(app: &AppHandle) -> Result<KugouSearchResult, String> {
+    let mut credential = read_credential(app)?;
+    let mut cookies = credential
+        .as_ref()
+        .map(|credential| credential.cookies.clone())
+        .unwrap_or_else(init_device_cookies);
+    let user_id = cookies
+        .get("userid")
+        .cloned()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "0".to_string());
+    let response = kugou_android_post_json(
+        KUGOU_GATEWAY_BASE,
+        "/everyday_song_recommend",
+        BTreeMap::new(),
+        json!({
+            "platform": "android",
+            "userid": user_id,
+        }),
+        &mut cookies,
+        Some("everydayrec.service.kugou.com"),
+    )?;
+    if let Some(credential) = credential.as_mut() {
+        credential.cookies = cookies;
+        write_credential(app, credential)?;
+    }
+    ensure_kugou_success(&response, "酷狗每日推荐读取")?;
+
+    let track_paths: &[&[&str]] = &[
+        &["data", "song_list"],
+        &["data", "songlist"],
+        &["data", "songs"],
+        &["data", "list"],
+        &["data", "info"],
+        &["data", "daily"],
+        &["data", "recommend"],
+        &["song_list"],
+        &["songlist"],
+        &["songs"],
+        &["list"],
+    ];
+    let items = kugou_playlist_track_items_from_response(&response, track_paths)
+        .or_else(|| find_owned_track_array(&response))
+        .ok_or_else(|| {
+            format!(
+                "酷狗每日推荐响应缺少歌曲列表字段（{}）。",
+                describe_response_shape(&response)
+            )
+        })?;
+    let tracks = items
+        .iter()
+        .filter_map(parse_kugou_track)
+        .take(MAX_KUGOU_SEARCH_LIMIT as usize)
+        .collect::<Vec<_>>();
+    let total = response
+        .get("data")
+        .and_then(|data| {
+            value_as_u64(data, "total")
+                .or_else(|| value_as_u64(data, "count"))
+                .or_else(|| value_as_u64(data, "total_count"))
+        })
+        .unwrap_or(tracks.len() as u64);
+    let message = if tracks.is_empty() {
+        "酷狗每日推荐没有返回可展示歌曲。".to_string()
+    } else {
+        format!("已读取 {} 首酷狗每日推荐歌曲。", tracks.len())
+    };
+
+    Ok(KugouSearchResult {
+        keyword: "每日推荐".to_string(),
+        tracks,
+        total,
         message,
     })
 }
@@ -851,17 +1191,92 @@ pub fn read_lyrics(
     })
 }
 
+pub fn get_song_quality_availability(
+    app: &AppHandle,
+    hash: String,
+    hash_candidates: Option<Vec<String>>,
+    album_audio_id: Option<u64>,
+) -> Result<KugouQualityAvailability, String> {
+    let hashes = normalize_hash_candidates(hash, hash_candidates)?;
+    let mut credential = read_credential(app)?;
+    let mut temporary_cookies = BTreeMap::new();
+    let mut device_warning = None;
+
+    let response = {
+        let cookies = if let Some(credential) = credential.as_mut() {
+            if let (Some(user_id), Some(token)) = (
+                credential
+                    .cookies
+                    .get("userid")
+                    .cloned()
+                    .filter(|value| !value.trim().is_empty()),
+                credential
+                    .cookies
+                    .get("token")
+                    .cloned()
+                    .filter(|value| !value.trim().is_empty()),
+            ) {
+                if let Err(err) = ensure_kugou_device_registered_cookies(
+                    &mut credential.cookies,
+                    &user_id,
+                    &token,
+                ) {
+                    device_warning = Some(err);
+                }
+            } else {
+                ensure_kugou_device_cookie_defaults(&mut credential.cookies);
+            }
+            &mut credential.cookies
+        } else {
+            ensure_kugou_device_cookie_defaults(&mut temporary_cookies);
+            &mut temporary_cookies
+        };
+
+        get_kugou_privilege_lite(&hashes, album_audio_id, cookies)
+    }?;
+
+    if let Some(credential) = credential.as_ref() {
+        write_credential(app, credential)?;
+    }
+
+    let signals = collect_kugou_quality_availability_signals(&response);
+    let diagnostic = kugou_quality_availability_diagnostic(&response, device_warning.as_deref());
+    let qualities = build_kugou_quality_availability_items(&signals);
+
+    Ok(KugouQualityAvailability {
+        hash: hashes.first().cloned().unwrap_or_default(),
+        qualities,
+        message: "已完成酷狗音质可用性预检查。".to_string(),
+        diagnostic,
+    })
+}
+
 pub fn get_song_playback_url(
     app: &AppHandle,
     hash: String,
     hash_candidates: Option<Vec<String>>,
     album_audio_id: Option<u64>,
     audio_id: Option<u64>,
+    playback_quality: Option<String>,
 ) -> Result<KugouPlaybackUrl, String> {
     let hashes = normalize_hash_candidates(hash, hash_candidates)?;
-    let (playback, probe) =
-        get_direct_song_playback_url_with_probe(app, &hashes, album_audio_id, audio_id)?;
-    register_kugou_proxy_session(app, hashes, album_audio_id, audio_id, playback, Some(probe))
+    let quality_preference = normalize_kugou_quality_preference(playback_quality.as_deref());
+    let (playback, probe) = get_direct_song_playback_url_with_probe(
+        app,
+        &hashes,
+        album_audio_id,
+        audio_id,
+        &quality_preference,
+    )?;
+    register_kugou_proxy_session(
+        app,
+        hashes,
+        album_audio_id,
+        audio_id,
+        quality_preference,
+        playback,
+        Some(probe),
+    )
 }
 
 fn get_direct_song_playback_url_with_probe(
@@ -869,6 +1284,7 @@ fn get_direct_song_playback_url_with_probe(
     hashes: &[String],
     album_audio_id: Option<u64>,
     audio_id: Option<u64>,
+    quality_preference: &str,
 ) -> Result<(KugouPlaybackUrl, KugouPlaybackProbe), String> {
     let mut logged_errors = Vec::new();
     let mut legacy_errors = Vec::new();
@@ -884,17 +1300,19 @@ fn get_direct_song_playback_url_with_probe(
                 .filter(|value| !value.trim().is_empty())
                 .is_some()
         {
-            for hash in hashes {
+            for (hash_index, hash) in hashes.iter().enumerate() {
+                let candidate_label = kugou_hash_candidate_label(hash_index, hashes.len());
                 match get_registered_gateway_song_playback_url(
                     hash,
                     album_audio_id,
                     &mut credential,
+                    quality_preference,
                 ) {
                     Ok(playback) => {
                         let probe = probe_kugou_playback_url(&playback.url, playback.size);
                         if probe.likely_preview {
                             logged_errors.push(format!(
-                                "{hash}: 登录态 /v5/url 返回疑似试听片段，{}",
+                                "{candidate_label}: 登录态 /v5/url 返回疑似试听片段，{}",
                                 probe.message
                             ));
                         } else {
@@ -903,8 +1321,13 @@ fn get_direct_song_playback_url_with_probe(
                         }
                     }
                     Err(err) => {
-                        logged_errors.push(format!("{hash}: 登录态 /v5/url 失败：{err}"));
+                        logged_errors
+                            .push(format!("{candidate_label}: 登录态 /v5/url 失败：{err}"));
                     }
+                }
+
+                if quality_preference == "hires" {
+                    continue;
                 }
 
                 match get_logged_in_song_playback_url(
@@ -912,12 +1335,13 @@ fn get_direct_song_playback_url_with_probe(
                     album_audio_id,
                     audio_id,
                     &mut credential,
+                    quality_preference,
                 ) {
                     Ok(playback) => {
                         let probe = probe_kugou_playback_url(&playback.url, playback.size);
                         if probe.likely_preview {
                             logged_errors.push(format!(
-                                "{hash}: 登录态接口返回疑似试听片段，{}",
+                                "{candidate_label}: 登录态接口返回疑似试听片段，{}",
                                 probe.message
                             ));
                             continue;
@@ -926,7 +1350,7 @@ fn get_direct_song_playback_url_with_probe(
                         return Ok((playback, probe));
                     }
                     Err(err) => {
-                        logged_errors.push(format!("{hash}: {err}"));
+                        logged_errors.push(format!("{candidate_label}: {err}"));
                     }
                 }
             }
@@ -934,18 +1358,25 @@ fn get_direct_song_playback_url_with_probe(
         }
     }
 
-    for hash in hashes {
-        match get_legacy_song_playback_url(hash) {
+    if quality_preference == "hires" {
+        return Err(kugou_hires_playback_failure_message(&logged_errors));
+    }
+
+    for (hash_index, hash) in hashes.iter().enumerate() {
+        let candidate_label = kugou_hash_candidate_label(hash_index, hashes.len());
+        match get_legacy_song_playback_url(hash, quality_preference) {
             Ok(playback) => {
                 let probe = probe_kugou_playback_url(&playback.url, playback.size);
                 if probe.likely_preview {
-                    legacy_errors
-                        .push(format!("{hash}: 旧接口返回疑似试听片段，{}", probe.message));
+                    legacy_errors.push(format!(
+                        "{candidate_label}: 旧接口返回疑似试听片段，{}",
+                        probe.message
+                    ));
                     continue;
                 }
                 return Ok((playback, probe));
             }
-            Err(err) => legacy_errors.push(format!("{hash}: {err}")),
+            Err(err) => legacy_errors.push(format!("{candidate_label}: {err}")),
         }
     }
 
@@ -980,6 +1411,7 @@ fn register_kugou_proxy_session(
     hashes: Vec<String>,
     album_audio_id: Option<u64>,
     audio_id: Option<u64>,
+    quality_preference: String,
     playback: KugouPlaybackUrl,
     probe: Option<KugouPlaybackProbe>,
 ) -> Result<KugouPlaybackUrl, String> {
@@ -999,6 +1431,7 @@ fn register_kugou_proxy_session(
                 hashes,
                 album_audio_id,
                 audio_id,
+                quality_preference,
                 playback: playback.clone(),
                 probe: probe.clone(),
                 created_at_ms: now_ms,
@@ -1118,6 +1551,7 @@ fn handle_kugou_proxy_connection(
                 &session.hashes,
                 session.album_audio_id,
                 session.audio_id,
+                &session.quality_preference,
             );
             match refreshed {
                 Ok((playback, probe)) => {
@@ -1683,7 +2117,10 @@ fn sanitize_proxy_error(message: &str) -> String {
     }
 }
 
-fn get_legacy_song_playback_url(hash: &str) -> Result<KugouPlaybackUrl, String> {
+fn get_legacy_song_playback_url(
+    hash: &str,
+    quality_preference: &str,
+) -> Result<KugouPlaybackUrl, String> {
     let url = format!(
         "{KUGOU_PLAY_INFO_ENDPOINT}?cmd=playInfo&hash={}",
         url_encode_component(&hash)
@@ -1695,13 +2132,37 @@ fn get_legacy_song_playback_url(hash: &str) -> Result<KugouPlaybackUrl, String> 
             let reason = value_as_string(&body, "error")
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "可能需要会员、版权受限、地区受限或接口暂不可用".to_string());
-            format!("酷狗播放链接为空：{reason}")
+            format!(
+                "酷狗播放链接为空：{reason}（{}）",
+                kugou_playback_failure_diagnostic(&body)
+            )
         })?;
+
+    let bitrate = normalize_kugou_bitrate(
+        value_as_u64(&body, "bitRate").or_else(|| value_as_u64(&body, "bitrate")),
+    );
+    let file_type = value_as_string(&body, "extName").filter(|value| !value.is_empty());
+    let observed_quality_level = observed_kugou_quality_level(&body, bitrate, file_type.as_deref());
+    if !kugou_observed_quality_satisfies_preference(
+        quality_preference,
+        observed_quality_level.as_deref(),
+    ) {
+        return Err(format!(
+            "{}（{}）",
+            kugou_quality_mismatch_message(quality_preference, observed_quality_level.as_deref()),
+            kugou_playback_failure_diagnostic(&body)
+        ));
+    }
+    let quality_level = observed_quality_level
+        .or_else(|| resolve_kugou_quality_level(&body, None, bitrate, file_type.as_deref()));
+    let quality_label = kugou_quality_label_string(quality_level.as_deref());
 
     Ok(KugouPlaybackUrl {
         hash: hash.to_string(),
         url: play_url,
-        bitrate: value_as_u64(&body, "bitRate").or_else(|| value_as_u64(&body, "bitrate")),
+        quality_level,
+        quality_label,
+        bitrate,
         duration_ms: value_as_u64(&body, "timeLength")
             .filter(|value| *value > 0)
             .map(|value| value * 1000)
@@ -1709,7 +2170,7 @@ fn get_legacy_song_playback_url(hash: &str) -> Result<KugouPlaybackUrl, String> 
                 body.get("extra")
                     .and_then(|extra| value_as_u64(extra, "128timelength"))
             }),
-        file_type: value_as_string(&body, "extName").filter(|value| !value.is_empty()),
+        file_type,
         size: value_as_u64(&body, "fileSize").filter(|value| *value > 0),
         message: "已获取酷狗临时播放地址。".to_string(),
         proxy_diagnostic: None,
@@ -1721,6 +2182,7 @@ fn get_registered_gateway_song_playback_url(
     hash: &str,
     album_audio_id: Option<u64>,
     credential: &mut KugouCredential,
+    quality_preference: &str,
 ) -> Result<KugouPlaybackUrl, String> {
     let user_id = credential
         .cookies
@@ -1738,87 +2200,134 @@ fn get_registered_gateway_song_playback_url(
 
     let is_lite = true;
     let request_hash = hash.to_ascii_lowercase();
-    let mut params = BTreeMap::new();
-    params.insert("album_id".to_string(), "0".to_string());
-    params.insert("area_code".to_string(), "1".to_string());
-    params.insert("hash".to_string(), request_hash.clone());
-    params.insert("ssa_flag".to_string(), "is_fromtrack".to_string());
-    params.insert("version".to_string(), "11430".to_string());
-    params.insert(
-        "page_id".to_string(),
-        if is_lite { "967177915" } else { "151369488" }.to_string(),
-    );
-    params.insert("quality".to_string(), "high".to_string());
-    params.insert(
-        "album_audio_id".to_string(),
-        album_audio_id.unwrap_or_default().to_string(),
-    );
-    params.insert("behavior".to_string(), "play".to_string());
-    params.insert(
-        "pid".to_string(),
-        if is_lite { "411" } else { "2" }.to_string(),
-    );
-    params.insert("cmd".to_string(), "26".to_string());
-    params.insert("pidversion".to_string(), "3001".to_string());
-    params.insert("IsFreePart".to_string(), "0".to_string());
-    params.insert(
-        "ppage_id".to_string(),
-        if is_lite {
-            "356753938,823673182,967485191"
-        } else {
-            "463467626,350369493,788954147"
-        }
-        .to_string(),
-    );
-    params.insert("cdnBackup".to_string(), "1".to_string());
-    params.insert("module".to_string(), String::new());
-    params.insert("clientver".to_string(), "11430".to_string());
+    let mut quality_errors = Vec::new();
+    for quality in kugou_gateway_quality_candidates(quality_preference) {
+        let mut params = BTreeMap::new();
+        params.insert("album_id".to_string(), "0".to_string());
+        params.insert("area_code".to_string(), "1".to_string());
+        params.insert("hash".to_string(), request_hash.clone());
+        params.insert("ssa_flag".to_string(), "is_fromtrack".to_string());
+        params.insert("version".to_string(), "11430".to_string());
+        params.insert(
+            "page_id".to_string(),
+            if is_lite { "967177915" } else { "151369488" }.to_string(),
+        );
+        params.insert("quality".to_string(), quality.to_string());
+        params.insert(
+            "album_audio_id".to_string(),
+            album_audio_id.unwrap_or_default().to_string(),
+        );
+        params.insert("behavior".to_string(), "play".to_string());
+        params.insert(
+            "pid".to_string(),
+            if is_lite { "411" } else { "2" }.to_string(),
+        );
+        params.insert("cmd".to_string(), "26".to_string());
+        params.insert("pidversion".to_string(), "3001".to_string());
+        params.insert("IsFreePart".to_string(), "0".to_string());
+        params.insert(
+            "ppage_id".to_string(),
+            if is_lite {
+                "356753938,823673182,967485191"
+            } else {
+                "463467626,350369493,788954147"
+            }
+            .to_string(),
+        );
+        params.insert("cdnBackup".to_string(), "1".to_string());
+        params.insert("module".to_string(), String::new());
+        params.insert("clientver".to_string(), "11430".to_string());
 
-    let response = kugou_android_get_json_with_client(
-        KUGOU_GATEWAY_BASE,
-        "/v5/url",
-        params,
-        credential,
-        Some("trackercdn.kugou.com"),
-        Some(&request_hash),
-        KUGOU_APPID,
-        KUGOU_CLIENTVER,
-        KUGOU_SIGNATURE_ANDROID_SECRET,
-    )?;
-    let play_url = find_play_url(&response).ok_or_else(|| {
-        let reason = playback_failure_reason(&response).unwrap_or_else(|| {
-            "可能需要会员、版权受限、地区受限、设备注册未通过或该音质不可用".to_string()
-        });
-        format!(
-            "酷狗 /v5/url 播放链接为空：{reason}（{}）",
-            describe_response_shape(&response)
-        )
-    })?;
+        let response = match kugou_android_get_json_with_client(
+            KUGOU_GATEWAY_BASE,
+            "/v5/url",
+            params,
+            credential,
+            Some("trackercdn.kugou.com"),
+            Some(&request_hash),
+            KUGOU_APPID,
+            KUGOU_CLIENTVER,
+            KUGOU_SIGNATURE_ANDROID_SECRET,
+        ) {
+            Ok(response) => response,
+            Err(err) => {
+                quality_errors.push(format!("{quality}: {err}"));
+                continue;
+            }
+        };
+        let Some(play_url) = find_play_url(&response) else {
+            let reason = playback_failure_reason(&response).unwrap_or_else(|| {
+                "可能需要会员、版权受限、地区受限、设备注册未通过或该音质不可用".to_string()
+            });
+            quality_errors.push(format!(
+                "{quality}: {reason}（{}）",
+                kugou_playback_failure_diagnostic(&response)
+            ));
+            continue;
+        };
 
-    Ok(KugouPlaybackUrl {
-        hash: hash.to_string(),
-        url: play_url,
-        bitrate: find_u64_by_keys(&response, &["bitrate", "bitRate", "quality"]),
-        duration_ms: find_u64_by_keys(
+        let bitrate = normalize_kugou_bitrate(find_u64_by_keys(
             &response,
-            &[
-                "duration_ms",
-                "durationMs",
-                "timelength",
-                "timeLength",
-                "time",
-            ],
-        )
-        .filter(|value| *value > 0)
-        .map(|value| if value > 10_000 { value } else { value * 1000 }),
-        file_type: find_string_by_keys(&response, &["file_type", "fileType", "ext", "extName"])
-            .filter(|value| !value.is_empty()),
-        size: find_u64_by_keys(&response, &["size", "fileSize", "filesize"])
-            .filter(|value| *value > 0),
-        message: "已通过酷狗登录态设备注册接口获取临时播放地址。".to_string(),
-        proxy_diagnostic: None,
-        proxy_likely_preview: false,
-    })
+            &["bitrate", "bitRate", "quality"],
+        ));
+        let file_type =
+            find_string_by_keys(&response, &["file_type", "fileType", "ext", "extName"])
+                .filter(|value| !value.is_empty());
+        let observed_quality_level =
+            observed_kugou_quality_level(&response, bitrate, file_type.as_deref());
+        if !kugou_observed_quality_satisfies_preference(
+            quality_preference,
+            observed_quality_level.as_deref(),
+        ) {
+            quality_errors.push(format!(
+                "{quality}: {}（{}）",
+                kugou_quality_mismatch_message(
+                    quality_preference,
+                    observed_quality_level.as_deref()
+                ),
+                kugou_playback_failure_diagnostic(&response)
+            ));
+            continue;
+        }
+        let quality_level = observed_quality_level.or_else(|| {
+            resolve_kugou_quality_level(&response, Some(quality), bitrate, file_type.as_deref())
+        });
+        let quality_label = kugou_quality_label_string(quality_level.as_deref());
+
+        return Ok(KugouPlaybackUrl {
+            hash: hash.to_string(),
+            url: play_url,
+            quality_level,
+            quality_label,
+            bitrate,
+            duration_ms: find_u64_by_keys(
+                &response,
+                &[
+                    "duration_ms",
+                    "durationMs",
+                    "timelength",
+                    "timeLength",
+                    "time",
+                ],
+            )
+            .filter(|value| *value > 0)
+            .map(|value| if value > 10_000 { value } else { value * 1000 }),
+            file_type,
+            size: find_u64_by_keys(&response, &["size", "fileSize", "filesize"])
+                .filter(|value| *value > 0),
+            message: format!(
+                "已通过酷狗登录态设备注册接口获取临时播放地址（{}）。",
+                kugou_quality_label(quality)
+            ),
+            proxy_diagnostic: None,
+            proxy_likely_preview: false,
+        });
+    }
+
+    Err(format!(
+        "酷狗 /v5/url 播放链接为空：{}",
+        summarize_playback_attempt_errors("已尝试音质候选", &quality_errors)
+    ))
 }
 
 fn get_logged_in_song_playback_url(
@@ -1826,6 +2335,7 @@ fn get_logged_in_song_playback_url(
     album_audio_id: Option<u64>,
     audio_id: Option<u64>,
     credential: &mut KugouCredential,
+    quality_preference: &str,
 ) -> Result<KugouPlaybackUrl, String> {
     let mut token_refreshed_for_missing_vip = false;
     let mut token_refreshed_after_error = false;
@@ -1896,8 +2406,14 @@ fn get_logged_in_song_playback_url(
             &tracker_key,
             collect_time,
             vip_type_number,
+            quality_preference,
         );
-        let mut last_error = None;
+        if bodies.is_empty() {
+            return Err(kugou_priv_url_unsupported_quality_message(
+                quality_preference,
+            ));
+        }
+        let mut body_errors = Vec::new();
         for (label, body) in bodies {
             let response = kugou_android_post_json_with_client(
                 KUGOU_TRACKER_BASE,
@@ -1913,24 +2429,31 @@ fn get_logged_in_song_playback_url(
             match ensure_kugou_success(&response, "酷狗会员播放链接获取") {
                 Ok(()) => break 'request response,
                 Err(err) if is_kugou_unmarshal_error(&response) => {
-                    last_error = Some(format!("{label}: {err}"));
+                    body_errors.push(format!(
+                        "{label}: {}",
+                        append_kugou_playback_diagnostic(err, &response)
+                    ));
                 }
                 Err(err) if is_kugou_token_api_error(&response) => {
                     if token_refreshed_after_error {
                         return Err(format!(
-                            "酷狗会员播放 token 刷新后仍无效，请清除酷狗登录后重新扫码。原始错误：{err}"
+                            "酷狗会员播放 token 刷新后仍无效，请清除酷狗登录后重新扫码。原始错误：{}",
+                            append_kugou_playback_diagnostic(err, &response)
                         ));
                     }
                     token_refreshed_after_error = true;
                     refresh_kugou_login_token(credential)?;
                     continue 'request;
                 }
-                Err(err) => return Err(err),
+                Err(err) => return Err(append_kugou_playback_diagnostic(err, &response)),
             }
         }
 
-        return Err(last_error
-            .unwrap_or_else(|| "酷狗会员播放链接获取失败：参数格式不被接口接受。".to_string()));
+        return Err(if body_errors.is_empty() {
+            "酷狗会员播放链接获取失败：请求体候选均未返回可用播放地址。".to_string()
+        } else {
+            summarize_playback_attempt_errors("酷狗会员播放请求体不被接口接受", &body_errors)
+        });
     };
     let play_url = find_play_url(&response).ok_or_else(|| {
         let reason = playback_failure_reason(&response).unwrap_or_else(|| {
@@ -1938,17 +2461,40 @@ fn get_logged_in_song_playback_url(
         });
         format!(
             "酷狗会员播放链接为空：{reason}（{}）",
-            describe_response_shape(&response)
+            kugou_playback_failure_diagnostic(&response)
         )
     })?;
+
+    let bitrate = normalize_kugou_bitrate(find_u64_by_keys(
+        &response,
+        &["bitrate", "bitRate", "quality", "audio_quality"],
+    ));
+    let file_type = find_string_by_keys(&response, &["file_type", "fileType", "ext", "extName"])
+        .filter(|value| !value.is_empty());
+    let observed_quality_level =
+        observed_kugou_quality_level(&response, bitrate, file_type.as_deref());
+    if !kugou_observed_quality_satisfies_preference(
+        quality_preference,
+        observed_quality_level.as_deref(),
+    ) {
+        return Err(format!(
+            "{}（{}）",
+            kugou_quality_mismatch_message(quality_preference, observed_quality_level.as_deref()),
+            kugou_playback_failure_diagnostic(&response)
+        ));
+    }
+    let quality_level = observed_quality_level.or_else(|| match quality_preference {
+        "highest" => None,
+        value => normalize_kugou_returned_quality(value),
+    });
+    let quality_label = kugou_quality_label_string(quality_level.as_deref());
 
     Ok(KugouPlaybackUrl {
         hash: hash.to_string(),
         url: play_url,
-        bitrate: find_u64_by_keys(
-            &response,
-            &["bitrate", "bitRate", "quality", "audio_quality"],
-        ),
+        quality_level,
+        quality_label,
+        bitrate,
         duration_ms: find_u64_by_keys(
             &response,
             &[
@@ -1961,8 +2507,7 @@ fn get_logged_in_song_playback_url(
         )
         .filter(|value| *value > 0)
         .map(|value| if value > 10_000 { value } else { value * 1000 }),
-        file_type: find_string_by_keys(&response, &["file_type", "fileType", "ext", "extName"])
-            .filter(|value| !value.is_empty()),
+        file_type,
         size: find_u64_by_keys(&response, &["size", "fileSize", "filesize"])
             .filter(|value| *value > 0),
         message: "已通过酷狗登录态获取临时播放地址。".to_string(),
@@ -1981,8 +2526,13 @@ fn playback_request_bodies(
     tracker_key: &str,
     collect_time: u64,
     vip_type: u64,
+    quality_preference: &str,
 ) -> Vec<(&'static str, Value)> {
     let mut attempts = Vec::new();
+    let qualities = kugou_priv_url_quality_candidates(quality_preference);
+    if qualities.is_empty() {
+        return attempts;
+    }
     attempts.push((
         "数值 album_audio_id",
         playback_request_body(
@@ -1995,6 +2545,7 @@ fn playback_request_bodies(
             tracker_key,
             collect_time,
             Value::from(vip_type),
+            &qualities,
         ),
     ));
     if let Some(album_audio_id) = album_audio_id {
@@ -2010,6 +2561,7 @@ fn playback_request_bodies(
                 tracker_key,
                 collect_time,
                 Value::from(vip_type),
+                &qualities,
             ),
         ));
     } else {
@@ -2025,6 +2577,7 @@ fn playback_request_bodies(
                 tracker_key,
                 collect_time,
                 Value::from(vip_type),
+                &qualities,
             ),
         ));
     }
@@ -2041,6 +2594,7 @@ fn playback_request_bodies(
                 tracker_key,
                 collect_time,
                 Value::from(vip_type),
+                &qualities,
             ),
         ));
         if album_audio_id.is_none() {
@@ -2056,6 +2610,7 @@ fn playback_request_bodies(
                     tracker_key,
                     collect_time,
                     Value::from(vip_type),
+                    &qualities,
                 ),
             ));
         }
@@ -2063,7 +2618,7 @@ fn playback_request_bodies(
 
     if let Ok(user_id_number) = user_id.trim().parse::<u64>() {
         attempts.push((
-            "数值 userid",
+            "userid 数字格式",
             playback_request_body(
                 hash,
                 album_audio_id.map(Value::from),
@@ -2074,6 +2629,7 @@ fn playback_request_bodies(
                 tracker_key,
                 collect_time,
                 Value::from(vip_type),
+                &qualities,
             ),
         ));
     }
@@ -2091,6 +2647,7 @@ fn playback_request_body(
     tracker_key: &str,
     collect_time: u64,
     vip: Value,
+    qualities: &[&str],
 ) -> Value {
     let mut resource = serde_json::Map::new();
     if let Some(album_audio_id) = album_audio_id {
@@ -2114,17 +2671,7 @@ fn playback_request_body(
     json!({
         "area_code": "1",
         "behavior": "play",
-        "qualities": [
-            "128",
-            "320",
-            "flac",
-            "high",
-            "multitrack",
-            "viper_atmos",
-            "viper_tape",
-            "viper_clear",
-            "super",
-        ],
+        "qualities": qualities.iter().map(|quality| Value::String((*quality).to_string())).collect::<Vec<_>>(),
         "resource": Value::Object(resource),
         "token": token,
         "tracker_param": {
@@ -2144,6 +2691,495 @@ fn playback_request_body(
         "userid": user_id,
         "vip": vip,
     })
+}
+
+#[derive(Default)]
+struct KugouQualityAvailabilitySignals {
+    available: BTreeSet<String>,
+    unavailable: BTreeSet<String>,
+    reasons: BTreeMap<String, String>,
+    details: BTreeMap<String, String>,
+}
+
+fn get_kugou_privilege_lite(
+    hashes: &[String],
+    album_audio_id: Option<u64>,
+    cookies: &mut BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let appid = KUGOU_APPID.parse::<u64>().unwrap_or(3116);
+    let clientver = KUGOU_CLIENTVER.parse::<u64>().unwrap_or(11440);
+    let resource = hashes
+        .iter()
+        .map(|hash| {
+            json!({
+                "type": "audio",
+                "page_id": 0,
+                "hash": hash.to_ascii_lowercase(),
+                "album_id": 0,
+                "album_audio_id": album_audio_id.unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let qualities = [
+        "128",
+        "320",
+        "flac",
+        "high",
+        "viper_atmos",
+        "viper_tape",
+        "viper_clear",
+        "viper_hifi",
+        "super",
+        "multitrack",
+    ];
+    let body = json!({
+        "appid": appid,
+        "area_code": 1,
+        "behavior": "play",
+        "clientver": clientver,
+        "need_hash_offset": 1,
+        "relate": 1,
+        "support_verify": 1,
+        "resource": resource,
+        "qualities": qualities,
+    });
+    let response = kugou_android_post_json_with_client(
+        KUGOU_GATEWAY_BASE,
+        "/v2/get_res_privilege/lite",
+        BTreeMap::new(),
+        body,
+        cookies,
+        Some("media.store.kugou.com"),
+        KUGOU_APPID,
+        KUGOU_CLIENTVER,
+        KUGOU_SIGNATURE_ANDROID_SECRET,
+    )?;
+    ensure_kugou_success(&response, "酷狗音质可用性预检")
+        .map_err(|err| append_kugou_playback_diagnostic(err, &response))?;
+    Ok(response)
+}
+
+fn build_kugou_quality_availability_items(
+    signals: &KugouQualityAvailabilitySignals,
+) -> Vec<KugouQualityAvailabilityItem> {
+    [
+        "viper_clear",
+        "super",
+        "viper_hifi",
+        "viper_atmos",
+        "hires",
+        "flac",
+        "high",
+        "standard",
+    ]
+    .into_iter()
+    .map(|quality| {
+        let aliases = kugou_quality_availability_aliases(quality);
+        let matched_available = aliases
+            .iter()
+            .find(|alias| signals.available.iter().any(|quality| quality == **alias))
+            .copied();
+        let matched_unavailable = aliases
+            .iter()
+            .find(|alias| signals.unavailable.iter().any(|quality| quality == **alias))
+            .copied();
+        let (status, reason, detail) = if let Some(alias) = matched_available {
+            (
+                "available".to_string(),
+                None,
+                signals.details.get(alias).cloned(),
+            )
+        } else if quality == "hires" {
+            (
+                "unavailable".to_string(),
+                Some(
+                    "当前酷狗可用性接口和会员接口都不能验证 Hi-Res 播放源，已禁用该档位，避免把低音质链接当作 Hi-Res。"
+                        .to_string(),
+                ),
+                Some("Hi-Res 仍只能依赖登录态 /v5/url 返回授权播放源；当前预检没有发现可验证 Hi-Res 能力。".to_string()),
+            )
+        } else if let Some(alias) = matched_unavailable {
+            (
+                "unavailable".to_string(),
+                Some(
+                    signals
+                        .reasons
+                        .get(alias)
+                        .cloned()
+                        .unwrap_or_else(|| "酷狗接口返回该档位当前不可用。".to_string()),
+                ),
+                signals.details.get(alias).cloned(),
+            )
+        } else {
+            (
+                "unknown".to_string(),
+                Some("酷狗接口没有明确返回该档位状态，播放时仍会按授权结果严格验证。".to_string()),
+                None,
+            )
+        };
+
+        KugouQualityAvailabilityItem {
+            quality: quality.to_string(),
+            label: kugou_quality_label(quality).to_string(),
+            status,
+            reason,
+            detail,
+        }
+    })
+    .collect()
+}
+
+fn collect_kugou_quality_availability_signals(response: &Value) -> KugouQualityAvailabilitySignals {
+    let mut signals = KugouQualityAvailabilitySignals::default();
+    visit_kugou_quality_availability_value(response, None, &mut signals);
+    signals
+}
+
+fn visit_kugou_quality_availability_value(
+    value: &Value,
+    quality_context: Option<&str>,
+    signals: &mut KugouQualityAvailabilitySignals,
+) {
+    match value {
+        Value::Object(map) => {
+            let object_quality = first_string(
+                value,
+                &[
+                    "quality",
+                    "quality_type",
+                    "qualityType",
+                    "quality_level",
+                    "qualityLevel",
+                    "level",
+                    "level_name",
+                    "levelName",
+                    "audio_quality",
+                    "audioQuality",
+                    "audio_quality_name",
+                    "audioQualityName",
+                ],
+            )
+            .and_then(|quality| normalize_kugou_availability_quality(&quality));
+            let context = object_quality.as_deref().or(quality_context);
+            if let Some(quality) = context {
+                if let Some((available, reason)) = quality_object_availability(value) {
+                    record_kugou_quality_signal(signals, quality, available, reason, value);
+                }
+            }
+
+            for (key, field) in map {
+                if let Some(quality) = quality_from_availability_key(key) {
+                    if let Some((available, reason)) =
+                        quality_field_availability(key, field, quality.as_str())
+                    {
+                        record_kugou_quality_signal(signals, &quality, available, reason, field);
+                    }
+                    visit_kugou_quality_availability_value(field, Some(&quality), signals);
+                } else {
+                    visit_kugou_quality_availability_value(field, context, signals);
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                visit_kugou_quality_availability_value(item, quality_context, signals);
+            }
+        }
+        Value::String(text) => {
+            if let Some(parsed) = parse_json_string_value(text) {
+                visit_kugou_quality_availability_value(&parsed, quality_context, signals);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn record_kugou_quality_signal(
+    signals: &mut KugouQualityAvailabilitySignals,
+    quality: &str,
+    available: bool,
+    reason: Option<String>,
+    source: &Value,
+) {
+    let Some(quality) = normalize_kugou_availability_quality(quality) else {
+        return;
+    };
+    if available {
+        signals.available.insert(quality.clone());
+        signals.unavailable.remove(&quality);
+    } else if !signals.available.contains(&quality) {
+        signals.unavailable.insert(quality.clone());
+    }
+    if let Some(reason) = reason.filter(|value| !value.trim().is_empty()) {
+        signals.reasons.insert(quality.clone(), reason);
+    }
+    signals
+        .details
+        .entry(quality)
+        .or_insert_with(|| summarize_diagnostic_value(source));
+}
+
+fn quality_object_availability(value: &Value) -> Option<(bool, Option<String>)> {
+    if has_non_empty_field(
+        value,
+        &["hash", "file_hash", "fileHash", "hash_value", "hashValue"],
+    ) || has_positive_field(
+        value,
+        &[
+            "size",
+            "fileSize",
+            "filesize",
+            "file_size",
+            "bitrate",
+            "bitRate",
+        ],
+    ) {
+        return Some((true, None));
+    }
+
+    if has_positive_field(value, &["pay_block_tpl", "payBlockTpl", "pay_block"]) {
+        return Some((false, Some("该档位需要会员或付费授权。".to_string())));
+    }
+
+    for key in [
+        "status",
+        "priv_status",
+        "privStatus",
+        "auth_status",
+        "authStatus",
+    ] {
+        let Some(field) = field_value(value, key) else {
+            continue;
+        };
+        if let Some(available) = availability_from_scalar(field) {
+            return Some((
+                available,
+                if available {
+                    None
+                } else {
+                    Some("酷狗接口返回该档位当前不可用。".to_string())
+                },
+            ));
+        }
+    }
+
+    for key in ["privilege", "privilege2", "privilege_type", "privilegeType"] {
+        let Some(field) = field_value(value, key) else {
+            continue;
+        };
+        if let Some(value) = scalar_u64(field) {
+            return Some((
+                value > 0,
+                if value > 0 {
+                    None
+                } else {
+                    Some("酷狗接口返回该档位权限为 0。".to_string())
+                },
+            ));
+        }
+    }
+
+    None
+}
+
+fn quality_field_availability(
+    key: &str,
+    value: &Value,
+    quality: &str,
+) -> Option<(bool, Option<String>)> {
+    let key = key.to_ascii_lowercase();
+    if key.contains("hash") {
+        return Some((
+            non_empty_scalar(value),
+            if non_empty_scalar(value) {
+                None
+            } else {
+                Some(format!(
+                    "酷狗接口没有返回{}文件 hash。",
+                    kugou_quality_label(quality)
+                ))
+            },
+        ));
+    }
+    if key.contains("filesize")
+        || key.contains("file_size")
+        || key.ends_with("size")
+        || key.contains("bitrate")
+    {
+        let available = scalar_u64(value).map(|number| number > 0).unwrap_or(false);
+        return Some((
+            available,
+            if available {
+                None
+            } else {
+                Some(format!(
+                    "酷狗接口没有返回{}文件大小。",
+                    kugou_quality_label(quality)
+                ))
+            },
+        ));
+    }
+    if key.contains("privilege") || key.contains("status") {
+        if let Some(available) = availability_from_scalar(value) {
+            return Some((
+                available,
+                if available {
+                    None
+                } else {
+                    Some(format!(
+                        "酷狗接口返回{}当前不可用。",
+                        kugou_quality_label(quality)
+                    ))
+                },
+            ));
+        }
+    }
+
+    None
+}
+
+fn quality_from_availability_key(key: &str) -> Option<String> {
+    let lowered = key.to_ascii_lowercase();
+    let compact = lowered
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>();
+    let quality_key = [
+        "viper_atmos",
+        "viper_tape",
+        "viper_clear",
+        "viper_hifi",
+        "multitrack",
+        "hires",
+        "hi-res",
+        "lossless",
+        "flac",
+        "super",
+        "high",
+        "320",
+        "128",
+        "standard",
+    ]
+    .into_iter()
+    .find(|quality| {
+        let token = quality
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .collect::<String>();
+        compact.contains(&token)
+    })?;
+    normalize_kugou_availability_quality(quality_key)
+}
+
+fn normalize_kugou_availability_quality(value: &str) -> Option<String> {
+    normalize_kugou_returned_quality(value).map(|quality| match quality.as_str() {
+        "lossless" => "flac".to_string(),
+        "exhigh" | "320" => "320".to_string(),
+        "standard" | "128" => "128".to_string(),
+        other => other.to_string(),
+    })
+}
+
+fn kugou_quality_availability_aliases(quality: &str) -> Vec<&'static str> {
+    match quality {
+        "standard" => vec!["128", "standard"],
+        "high" => vec!["high", "320", "exhigh"],
+        "flac" | "lossless" => vec!["flac", "lossless"],
+        "hires" => vec!["hires"],
+        "super" => vec!["super"],
+        "viper_clear" => vec!["viper_clear"],
+        "viper_hifi" => vec!["viper_hifi"],
+        "viper_tape" => vec!["viper_tape"],
+        "viper_atmos" => vec!["viper_atmos"],
+        "multitrack" => vec!["multitrack"],
+        _ => Vec::new(),
+    }
+}
+
+fn availability_from_scalar(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(value) => Some(*value),
+        Value::Number(number) => number.as_i64().map(|number| number > 0),
+        Value::String(text) => {
+            let text = text.trim().to_ascii_lowercase();
+            if text.is_empty() {
+                return Some(false);
+            }
+            if [
+                "0",
+                "false",
+                "no",
+                "deny",
+                "denied",
+                "block",
+                "blocked",
+                "unavailable",
+            ]
+            .contains(&text.as_str())
+            {
+                return Some(false);
+            }
+            if ["1", "true", "yes", "allow", "allowed", "available", "ok"].contains(&text.as_str())
+            {
+                return Some(true);
+            }
+            text.parse::<i64>().ok().map(|number| number > 0)
+        }
+        _ => None,
+    }
+}
+
+fn scalar_u64(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) => text.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
+fn non_empty_scalar(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Number(number) => number.as_u64().map(|value| value > 0).unwrap_or(true),
+        Value::Bool(value) => *value,
+        Value::Array(items) => !items.is_empty(),
+        Value::Object(map) => !map.is_empty(),
+        Value::Null => false,
+    }
+}
+
+fn has_non_empty_field(value: &Value, keys: &[&str]) -> bool {
+    keys.iter().any(|key| {
+        field_value(value, key)
+            .map(non_empty_scalar)
+            .unwrap_or(false)
+    })
+}
+
+fn has_positive_field(value: &Value, keys: &[&str]) -> bool {
+    keys.iter().any(|key| {
+        field_value(value, key)
+            .and_then(scalar_u64)
+            .map(|number| number > 0)
+            .unwrap_or(false)
+    })
+}
+
+fn kugou_quality_availability_diagnostic(
+    response: &Value,
+    device_warning: Option<&str>,
+) -> Option<String> {
+    let mut parts = vec![describe_response_shape(response)];
+    if let Some(device_warning) = device_warning {
+        parts.push(format!(
+            "设备注册提示={}",
+            sanitize_diagnostic_text(device_warning)
+        ));
+    }
+    if let Some(message) = playback_failure_reason(response) {
+        parts.push(format!("message={}", sanitize_diagnostic_text(&message)));
+    }
+    Some(parts.join("；"))
 }
 
 fn refresh_kugou_login_token(credential: &mut KugouCredential) -> Result<(), String> {
@@ -2265,12 +3301,19 @@ fn ensure_kugou_device_registered(
     user_id: &str,
     token: &str,
 ) -> Result<(), String> {
-    ensure_kugou_device_cookie_defaults(&mut credential.cookies);
-    let has_dfid = first_cookie_value(&credential.cookies, &["dfid", "DFID"])
+    ensure_kugou_device_registered_cookies(&mut credential.cookies, user_id, token)
+}
+
+fn ensure_kugou_device_registered_cookies(
+    cookies: &mut BTreeMap<String, String>,
+    user_id: &str,
+    token: &str,
+) -> Result<(), String> {
+    ensure_kugou_device_cookie_defaults(cookies);
+    let has_dfid = first_cookie_value(cookies, &["dfid", "DFID"])
         .filter(|value| value != "-")
         .is_some();
-    let registered_at = credential
-        .cookies
+    let registered_at = cookies
         .get(KUGOU_DEVICE_REGISTER_MARKER)
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or_default();
@@ -2282,12 +3325,10 @@ fn ensure_kugou_device_registered(
         return Ok(());
     }
 
-    match register_kugou_device(&mut credential.cookies, user_id, token) {
+    match register_kugou_device(cookies, user_id, token) {
         Ok(dfid) => {
-            credential.cookies.insert("dfid".to_string(), dfid);
-            credential
-                .cookies
-                .insert(KUGOU_DEVICE_REGISTER_MARKER.to_string(), now_ms.to_string());
+            cookies.insert("dfid".to_string(), dfid);
+            cookies.insert(KUGOU_DEVICE_REGISTER_MARKER.to_string(), now_ms.to_string());
             Ok(())
         }
         Err(err) => Err(format!("酷狗设备注册失败：{err}")),
@@ -2949,6 +3990,286 @@ fn normalize_play_url(value: &str) -> Option<String> {
     Some(value)
 }
 
+fn normalize_kugou_quality_preference(value: Option<&str>) -> String {
+    let raw = value.unwrap_or("highest").trim().to_lowercase();
+    match raw.as_str() {
+        "standard" | "128" | "128k" | "std" => "standard".to_string(),
+        "high" | "exhigh" | "320" | "320k" | "hq" => "high".to_string(),
+        "lossless" | "flac" | "sq" => "lossless".to_string(),
+        "hifi" | "viper_hifi" | "viper_hq" => "viper_hifi".to_string(),
+        "hires" | "hi-res" => "hires".to_string(),
+        "jyeffect" | "sky" => "viper_clear".to_string(),
+        "super" | "viper_clear" | "viper_tape" | "viper_atmos" | "multitrack" | "highest" => raw,
+        _ => "highest".to_string(),
+    }
+}
+
+fn kugou_gateway_quality_candidates(preference: &str) -> Vec<&'static str> {
+    match preference {
+        "standard" => vec!["standard", "128"],
+        "high" => vec!["high", "320"],
+        "lossless" => vec!["flac"],
+        "super" => vec!["super"],
+        "viper_hifi" => vec!["viper_hifi"],
+        "hires" => vec!["hires"],
+        "viper_clear" => vec!["viper_clear"],
+        "viper_tape" => vec!["viper_tape"],
+        "viper_atmos" => vec!["viper_atmos"],
+        "multitrack" => vec!["multitrack"],
+        _ => vec![
+            "viper_clear",
+            "super",
+            "viper_hifi",
+            "viper_tape",
+            "viper_atmos",
+            "multitrack",
+            "hires",
+            "flac",
+            "high",
+            "320",
+            "128",
+        ],
+    }
+}
+
+fn kugou_priv_url_quality_candidates(preference: &str) -> Vec<&'static str> {
+    match preference {
+        "standard" => vec!["128"],
+        "high" => vec!["high", "320"],
+        "lossless" => vec!["flac"],
+        "super" => vec!["super"],
+        "viper_hifi" => vec!["viper_hifi"],
+        "hires" => Vec::new(),
+        "viper_clear" => vec!["viper_clear"],
+        "viper_tape" => vec!["viper_tape"],
+        "viper_atmos" => vec!["viper_atmos"],
+        "multitrack" => vec!["multitrack"],
+        _ => vec![
+            "viper_clear",
+            "super",
+            "viper_hifi",
+            "viper_tape",
+            "viper_atmos",
+            "multitrack",
+            "flac",
+            "high",
+            "320",
+            "128",
+        ],
+    }
+}
+
+fn kugou_priv_url_unsupported_quality_message(preference: &str) -> String {
+    format!(
+        "酷狗会员 /v6/priv_url 不接受{}参数；已跳过会员接口该音质请求。当前该音质只能依赖登录态 /v5/url 返回授权播放源。",
+        kugou_quality_label(preference)
+    )
+}
+
+fn kugou_hires_playback_failure_message(logged_errors: &[String]) -> String {
+    if logged_errors.is_empty() {
+        return "酷狗 Hi-Res 音质只能通过登录态 /v5/url 获取授权播放源；当前没有可用酷狗登录态或登录态缺少用户 ID/token，请重新登录酷狗后再试。项目不会用普通旧接口或会员 /v6/priv_url 的低音质链接冒充 Hi-Res。"
+            .to_string();
+    }
+
+    format!(
+        "酷狗 Hi-Res 播放源获取失败：{}。会员 /v6/priv_url 不接受 Hi-Res 参数，普通旧接口也不能验证 Hi-Res 播放源；项目已停止继续尝试，避免把低音质链接当作 Hi-Res 成功。",
+        summarize_playback_attempt_errors("登录态 /v5/url", logged_errors)
+    )
+}
+
+fn kugou_quality_label(quality: &str) -> &'static str {
+    match quality {
+        "super" => "蝰蛇超清音质",
+        "viper_clear" => "蝰蛇母带音质",
+        "viper_hifi" => "蝰蛇HIFI音质",
+        "viper_tape" => "蝰蛇磁带",
+        "viper_atmos" => "蝰蛇全景声2.0",
+        "multitrack" => "多轨",
+        "hires" => "Hi-Res音质",
+        "lossless" => "无损音质",
+        "flac" => "无损音质",
+        "high" => "高品音质",
+        "exhigh" => "极高",
+        "320" => "320k",
+        "128" | "standard" => "标准音质",
+        _ => "平台返回音质",
+    }
+}
+
+fn normalize_kugou_bitrate(value: Option<u64>) -> Option<u64> {
+    value.filter(|number| *number >= 64)
+}
+
+fn normalize_kugou_returned_quality(value: &str) -> Option<String> {
+    let raw = value.trim().to_lowercase();
+    if raw.is_empty() {
+        return None;
+    }
+
+    match raw.as_str() {
+        "super" | "viper_clear" | "viper_hifi" | "viper_tape" | "viper_atmos" | "multitrack"
+        | "hires" | "lossless" | "flac" | "high" | "exhigh" | "320" | "128" | "standard" => {
+            Some(raw)
+        }
+        "sq" => Some("flac".to_string()),
+        "hq" | "320k" => Some("320".to_string()),
+        "128k" | "std" => Some("128".to_string()),
+        text if text.contains("viper") && text.contains("atmos") => Some("viper_atmos".to_string()),
+        text if text.contains("viper") && text.contains("hifi") => Some("viper_hifi".to_string()),
+        text if text.contains("viper") && text.contains("tape") => Some("viper_tape".to_string()),
+        text if text.contains("viper") || text.contains("master") => {
+            Some("viper_clear".to_string())
+        }
+        text if text.contains("全景声") => Some("viper_atmos".to_string()),
+        text if text.contains("母带") => Some("viper_clear".to_string()),
+        text if text.contains("hifi") => Some("viper_hifi".to_string()),
+        text if text.contains("超清") => Some("super".to_string()),
+        text if text.contains("无损") => Some("flac".to_string()),
+        text if text.contains("高品") => Some("high".to_string()),
+        text if text.contains("标准") => Some("128".to_string()),
+        text if text.contains("hires") || text.contains("hi-res") => Some("hires".to_string()),
+        text if text.contains("flac") || text.contains("lossless") => Some("flac".to_string()),
+        text if text.contains("320") => Some("320".to_string()),
+        text if text.contains("128") => Some("128".to_string()),
+        _ => None,
+    }
+}
+
+fn infer_kugou_quality_from_media(file_type: Option<&str>, bitrate: Option<u64>) -> Option<String> {
+    let file_type = file_type.unwrap_or_default().trim().to_lowercase();
+    if file_type.contains("flac") || file_type.contains("ape") || file_type.contains("wav") {
+        return Some("flac".to_string());
+    }
+
+    let kbps = bitrate.map(|value| if value >= 1000 { value / 1000 } else { value });
+    match kbps {
+        Some(value) if value >= 320 => Some("320".to_string()),
+        Some(value) if value >= 128 => Some("128".to_string()),
+        _ => None,
+    }
+}
+
+fn observed_kugou_quality_level(
+    response: &Value,
+    bitrate: Option<u64>,
+    file_type: Option<&str>,
+) -> Option<String> {
+    find_string_by_keys(
+        response,
+        &[
+            "quality_level",
+            "qualityLevel",
+            "quality_name",
+            "qualityName",
+            "audio_quality_name",
+            "audioQualityName",
+            "audio_quality",
+            "audioQuality",
+            "quality_type",
+            "qualityType",
+            "level",
+            "level_name",
+            "levelName",
+            "quality",
+        ],
+    )
+    .and_then(|value| normalize_kugou_returned_quality(&value))
+    .or_else(|| infer_kugou_quality_from_media(file_type, bitrate))
+}
+
+fn kugou_observed_quality_satisfies_preference(
+    preference: &str,
+    observed_quality: Option<&str>,
+) -> bool {
+    let Some(observed_quality) = observed_quality.and_then(normalize_kugou_returned_quality) else {
+        return true;
+    };
+
+    match preference {
+        "highest" => true,
+        "standard" => matches!(observed_quality.as_str(), "standard" | "128"),
+        "high" => matches!(observed_quality.as_str(), "high" | "exhigh" | "320"),
+        "lossless" => matches!(observed_quality.as_str(), "lossless" | "flac"),
+        "hires" => observed_quality == "hires",
+        "super" => observed_quality == "super",
+        "viper_clear" => observed_quality == "viper_clear",
+        "viper_hifi" => observed_quality == "viper_hifi",
+        "viper_tape" => observed_quality == "viper_tape",
+        "viper_atmos" => observed_quality == "viper_atmos",
+        "multitrack" => observed_quality == "multitrack",
+        _ => true,
+    }
+}
+
+fn kugou_quality_mismatch_message(preference: &str, observed_quality: Option<&str>) -> String {
+    let expected_label = kugou_quality_label(preference);
+    let actual_label = observed_quality
+        .and_then(normalize_kugou_returned_quality)
+        .map(|quality| kugou_quality_label(&quality).to_string())
+        .unwrap_or_else(|| "未知音质".to_string());
+
+    format!(
+        "酷狗返回的实际音质为{actual_label}，不满足所选{expected_label}；已拒绝把低音质链接当作切换成功。"
+    )
+}
+
+fn resolve_kugou_quality_level(
+    response: &Value,
+    requested_quality: Option<&str>,
+    bitrate: Option<u64>,
+    file_type: Option<&str>,
+) -> Option<String> {
+    find_string_by_keys(
+        response,
+        &[
+            "quality_level",
+            "qualityLevel",
+            "quality_name",
+            "qualityName",
+            "audio_quality_name",
+            "audioQualityName",
+            "level",
+            "quality_type",
+            "qualityType",
+        ],
+    )
+    .and_then(|value| normalize_kugou_returned_quality(&value))
+    .or_else(|| {
+        requested_quality
+            .filter(|quality| {
+                matches!(
+                    *quality,
+                    "super"
+                        | "viper_clear"
+                        | "viper_hifi"
+                        | "viper_tape"
+                        | "viper_atmos"
+                        | "multitrack"
+                        | "hires"
+                )
+            })
+            .and_then(normalize_kugou_returned_quality)
+    })
+    .or_else(|| infer_kugou_quality_from_media(file_type, bitrate))
+    .or_else(|| requested_quality.and_then(normalize_kugou_returned_quality))
+}
+
+fn kugou_quality_label_string(level: Option<&str>) -> Option<String> {
+    level
+        .map(kugou_quality_label)
+        .filter(|label| *label != "平台返回音质")
+        .map(str::to_string)
+}
+
+fn kugou_hash_candidate_label(index: usize, total: usize) -> String {
+    if total <= 1 {
+        "候选音源".to_string()
+    } else {
+        format!("候选音源 {}/{}", index.saturating_add(1), total)
+    }
+}
+
 fn summarize_playback_attempt_errors(prefix: &str, errors: &[String]) -> String {
     if errors.is_empty() {
         return format!("{prefix}：未返回可用播放地址");
@@ -2966,14 +4287,11 @@ fn summarize_playback_attempt_errors(prefix: &str, errors: &[String]) -> String 
         .join("；");
     if errors.len() > 2 {
         format!(
-            "{prefix}：已尝试 {} 个 hash 候选，最后错误：{preview}；...",
+            "{prefix}：已尝试 {} 个候选，错误摘要：{preview}；...",
             errors.len()
         )
     } else {
-        format!(
-            "{prefix}：已尝试 {} 个 hash 候选，错误：{preview}",
-            errors.len()
-        )
+        format!("{prefix}：已尝试 {} 个候选，错误：{preview}", errors.len())
     }
 }
 
@@ -3013,6 +4331,252 @@ fn playback_failure_reason(value: &Value) -> Option<String> {
         ],
     )
     .filter(|value| !value.trim().is_empty())
+}
+
+fn append_kugou_playback_diagnostic(message: String, response: &Value) -> String {
+    format!(
+        "{message}（{}）",
+        kugou_playback_failure_diagnostic(response)
+    )
+}
+
+fn kugou_playback_failure_diagnostic(response: &Value) -> String {
+    let mut parts = vec![describe_response_shape(response)];
+
+    if let Some(priv_status) = find_value_by_keys(response, &["priv_status", "privStatus"])
+        .and_then(diagnostic_scalar_value)
+    {
+        parts.push(format!("priv_status={priv_status}"));
+    }
+
+    if let Some(fail_process) = find_value_by_keys(response, &["fail_process", "failProcess"]) {
+        parts.push(format!(
+            "fail_process={}",
+            summarize_diagnostic_value(fail_process)
+        ));
+    }
+
+    if let Some(auth_through) = find_value_by_keys(response, &["auth_through", "authThrough"]) {
+        parts.push(format!(
+            "auth_through={}",
+            summarize_diagnostic_value(auth_through)
+        ));
+    }
+
+    if let Some(tracker_through) =
+        find_value_by_keys(response, &["tracker_through", "trackerThrough"])
+    {
+        let tracker_summary = summarize_selected_object_fields(
+            tracker_through,
+            &[
+                "identity_block",
+                "cpy_grade",
+                "musicpack_advance",
+                "all_quality_free",
+                "cpy_level",
+                "area_block",
+                "risk_block",
+                "play_block",
+            ],
+        )
+        .unwrap_or_else(|| summarize_diagnostic_value(tracker_through));
+        parts.push(format!("tracker_through={tracker_summary}"));
+    }
+
+    if let Some(trans_param) = find_value_by_keys(response, &["trans_param", "transParam"]) {
+        parts.push(format!(
+            "trans_param={}",
+            summarize_kugou_trans_param(trans_param)
+        ));
+    }
+
+    if let Some(hash_offset) = find_value_by_keys(response, &["hash_offset", "hashOffset"]) {
+        let offset_summary = summarize_selected_object_fields(
+            hash_offset,
+            &["start_ms", "end_ms", "start_byte", "end_byte", "file_type"],
+        )
+        .unwrap_or_else(|| summarize_diagnostic_value(hash_offset));
+        parts.push(format!("hash_offset={offset_summary}"));
+    }
+
+    parts.join("；")
+}
+
+fn summarize_kugou_trans_param(value: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(summary) = summarize_selected_object_fields(
+        value,
+        &[
+            "display",
+            "display_rate",
+            "pay_block_tpl",
+            "cpy_attr0",
+            "classmap",
+            "ipmap",
+        ],
+    ) {
+        parts.push(summary);
+    }
+
+    if let Some(qualitymap) = field_value(value, "qualitymap") {
+        let mut quality_parts = vec![format!("字段={}", object_keys_summary(qualitymap))];
+        if let Some(bits_len) = field_value(qualitymap, "bits")
+            .and_then(Value::as_str)
+            .map(|text| text.trim().chars().count())
+        {
+            quality_parts.push(format!("bits长度={bits_len}"));
+        }
+        if let Some(attr_summary) =
+            summarize_selected_object_fields(qualitymap, &["attr0", "attr1"])
+        {
+            quality_parts.push(attr_summary);
+        }
+        parts.push(format!("qualitymap{{{}}}", quality_parts.join(",")));
+    }
+
+    let present_hash_fields = present_field_names(
+        value,
+        &[
+            "std_hash",
+            "hash_128",
+            "hash_320",
+            "hash_flac",
+            "flac_hash",
+            "sq_hash",
+            "hires_hash",
+            "high_hash",
+            "super_file_hash",
+            "hash_multitrack",
+            "ogg_128_hash",
+            "ogg_320_hash",
+            "ogg_128_filesize",
+            "ogg_320_filesize",
+        ],
+    );
+    if !present_hash_fields.is_empty() {
+        parts.push(format!("存在字段={}", present_hash_fields.join(",")));
+    }
+
+    if parts.is_empty() {
+        summarize_diagnostic_value(value)
+    } else {
+        parts.join(",")
+    }
+}
+
+fn summarize_selected_object_fields(value: &Value, keys: &[&str]) -> Option<String> {
+    let mut parts = Vec::new();
+    for key in keys {
+        let Some(field) = field_value(value, key) else {
+            continue;
+        };
+        if let Some(scalar) = diagnostic_scalar_value(field) {
+            parts.push(format!("{key}={scalar}"));
+        } else if field.is_object() {
+            parts.push(format!("{key}字段={}", object_keys_summary(field)));
+        } else if field.is_array() {
+            parts.push(format!("{key}={}", summarize_diagnostic_value(field)));
+        }
+    }
+
+    if !parts.is_empty() {
+        return Some(parts.join(","));
+    }
+
+    value
+        .as_object()
+        .map(|_| format!("字段={}", object_keys_summary(value)))
+}
+
+fn present_field_names(value: &Value, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .filter(|key| {
+            field_value(value, key)
+                .map(|field| match field {
+                    Value::Null => false,
+                    Value::String(text) => !text.trim().is_empty(),
+                    Value::Array(items) => !items.is_empty(),
+                    Value::Object(map) => !map.is_empty(),
+                    _ => true,
+                })
+                .unwrap_or(false)
+        })
+        .map(|key| (*key).to_string())
+        .collect()
+}
+
+fn summarize_diagnostic_value(value: &Value) -> String {
+    match value {
+        Value::Array(items) => {
+            if items.is_empty() {
+                return "空数组".to_string();
+            }
+            let preview = items
+                .iter()
+                .take(5)
+                .map(|item| {
+                    diagnostic_scalar_value(item).unwrap_or_else(|| match item {
+                        Value::Object(_) => format!("对象字段={}", object_keys_summary(item)),
+                        Value::Array(nested) => format!("数组长度={}", nested.len()),
+                        Value::Null => "null".to_string(),
+                        _ => "复杂值".to_string(),
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            if items.len() > 5 {
+                format!("数组长度={}，前5项={preview}", items.len())
+            } else {
+                format!("数组[{preview}]")
+            }
+        }
+        Value::Object(_) => format!("对象字段={}", object_keys_summary(value)),
+        _ => diagnostic_scalar_value(value).unwrap_or_else(|| "复杂值".to_string()),
+    }
+}
+
+fn diagnostic_scalar_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::String(text) => Some(sanitize_diagnostic_text(text)),
+        _ => None,
+    }
+}
+
+fn sanitize_diagnostic_text(value: &str) -> String {
+    let text = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let text = text.trim();
+    if text.is_empty() {
+        return "空".to_string();
+    }
+    let lowered = text.to_ascii_lowercase();
+    if lowered.contains("http://") || lowered.contains("https://") {
+        return "链接".to_string();
+    }
+    if (16..=128).contains(&text.len()) && text.chars().all(|char| char.is_ascii_hexdigit()) {
+        return format!("hash长度{}", text.len());
+    }
+
+    text.chars().take(48).collect::<String>()
+}
+
+fn find_value_by_keys<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    match value {
+        Value::Object(map) => {
+            for key in keys {
+                if let Some(found) = field_value(value, key) {
+                    return Some(found);
+                }
+            }
+            map.values()
+                .find_map(|value| find_value_by_keys(value, keys))
+        }
+        Value::Array(items) => items
+            .iter()
+            .find_map(|value| find_value_by_keys(value, keys)),
+        _ => None,
+    }
 }
 
 fn find_string_by_keys(value: &Value, keys: &[&str]) -> Option<String> {
@@ -3090,8 +4654,8 @@ fn extract_kugou_membership(data: &Value) -> KugouMembershipInfo {
             .map(kugou_vip_type_label)
     });
     let level_label = first_u64(data, &["vip_level", "vipLevel", "memberLevel"])
-    .filter(|value| *value > 0)
-    .map(|value| format!("等级 {value}"));
+        .filter(|value| *value > 0)
+        .map(|value| format!("等级 {value}"));
     let expire_at = first_u64(
         data,
         &[
@@ -3132,11 +4696,8 @@ fn kugou_membership_from_cookies(
     cookies: &BTreeMap<String, String>,
     fallback: Option<&KugouMembershipInfo>,
 ) -> KugouMembershipInfo {
-    let vip_type = first_cookie_value(
-        cookies,
-        &["vip_type", "vipType", "viptype", "kg_vip_type"],
-    )
-    .and_then(|value| value.parse::<u64>().ok());
+    let vip_type = first_cookie_value(cookies, &["vip_type", "vipType", "viptype", "kg_vip_type"])
+        .and_then(|value| value.parse::<u64>().ok());
     let has_vip_token = first_cookie_value(
         cookies,
         &["vip_token", "vipToken", "viptoken", "kg_vip_token"],
@@ -3146,7 +4707,11 @@ fn kugou_membership_from_cookies(
     let active = vip_type.unwrap_or_default() > 0 || has_vip_token || fallback_active;
     let type_label = fallback
         .and_then(|value| value.type_label.clone())
-        .or_else(|| vip_type.filter(|value| *value > 0).map(kugou_vip_type_label));
+        .or_else(|| {
+            vip_type
+                .filter(|value| *value > 0)
+                .map(kugou_vip_type_label)
+        });
     let level_label = fallback.and_then(|value| value.level_label.clone());
     let expire_at = fallback.and_then(|value| value.expire_at.clone());
     let has_membership_field =
@@ -3238,6 +4803,14 @@ fn signature_android_with_secret(
     let mut hasher = Md5::new();
     hasher.update(
         format!("{signature_secret}{params_string}{data_text}{signature_secret}").as_bytes(),
+    );
+    format!("{:x}", hasher.finalize())
+}
+
+fn sign_params_key(data: &str) -> String {
+    let mut hasher = Md5::new();
+    hasher.update(
+        format!("{KUGOU_APPID}OIlwieks28dk2k092lksi2UIkp{KUGOU_CLIENTVER}{data}").as_bytes(),
     );
     format!("{:x}", hasher.finalize())
 }
@@ -3558,6 +5131,22 @@ fn first_track_array_at_paths<'a>(value: &'a Value, paths: &[&[&str]]) -> Option
     None
 }
 
+fn first_playlist_array_at_paths<'a>(
+    value: &'a Value,
+    paths: &[&[&str]],
+) -> Option<&'a Vec<Value>> {
+    for path in paths {
+        let Some(items) = value_at_path(value, path).and_then(Value::as_array) else {
+            continue;
+        };
+        if is_playlist_array(items) {
+            return Some(items);
+        }
+    }
+
+    None
+}
+
 fn first_empty_array_at_paths<'a>(value: &'a Value, paths: &[&[&str]]) -> Option<&'a Vec<Value>> {
     for path in paths {
         let Some(items) = value_at_path(value, path).and_then(Value::as_array) else {
@@ -3569,6 +5158,19 @@ fn first_empty_array_at_paths<'a>(value: &'a Value, paths: &[&[&str]]) -> Option
     }
 
     None
+}
+
+fn find_playlist_array(value: &Value) -> Option<&Vec<Value>> {
+    match value {
+        Value::Array(items) => {
+            if is_playlist_array(items) {
+                return Some(items);
+            }
+            items.iter().find_map(find_playlist_array)
+        }
+        Value::Object(map) => map.values().find_map(find_playlist_array),
+        _ => None,
+    }
 }
 
 fn find_track_array(value: &Value) -> Option<&Vec<Value>> {
@@ -3649,9 +5251,198 @@ fn is_track_array(items: &[Value]) -> bool {
     checked > 0 && track_like > 0 && track_like * 2 >= checked
 }
 
-fn parse_track_items(items: &[Value], limit: usize) -> Vec<KugouSearchTrack> {
+fn is_playlist_array(items: &[Value]) -> bool {
+    if items.is_empty() {
+        return false;
+    }
+
+    let mut checked = 0usize;
+    let mut playlist_like = 0usize;
+    for item in items.iter().take(8) {
+        if !item.is_object() {
+            continue;
+        }
+        checked += 1;
+        if parse_playlist_summary(item).is_some() {
+            playlist_like += 1;
+        }
+    }
+
+    checked > 0 && playlist_like > 0 && playlist_like * 2 >= checked
+}
+
+fn request_kugou_playlist_detail_page(
+    list_id: &str,
+    user_id: &str,
+    token: &str,
+    page: u64,
+    limit: u64,
+    cookies: &mut BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let body = json!({
+        "listid": list_id,
+        "userid": user_id,
+        "area_code": 1,
+        "show_relate_goods": 0,
+        "pagesize": limit,
+        "allplatform": 1,
+        "show_cover": 1,
+        "type": 0,
+        "token": token,
+        "page": page,
+    });
+    kugou_android_post_json(
+        KUGOU_GATEWAY_BASE,
+        "/v4/get_list_all_file",
+        BTreeMap::new(),
+        body,
+        cookies,
+        Some("cloudlist.service.kugou.com"),
+    )
+}
+
+fn request_public_playlist_summary(
+    playlist_id: &str,
+    cookies: &mut BTreeMap<String, String>,
+) -> Result<KugouPlaylistSummary, String> {
+    let user_id = cookies
+        .get("userid")
+        .cloned()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "0".to_string());
+    let token = cookies
+        .get("token")
+        .cloned()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_default();
+    let response = kugou_android_post_json(
+        KUGOU_GATEWAY_BASE,
+        "/v3/get_list_info",
+        BTreeMap::new(),
+        json!({
+            "data": [{ "global_collection_id": playlist_id }],
+            "userid": user_id,
+            "token": token,
+        }),
+        cookies,
+        Some("pubsongs.kugou.com"),
+    )?;
+    ensure_kugou_success(&response, "酷狗推荐歌单信息读取")?;
+    let items = first_playlist_array_at_paths(
+        &response,
+        &[
+            &["data"],
+            &["data", "info"],
+            &["data", "list"],
+            &["data", "lists"],
+            &["info"],
+            &["list"],
+        ],
+    )
+    .or_else(|| find_playlist_array(&response))
+    .ok_or_else(|| "酷狗推荐歌单信息响应缺少歌单摘要。".to_string())?;
+
     items
         .iter()
+        .find_map(parse_playlist_summary)
+        .ok_or_else(|| "酷狗推荐歌单信息缺少有效歌单摘要。".to_string())
+}
+
+fn request_public_playlist_track_page(
+    playlist_id: &str,
+    page: u64,
+    limit: u64,
+    cookies: &mut BTreeMap<String, String>,
+) -> Result<Value, String> {
+    let mut params = BTreeMap::new();
+    params.insert("area_code".to_string(), "1".to_string());
+    params.insert(
+        "begin_idx".to_string(),
+        page.saturating_sub(1).saturating_mul(limit).to_string(),
+    );
+    params.insert("plat".to_string(), "1".to_string());
+    params.insert("type".to_string(), "1".to_string());
+    params.insert("mode".to_string(), "1".to_string());
+    params.insert("personal_switch".to_string(), "1".to_string());
+    params.insert(
+        "extend_fields".to_string(),
+        "abtags,hot_cmt,popularization".to_string(),
+    );
+    params.insert("pagesize".to_string(), limit.to_string());
+    params.insert("global_collection_id".to_string(), playlist_id.to_string());
+
+    let mut temp_credential = KugouCredential {
+        cookies: std::mem::take(cookies),
+        saved_at: app_data::now_seconds(),
+        profile: None,
+    };
+    let response = kugou_android_get_json_with_client(
+        KUGOU_GATEWAY_BASE,
+        "/pubsongs/v2/get_other_list_file_nofilt",
+        params,
+        &mut temp_credential,
+        None,
+        None,
+        KUGOU_APPID,
+        KUGOU_CLIENTVER,
+        KUGOU_SIGNATURE_ANDROID_SECRET,
+    );
+    *cookies = temp_credential.cookies;
+
+    response
+}
+
+fn parse_playlist_summary_from_response(response: &Value) -> Option<KugouPlaylistSummary> {
+    response
+        .get("data")
+        .and_then(|data| {
+            data.get("list_info")
+                .or_else(|| data.get("list"))
+                .or_else(|| data.get("info"))
+        })
+        .filter(|value| value.is_object())
+        .and_then(parse_playlist_summary)
+}
+
+fn kugou_playlist_total_track_count(response: &Value, playlist: &KugouPlaylistSummary) -> u64 {
+    let response_data = response.get("data").unwrap_or(&Value::Null);
+    value_as_u64(response_data, "total")
+        .or_else(|| value_as_u64(response_data, "count"))
+        .or_else(|| value_as_u64(response_data, "total_count"))
+        .or_else(|| (playlist.track_count > 0).then_some(playlist.track_count))
+        .unwrap_or_default()
+}
+
+fn kugou_playlist_track_items_from_response(
+    response: &Value,
+    track_paths: &[&[&str]],
+) -> Option<Vec<Value>> {
+    first_track_array_at_paths(response, track_paths)
+        .or_else(|| find_track_array(response))
+        .or_else(|| first_empty_array_at_paths(response, track_paths))
+        .cloned()
+        .or_else(|| {
+            value_at_path(response, &["data", "snap"]).and_then(decode_track_items_from_value)
+        })
+}
+
+fn reverse_playlist_page_bounds(total: u64, page: u64, limit: u64) -> Option<(u64, u64)> {
+    let reverse_offset = page.saturating_sub(1).saturating_mul(limit);
+    if reverse_offset >= total {
+        return None;
+    }
+
+    let reverse_end = reverse_offset.saturating_add(limit).min(total);
+    Some((
+        total.saturating_sub(reverse_end),
+        total.saturating_sub(reverse_offset),
+    ))
+}
+
+fn parse_playlist_track_items_reversed(items: &[Value], limit: usize) -> Vec<KugouSearchTrack> {
+    items
+        .iter()
+        .rev()
         .filter_map(parse_kugou_track)
         .take(limit)
         .collect::<Vec<_>>()
@@ -3666,10 +5457,6 @@ fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
 }
 
 fn parse_playlist_summary(item: &Value) -> Option<KugouPlaylistSummary> {
-    let list_id = first_string(
-        item,
-        &["listid", "list_id", "id", "list_create_listid", "specialid"],
-    )?;
     let global_collection_id = first_string(
         item,
         &[
@@ -3679,6 +5466,19 @@ fn parse_playlist_summary(item: &Value) -> Option<KugouPlaylistSummary> {
             "global_id",
         ],
     );
+    let list_id = first_string(
+        item,
+        &[
+            "listid",
+            "list_id",
+            "id",
+            "list_create_listid",
+            "specialid",
+            "special_id",
+            "specialId",
+        ],
+    )
+    .or_else(|| global_collection_id.clone())?;
     let name = first_string(
         item,
         &[
@@ -3703,6 +5503,9 @@ fn parse_playlist_summary(item: &Value) -> Option<KugouPlaylistSummary> {
             "cover_img_url",
             "image",
             "list_pic",
+            "cover_url",
+            "sizable_cover",
+            "union_cover",
             "icon",
         ],
     )
@@ -3746,13 +5549,32 @@ fn parse_playlist_summary(item: &Value) -> Option<KugouPlaylistSummary> {
                 "total_count",
                 "songcount",
                 "music_count",
+                "musiccount",
+                "filecount",
             ],
         )
         .unwrap_or_default(),
         cover_img_url,
         creator_nickname,
         subscribed,
-        update_time: first_u64(item, &["update_time", "updateTime", "mtime", "modify_time"]),
+        update_time: first_u64(
+            item,
+            &[
+                "update_time",
+                "updateTime",
+                "modify_time",
+                "modifyTime",
+                "mtime",
+                "create_time",
+                "createTime",
+                "ctime",
+                "add_time",
+                "addTime",
+                "addtime",
+                "list_create_time",
+                "listCreateTime",
+            ],
+        ),
     })
 }
 

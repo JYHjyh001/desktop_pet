@@ -106,7 +106,7 @@ export type MusicImmersiveThemePreference = 'follow' | MusicImmersiveTheme
 export type MusicSpectrumStyle = 'bars' | 'mirror' | 'orbit' | 'particles' | 'ribbon' | 'none'
 export type MusicLineStyle = 'wave' | 'beam' | 'scan' | 'constellation' | 'none'
 export type MusicRippleStyle = 'rings' | 'water' | 'heartbeat' | 'halo' | 'none'
-export type MusicVisualStagePreset = 'default' | 'galaxy' | 'cinematic' | 'dj' | 'lyric'
+export type MusicVisualStagePreset = 'galaxy' | 'dj'
 export interface MusicStageTuning {
   height: number
   response: number
@@ -115,6 +115,7 @@ export interface MusicStageTuning {
   trigger: number
   camera: number
   layerHeight: number
+  centerPulse: boolean
 }
 
 export const DEFAULT_MUSIC_STAGE_TUNING: Readonly<MusicStageTuning> = {
@@ -125,6 +126,7 @@ export const DEFAULT_MUSIC_STAGE_TUNING: Readonly<MusicStageTuning> = {
   trigger: 1,
   camera: 1,
   layerHeight: 1,
+  centerPulse: false,
 }
 export type ChatEmojiFrequency = 'none' | 'low' | 'normal' | 'high'
 export type PetActionBinding =

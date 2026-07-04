@@ -447,6 +447,7 @@ pub fn list_playlists(app: &AppHandle) -> Result<Vec<NeteasePlaylistSummary>, St
         offset += PLAYLIST_PAGE_LIMIT;
     }
 
+    playlists.reverse();
     write_credential(app, &credential)?;
     Ok(playlists)
 }
@@ -498,39 +499,26 @@ pub fn playlist_detail(
     let total_track_count = value_as_u64(playlist_value.get("trackCount"))
         .or_else(|| u64::try_from(track_ids.len()).ok())
         .unwrap_or_else(|| track_values.len() as u64);
-    let end = offset.saturating_add(limit);
-    let tracks = if track_values.len() >= end {
-        track_values[offset..end]
-            .iter()
-            .filter_map(track_summary_from_value)
-            .collect::<Vec<_>>()
+    let page_track_ids = track_ids
+        .iter()
+        .rev()
+        .skip(offset)
+        .take(limit)
+        .copied()
+        .collect::<Vec<_>>();
+    let tracks = if page_track_ids.is_empty() {
+        Vec::new()
     } else {
-        let page_track_ids = track_ids
-            .iter()
-            .skip(offset)
-            .take(limit)
-            .copied()
-            .collect::<Vec<_>>();
-
-        if page_track_ids.is_empty() {
-            Vec::new()
-        } else {
-            cookie = cookie_header(&credential.cookies);
-            let detail_response =
-                request_song_detail(&page_track_ids, &cookie, &mut credential.cookies)?;
-            merge_set_cookies(&mut credential.cookies, &detail_response.set_cookies);
-            ensure_success_code(&detail_response.body, "网易云歌曲详情读取")?;
-            parse_song_detail_tracks(&detail_response.body, &page_track_ids)
-        }
+        cookie = cookie_header(&credential.cookies);
+        let detail_response =
+            request_song_detail(&page_track_ids, &cookie, &mut credential.cookies)?;
+        merge_set_cookies(&mut credential.cookies, &detail_response.set_cookies);
+        ensure_success_code(&detail_response.body, "网易云歌曲详情读取")?;
+        parse_song_detail_tracks(&detail_response.body, &page_track_ids)
     };
     write_credential(app, &credential)?;
 
-    let page_source_count = track_ids
-        .iter()
-        .skip(offset)
-        .take(limit)
-        .count()
-        .max(tracks.len());
+    let page_source_count = page_track_ids.len().max(tracks.len());
     let loaded_end = u64::try_from(offset)
         .unwrap_or(u64::MAX)
         .saturating_add(u64::try_from(page_source_count).unwrap_or(u64::MAX));
@@ -677,43 +665,68 @@ pub fn song_playback_url(
         return Err("网易云歌曲 ID 无效。".to_string());
     }
 
-    let level = normalize_playback_level(level.as_deref());
+    let requested_level = normalize_playback_level(level.as_deref());
     let mut credential = require_logged_in_credential(app)?;
-    let cookie = cookie_header(&credential.cookies);
-    let response = request_song_playback_url(song_id, &level, &cookie, &mut credential.cookies)?;
-    merge_set_cookies(&mut credential.cookies, &response.set_cookies);
-    write_credential(app, &credential)?;
-    ensure_success_code(&response.body, "网易云播放链接获取")?;
+    let mut playback_errors = Vec::new();
 
-    let items = response
-        .body
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "网易云播放链接响应缺少 data 字段。".to_string())?;
-    let item = items
-        .iter()
-        .find(|item| value_as_u64(item.get("id")) == Some(song_id))
-        .or_else(|| items.first())
-        .ok_or_else(|| "网易云没有返回播放链接数据。".to_string())?;
+    for level_candidate in playback_level_candidates(&requested_level) {
+        let cookie = cookie_header(&credential.cookies);
+        let response =
+            request_song_playback_url(song_id, level_candidate, &cookie, &mut credential.cookies)?;
+        merge_set_cookies(&mut credential.cookies, &response.set_cookies);
+        if let Err(err) = ensure_success_code(&response.body, "网易云播放链接获取") {
+            playback_errors.push(format!("{level_candidate}: {err}"));
+            continue;
+        }
 
-    let item_code = value_as_i64(item.get("code")).unwrap_or(0);
-    let url = safe_http_url(item.get("url"));
-    if item_code != 200 || url.is_none() {
-        let message = playback_denied_message(item, item_code);
-        return Err(message);
+        let Some(items) = response.body.get("data").and_then(Value::as_array) else {
+            playback_errors.push(format!(
+                "{level_candidate}: 网易云播放链接响应缺少 data 字段。"
+            ));
+            continue;
+        };
+        let Some(item) = items
+            .iter()
+            .find(|item| value_as_u64(item.get("id")) == Some(song_id))
+            .or_else(|| items.first())
+        else {
+            playback_errors.push(format!("{level_candidate}: 网易云没有返回播放链接数据。"));
+            continue;
+        };
+
+        let item_code = value_as_i64(item.get("code")).unwrap_or(0);
+        let url = safe_http_url(item.get("url"));
+        if item_code != 200 || url.is_none() {
+            playback_errors.push(format!(
+                "{level_candidate}: {}",
+                playback_denied_message(item, item_code)
+            ));
+            continue;
+        }
+
+        write_credential(app, &credential)?;
+        let actual_level =
+            trimmed_string(item.get("level"), 40).unwrap_or_else(|| level_candidate.to_string());
+        return Ok(NeteasePlaybackUrl {
+            song_id,
+            url: url.unwrap_or_default(),
+            level: actual_level.clone(),
+            bitrate: value_as_u64(item.get("br")),
+            duration_ms: value_as_u64(item.get("time")),
+            file_type: trimmed_string(item.get("type"), 24),
+            size: value_as_u64(item.get("size")),
+            message: format!(
+                "已获取网易云临时播放链接（{}）。",
+                playback_level_label(&actual_level)
+            ),
+        });
     }
 
-    let url = url.unwrap_or_default();
-    Ok(NeteasePlaybackUrl {
-        song_id,
-        url,
-        level: trimmed_string(item.get("level"), 40).unwrap_or(level),
-        bitrate: value_as_u64(item.get("br")),
-        duration_ms: value_as_u64(item.get("time")),
-        file_type: trimmed_string(item.get("type"), 24),
-        size: value_as_u64(item.get("size")),
-        message: "已获取网易云临时播放链接。".to_string(),
-    })
+    write_credential(app, &credential)?;
+    Err(summarize_netease_playback_errors(
+        &requested_level,
+        &playback_errors,
+    ))
 }
 
 fn require_logged_in_credential(app: &AppHandle) -> Result<NeteaseCredential, String> {
@@ -1004,10 +1017,65 @@ fn clamp_text(value: String, max_chars: usize) -> String {
 
 fn normalize_playback_level(value: Option<&str>) -> String {
     match value.unwrap_or("standard").trim().to_lowercase().as_str() {
-        "standard" | "exhigh" | "lossless" | "hires" | "jyeffect" | "sky" | "jymaster" => {
-            value.unwrap_or("standard").trim().to_lowercase()
-        }
+        "standard" | "high" | "exhigh" | "lossless" | "hires" | "jyeffect" | "sky" | "jymaster"
+        | "highest" => value.unwrap_or("standard").trim().to_lowercase(),
         _ => "standard".to_string(),
+    }
+}
+
+fn playback_level_candidates(level: &str) -> Vec<&'static str> {
+    match level {
+        "highest" => vec![
+            "jymaster", "sky", "jyeffect", "hires", "lossless", "exhigh", "standard",
+        ],
+        "lossless" => vec!["lossless", "exhigh", "standard"],
+        "high" | "exhigh" => vec!["exhigh", "standard"],
+        "hires" => vec!["hires", "lossless", "exhigh", "standard"],
+        "jyeffect" => vec!["jyeffect", "hires", "lossless", "exhigh", "standard"],
+        "sky" => vec!["sky", "hires", "lossless", "exhigh", "standard"],
+        "jymaster" => vec!["jymaster", "hires", "lossless", "exhigh", "standard"],
+        _ => vec!["standard"],
+    }
+}
+
+fn playback_level_label(level: &str) -> &'static str {
+    match level {
+        "jymaster" => "超清母带",
+        "highest" => "最高可用",
+        "sky" => "沉浸环绕",
+        "jyeffect" => "高清环绕",
+        "hires" => "Hi-Res",
+        "lossless" => "无损",
+        "exhigh" => "极高",
+        "standard" => "标准",
+        _ => "平台返回音质",
+    }
+}
+
+fn summarize_netease_playback_errors(level: &str, errors: &[String]) -> String {
+    if errors.is_empty() {
+        return format!(
+            "网易云暂不能播放该歌曲：{}没有返回可播放链接。",
+            playback_level_label(level)
+        );
+    }
+
+    let preview = errors
+        .iter()
+        .take(3)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("；");
+    if errors.len() > 3 {
+        format!(
+            "网易云暂不能播放该歌曲：已按音质偏好尝试 {} 个候选，最后错误：{preview}；...",
+            errors.len()
+        )
+    } else {
+        format!(
+            "网易云暂不能播放该歌曲：已按音质偏好尝试 {} 个候选，错误：{preview}",
+            errors.len()
+        )
     }
 }
 
@@ -1118,9 +1186,7 @@ fn find_value_by_keys<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> 
             }
             map.values().find_map(|item| find_value_by_keys(item, keys))
         }
-        Value::Array(items) => items
-            .iter()
-            .find_map(|item| find_value_by_keys(item, keys)),
+        Value::Array(items) => items.iter().find_map(|item| find_value_by_keys(item, keys)),
         _ => None,
     }
 }
@@ -1480,10 +1546,8 @@ fn extract_membership(body: &Value, profile: &Value) -> NeteaseMembershipInfo {
         )
     });
     let level = find_u64_by_keys(profile, &["redVipLevel", "vipLevel", "vip_level"])
-    .or_else(|| {
-        find_u64_by_keys(body, &["redVipLevel", "vipLevel", "vip_level"])
-    })
-    .filter(|value| *value > 0);
+        .or_else(|| find_u64_by_keys(body, &["redVipLevel", "vipLevel", "vip_level"]))
+        .filter(|value| *value > 0);
     let expire_at = find_u64_by_keys(
         profile,
         &[
@@ -1509,13 +1573,25 @@ fn extract_membership(body: &Value, profile: &Value) -> NeteaseMembershipInfo {
     .and_then(normalize_epoch_seconds);
     let type_name = find_string_by_keys(
         profile,
-        &["vipName", "vipTypeName", "vip_type_name", "memberName", "redVipName"],
+        &[
+            "vipName",
+            "vipTypeName",
+            "vip_type_name",
+            "memberName",
+            "redVipName",
+        ],
         40,
     )
     .or_else(|| {
         find_string_by_keys(
             body,
-            &["vipName", "vipTypeName", "vip_type_name", "memberName", "redVipName"],
+            &[
+                "vipName",
+                "vipTypeName",
+                "vip_type_name",
+                "memberName",
+                "redVipName",
+            ],
             40,
         )
     });

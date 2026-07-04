@@ -1354,6 +1354,42 @@ pub async fn get_kugou_playlist_detail(
 }
 
 #[tauri::command]
+pub async fn list_kugou_recommended_playlists(
+    app: AppHandle,
+    page: Option<u64>,
+    limit: Option<u64>,
+) -> Result<kugou_music::KugouRecommendedPlaylists, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        kugou_music::recommended_playlists(&app, page, limit)
+    })
+    .await
+    .map_err(|err| format!("酷狗推荐歌单读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_kugou_recommended_playlist_detail(
+    app: AppHandle,
+    playlist_id: String,
+    page: Option<u64>,
+    limit: Option<u64>,
+) -> Result<kugou_music::KugouPlaylistDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        kugou_music::recommended_playlist_detail(&app, playlist_id, page, limit)
+    })
+    .await
+    .map_err(|err| format!("酷狗推荐歌单歌曲读取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_kugou_daily_recommended_songs(
+    app: AppHandle,
+) -> Result<kugou_music::KugouSearchResult, String> {
+    tauri::async_runtime::spawn_blocking(move || kugou_music::daily_recommended_songs(&app))
+        .await
+        .map_err(|err| format!("酷狗每日推荐读取任务失败：{err}"))?
+}
+
+#[tauri::command]
 pub async fn search_kugou_songs(
     keyword: String,
     page: u64,
@@ -1385,12 +1421,34 @@ pub async fn get_kugou_song_playback_url(
     hash_candidates: Option<Vec<String>>,
     album_audio_id: Option<u64>,
     audio_id: Option<u64>,
+    playback_quality: Option<String>,
 ) -> Result<kugou_music::KugouPlaybackUrl, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        kugou_music::get_song_playback_url(&app, hash, hash_candidates, album_audio_id, audio_id)
+        kugou_music::get_song_playback_url(
+            &app,
+            hash,
+            hash_candidates,
+            album_audio_id,
+            audio_id,
+            playback_quality,
+        )
     })
     .await
     .map_err(|err| format!("酷狗播放链接获取任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn get_kugou_song_quality_availability(
+    app: AppHandle,
+    hash: String,
+    hash_candidates: Option<Vec<String>>,
+    album_audio_id: Option<u64>,
+) -> Result<kugou_music::KugouQualityAvailability, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        kugou_music::get_song_quality_availability(&app, hash, hash_candidates, album_audio_id)
+    })
+    .await
+    .map_err(|err| format!("酷狗音质可用性预检任务失败：{err}"))?
 }
 
 #[tauri::command]

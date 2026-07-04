@@ -9,12 +9,13 @@ import type {
   InstancedBufferAttribute,
   InstancedMesh,
   IUniform,
-  Object3D,
   PerspectiveCamera,
   Points,
   Scene,
   ShaderMaterial,
   Texture,
+  Vector2,
+  Vector4,
   WebGLRenderer,
 } from 'three'
 import type { MusicEnergyFrame } from '../composables/useMusicAudioAnalyzer'
@@ -28,14 +29,22 @@ import type {
 } from '../types/app'
 
 type MusicVisualMode = 'rhythm' | 'dance' | 'focus' | 'sleep'
-type MusicStageTuningKey = keyof MusicStageTuning
+type MusicStageTuningKey = Exclude<keyof MusicStageTuning, 'centerPulse'>
 type ThreeModule = typeof import('three')
 type VisualKind = 'dust' | 'nebula' | 'stage' | 'burst' | 'trail'
 type VisualKindCounts = Record<VisualKind, number>
 
 const DJ_TERRAIN_CENTER_Z = -3.28
+const DJ_TERRAIN_GROUND_Y = -1.86
 const TERRAIN_FLUX_HISTORY_SIZE = 40
 const TERRAIN_RIPPLE_LIMIT = 12
+const TERRAIN_CENTER_PULSE_SPEED = 24
+const TERRAIN_PULSE_SPEED = 3.05
+const TERRAIN_PULSE_WIDTH = 0.34
+const TERRAIN_PULSE_FADE_DISTANCE = 5.15
+const TERRAIN_KICK_MIN_IMPULSE = 0.46
+const TERRAIN_KICK_TARGET_DECAY_RATE = 10
+const TERRAIN_KICK_RESPONSE_RATE = 26
 
 interface TerrainCell {
   x: number
@@ -71,12 +80,6 @@ interface ActiveTerrainRipple extends TerrainRipple {
   fade: number
 }
 
-interface TerrainRippleInfluence {
-  lift: number
-  glow: number
-  sharp: number
-}
-
 interface TerrainFluxTriggerState {
   kind: TerrainRippleKind
   bandStartRatio: number
@@ -102,6 +105,20 @@ interface VisualPalette {
   line: string
   ripple: string
   halo: string
+}
+
+interface TerrainMaterialPalette {
+  baseDeep: string
+  baseLift: string
+  fog: string
+  coolCore: string
+  coolEdge: string
+  warmCore: string
+  warmEdge: string
+  ripple: string
+  spark: string
+  rim: string
+  glowIntensity: number
 }
 
 interface StarUniforms {
@@ -143,6 +160,50 @@ interface TerrainUniforms {
   [key: string]: IUniform
   uOpacity: { value: number }
   uFogColor: { value: Color }
+  uTime: { value: number }
+  uBass: { value: number }
+  uMid: { value: number }
+  uTreble: { value: number }
+  uBeat: { value: number }
+  uVolume: { value: number }
+  uSubBass: { value: number }
+  uLowMid: { value: number }
+  uHighMid: { value: number }
+  uEnergy: { value: number }
+  uTriggerEnergy: { value: number }
+  uKickEnvelope: { value: number }
+  uIntensity: { value: number }
+  uReducedMotion: { value: number }
+  uMaxHeight: { value: number }
+  uBaseHeight: { value: number }
+  uResponse: { value: number }
+  uWave: { value: number }
+  uColorLow: { value: Color }
+  uColorMid: { value: Color }
+  uColorHigh: { value: Color }
+  uColorPulse: { value: Color }
+  uColorShadow: { value: Color }
+  uBaseColor1: { value: Color }
+  uBaseColor2: { value: Color }
+  uCoolCore: { value: Color }
+  uCoolEdge: { value: Color }
+  uWarmCore: { value: Color }
+  uWarmEdge: { value: Color }
+  uRippleColor: { value: Color }
+  uSparkColor: { value: Color }
+  uRimColor: { value: Color }
+  uGlowIntensity: { value: number }
+  uWarmth: { value: number }
+  uBrightness: { value: number }
+  uPresence: { value: number }
+  uBrilliance: { value: number }
+  uAir: { value: number }
+  uSharpness: { value: number }
+  uRippleCount: { value: number }
+  uRipplePos: { value: Vector2[] }
+  uRippleData: { value: Vector4[] }
+  uRippleKind: { value: number[] }
+  uCenterPulseData: { value: Vector4 }
 }
 
 interface SmoothedMusicEnergy {
@@ -188,10 +249,10 @@ const props = withDefaults(
   {
     mode: 'rhythm',
     frequencyData: null,
-    stagePreset: 'galaxy',
-    spectrumStyle: 'particles',
-    lineStyle: 'wave',
-    rippleStyle: 'rings',
+    stagePreset: 'dj',
+    spectrumStyle: 'orbit',
+    lineStyle: 'scan',
+    rippleStyle: 'heartbeat',
     intensity: 0.72,
     reducedMotion: false,
     stageTuning: () => ({ ...DEFAULT_MUSIC_STAGE_TUNING }),
@@ -227,11 +288,9 @@ let terrainMesh: InstancedMesh | null = null
 let terrainGeometry: BoxGeometry | null = null
 let terrainMaterial: ShaderMaterial | null = null
 let terrainUniforms: TerrainUniforms | null = null
-let terrainColorAttribute: InstancedBufferAttribute | null = null
-let terrainFogAttribute: InstancedBufferAttribute | null = null
-let terrainDummy: Object3D | null = null
+let terrainInfoAttribute: InstancedBufferAttribute | null = null
+let terrainBandAttribute: InstancedBufferAttribute | null = null
 let terrainCells: TerrainCell[] = []
-let terrainHeights = new Float32Array(0)
 let terrainRipples: TerrainRipple[] = []
 let terrainRippleIndex = 0
 let terrainRippleSeed = 0
@@ -243,12 +302,12 @@ let lastTerrainEnergyLevel = 0
 let lastTerrainBassRippleTime = -999
 let lastTerrainMidRippleTime = -999
 let lastTerrainSparkRippleTime = -999
-let terrainScratchColor: Color | null = null
-let terrainLowColor: Color | null = null
-let terrainMidColor: Color | null = null
-let terrainHighColor: Color | null = null
-let terrainPulseColor: Color | null = null
-let terrainShadowColor: Color | null = null
+let terrainKickEnvelope = 0
+let terrainKickTarget = 0
+let lastTerrainKickEnvelopeTime = 0
+let terrainCenterPulseStartedAt = -999
+let terrainCenterPulseStrength = 0
+let terrainCenterPulseSpeedScale = 1
 let geometry: BufferGeometry | null = null
 let mainMaterial: ShaderMaterial | null = null
 let glowMaterial: ShaderMaterial | null = null
@@ -376,29 +435,75 @@ function createMaterial(three: ThreeModule, uniforms: StarUniforms) {
   })
 }
 
+function createTerrainUniforms(three: ThreeModule): TerrainUniforms {
+  return {
+    uOpacity: { value: terrainLayerOpacity(props.stagePreset) },
+    uFogColor: { value: new three.Color('#050812') },
+    uTime: { value: 0 },
+    uBass: { value: 0 },
+    uMid: { value: 0 },
+    uTreble: { value: 0 },
+    uBeat: { value: 0 },
+    uVolume: { value: 0 },
+    uSubBass: { value: 0 },
+    uLowMid: { value: 0 },
+    uHighMid: { value: 0 },
+    uEnergy: { value: 0 },
+    uTriggerEnergy: { value: 0 },
+    uKickEnvelope: { value: 0 },
+    uIntensity: { value: 0.72 },
+    uReducedMotion: { value: 0 },
+    uMaxHeight: { value: terrainMaxHeight(props.stagePreset) },
+    uBaseHeight: { value: 0.064 },
+    uResponse: { value: 1 },
+    uWave: { value: 1 },
+    uColorLow: { value: new three.Color('#74a7ff') },
+    uColorMid: { value: new three.Color('#8edcff') },
+    uColorHigh: { value: new three.Color('#f6f0b8') },
+    uColorPulse: { value: new three.Color('#ff7a86') },
+    uColorShadow: { value: new three.Color('#050812') },
+    uBaseColor1: { value: new three.Color('#07111f') },
+    uBaseColor2: { value: new three.Color('#10253a') },
+    uCoolCore: { value: new three.Color('#3ad9ff') },
+    uCoolEdge: { value: new three.Color('#2189d4') },
+    uWarmCore: { value: new three.Color('#ffc46c') },
+    uWarmEdge: { value: new three.Color('#ff7f5a') },
+    uRippleColor: { value: new three.Color('#77d6ff') },
+    uSparkColor: { value: new three.Color('#f8fbff') },
+    uRimColor: { value: new three.Color('#d7faff') },
+    uGlowIntensity: { value: 1.08 },
+    uWarmth: { value: 0 },
+    uBrightness: { value: 0 },
+    uPresence: { value: 0 },
+    uBrilliance: { value: 0 },
+    uAir: { value: 0 },
+    uSharpness: { value: 0 },
+    uRippleCount: { value: 0 },
+    uRipplePos: {
+      value: Array.from({ length: TERRAIN_RIPPLE_LIMIT }, () => new three.Vector2(999, 999)),
+    },
+    uRippleData: {
+      value: Array.from({ length: TERRAIN_RIPPLE_LIMIT }, () => new three.Vector4(0, 1, 0, 0)),
+    },
+    uRippleKind: { value: new Array(TERRAIN_RIPPLE_LIMIT).fill(0) },
+    uCenterPulseData: { value: new three.Vector4(0, 1, 0, 0) },
+  }
+}
+
 function createTerrainLayer(three: ThreeModule) {
   if (!sceneGroup || props.stagePreset !== 'dj') {
     terrainCells = []
-    terrainHeights = new Float32Array(0)
     return
   }
 
   terrainCells = createTerrainCells(props.stagePreset, props.reducedMotion, stageTuningValue('density', 0.35, 1.7))
-  terrainHeights = new Float32Array(terrainCells.length)
   resetTerrainRipples()
   terrainGeometry = new three.BoxGeometry(1, 1, 1)
-  terrainColorAttribute = new three.InstancedBufferAttribute(new Float32Array(terrainCells.length * 3), 3)
-  terrainColorAttribute.setUsage(three.DynamicDrawUsage)
-  terrainFogAttribute = new three.InstancedBufferAttribute(new Float32Array(terrainCells.length), 1)
-  for (let index = 0; index < terrainCells.length; index += 1) {
-    terrainFogAttribute.setX(index, terrainCells[index].edgeFade)
-  }
-  terrainGeometry.setAttribute('aTerrainColor', terrainColorAttribute)
-  terrainGeometry.setAttribute('aTerrainFog', terrainFogAttribute)
-  terrainUniforms = {
-    uOpacity: { value: terrainLayerOpacity(props.stagePreset) },
-    uFogColor: { value: new three.Color('#050812') },
-  }
+  terrainInfoAttribute = new three.InstancedBufferAttribute(new Float32Array(terrainCells.length * 4), 4)
+  terrainBandAttribute = new three.InstancedBufferAttribute(new Float32Array(terrainCells.length * 4), 4)
+  terrainGeometry.setAttribute('aTerrainInfo', terrainInfoAttribute)
+  terrainGeometry.setAttribute('aTerrainBand', terrainBandAttribute)
+  terrainUniforms = createTerrainUniforms(three)
   terrainMaterial = new three.ShaderMaterial({
     uniforms: terrainUniforms,
     vertexShader: terrainVertexShaderSource,
@@ -413,14 +518,24 @@ function createTerrainLayer(three: ThreeModule) {
   terrainMesh = new three.InstancedMesh(terrainGeometry, terrainMaterial, terrainCells.length)
   terrainMesh.frustumCulled = false
   terrainMesh.renderOrder = 2
-  terrainMesh.instanceMatrix.setUsage(three.DynamicDrawUsage)
-  terrainDummy = new three.Object3D()
-  terrainScratchColor = new three.Color()
-  terrainLowColor = new three.Color()
-  terrainMidColor = new three.Color()
-  terrainHighColor = new three.Color()
-  terrainPulseColor = new three.Color()
-  terrainShadowColor = new three.Color()
+  const terrainDummy = new three.Object3D()
+  for (let index = 0; index < terrainCells.length; index += 1) {
+    const cell = terrainCells[index]
+    const visibleFade = 1 - cell.edgeFade * 0.34
+    const innerFade = 0.5 + smoothstep(0.02, 0.2, cell.ring) * 0.5
+    const radialGate = innerFade * visibleFade
+    const currentSize = cell.size * (0.68 + radialGate * 0.32)
+
+    terrainInfoAttribute.setXYZW(index, cell.ring, cell.angle, cell.spiral, cell.seed)
+    terrainBandAttribute.setXYZW(index, cell.band, cell.lane, cell.edgeFade, currentSize)
+    terrainDummy.position.set(cell.x, DJ_TERRAIN_GROUND_Y + 0.5, cell.z)
+    terrainDummy.scale.set(currentSize, 1, currentSize)
+    terrainDummy.updateMatrix()
+    terrainMesh.setMatrixAt(index, terrainDummy.matrix)
+  }
+  terrainInfoAttribute.needsUpdate = true
+  terrainBandAttribute.needsUpdate = true
+  terrainMesh.instanceMatrix.needsUpdate = true
   sceneGroup.add(terrainMesh)
   updateTerrainLayer(0, true)
 }
@@ -440,11 +555,9 @@ function rebuildTerrainLayer() {
   terrainGeometry = null
   terrainMaterial = null
   terrainUniforms = null
-  terrainColorAttribute = null
-  terrainFogAttribute = null
-  terrainDummy = null
+  terrainInfoAttribute = null
+  terrainBandAttribute = null
   terrainCells = []
-  terrainHeights = new Float32Array(0)
   resetTerrainRipples()
   createTerrainLayer(three)
 }
@@ -457,7 +570,7 @@ function createTerrainCells(
   const gridSize = terrainGridSize(preset, reducedMotion, densityTuning)
   const djGridExtent = 1.2
   const djOuterLimit = 1.08
-  const footprint = preset === 'galaxy' ? 7.4 : preset === 'lyric' ? 6.4 : preset === 'dj' ? 12.2 : 8.8
+  const footprint = preset === 'dj' ? 12.2 : 7.4
   const effectiveFootprint = preset === 'dj' ? footprint * djGridExtent : footprint
   const spacing = effectiveFootprint / (preset === 'dj' ? gridSize : Math.max(1, gridSize - 1))
   const baseSize = spacing * (preset === 'dj' ? 1.015 : 0.72)
@@ -492,10 +605,6 @@ function createTerrainCells(
 
       if (preset === 'dj') {
         band = clamp01(distance * 0.8 + spiral * 0.12 + djRingTexture * 0.06 + seed * 0.02)
-      } else if (preset === 'cinematic') {
-        band = clamp01(distance * 0.5 + rowN * 0.34 + ridge * 0.16)
-      } else if (preset === 'lyric') {
-        band = clamp01(0.28 + columnN * 0.44)
       }
 
       cells.push({
@@ -520,16 +629,15 @@ function createTerrainCells(
 }
 
 function updateTerrainLayer(time: number, immediate = false) {
-  if (!terrainMesh || !terrainUniforms || !terrainColorAttribute || !terrainDummy || !terrainScratchColor) {
+  if (!terrainMesh || !terrainUniforms) {
     return
   }
 
-  const playFactor = props.playing ? 1 : 0.28
-  const bass = clamp01(props.energy.bass * playFactor)
-  const mid = clamp01(props.energy.mid * playFactor)
-  const treble = clamp01(props.energy.treble * playFactor)
-  const beat = clamp01(props.energy.beat * playFactor)
-  const volume = clamp01(props.energy.volume * playFactor)
+  const bass = clamp01(smoothedEnergy.bass)
+  const mid = clamp01(smoothedEnergy.mid)
+  const treble = clamp01(smoothedEnergy.treble)
+  const beat = clamp01(smoothedEnergy.beat)
+  const volume = clamp01(smoothedEnergy.volume)
   const intensity = clamp(props.intensity, 0.2, 1)
   const preset = props.stagePreset
   if (preset !== 'dj') {
@@ -540,17 +648,20 @@ function updateTerrainLayer(time: number, immediate = false) {
   const waveTuning = stageTuningValue('wave', 0.2, 2.4)
   const triggerTuning = stageTuningValue('trigger', 0.25, 2.4)
   const maxHeight = terrainMaxHeight(preset) * (0.58 + intensity * 0.24) * heightTuning
-  const baseHeight = 0.048
-  const responseBase = props.reducedMotion ? 0.075 : 0.14
-  const response = immediate ? 1 : clamp(responseBase * responseTuning, 0.025, 0.36)
-  const groundY = -1.86
-  const palette = visualPalette(props.theme, props.mode)
-  const fogColor = terrainFogColor(props.theme, props.mode)
+  const terrainPalette = terrainMaterialPalette(props.theme, props.mode)
   const lowMid = clamp01(bass * 0.28 + mid * 0.72)
   const highMid = clamp01(mid * 0.42 + treble * 0.58)
   const subBass = clamp01(bass * 0.56 + beat * 0.2)
   const energy = clamp01(volume * 0.46 + bass * 0.22 + mid * 0.18 + treble * 0.14)
   const triggerEnergy = clamp01(subBass * 0.34 + bass * 0.32 + beat * 0.22 + volume * 0.12)
+  const presence = clamp01(treble * 0.46 + highMid * 0.34 + beat * 0.12 + volume * 0.08)
+  const brilliance = clamp01(treble * 0.62 + beat * 0.18 + energy * 0.2)
+  const air = clamp01(treble * 0.56 + highMid * 0.22 + (1 - bass) * volume * 0.12 + energy * 0.1)
+  const lowWeight = subBass + bass + lowMid + mid * 0.42
+  const highWeight = presence + brilliance + air + 0.001
+  const warmth = clamp01(lowWeight / Math.max(0.001, lowWeight + highWeight) + beat * 0.08)
+  const brightness = clamp01((presence + brilliance + air) / 3 * 0.78 + energy * 0.24 + triggerEnergy * 0.08)
+  const sharpness = clamp01(treble * 0.42 + beat * 0.28 + Math.abs(treble - mid) * 0.2 + triggerEnergy * 0.1)
 
   updateTerrainRippleTriggers(time, {
     frequencyData: props.frequencyData,
@@ -566,103 +677,88 @@ function updateTerrainLayer(time: number, immediate = false) {
     triggerTuning,
     reducedMotion: props.reducedMotion,
   })
+  const kickEnvelope = updateTerrainKickEnvelope(time, props.playing, props.reducedMotion)
   const activeRipples = activeTerrainRipples(time, props.reducedMotion, waveTuning)
+  const centerPulse = activeTerrainCenterPulse(time, props.reducedMotion, waveTuning)
 
   terrainUniforms.uOpacity.value = terrainLayerOpacity(preset)
-  terrainUniforms.uFogColor.value.set(fogColor)
-  terrainLowColor?.set(palette.low)
-  terrainMidColor?.set(palette.mid)
-  terrainHighColor?.set(palette.high)
-  terrainPulseColor?.set(palette.pulse)
-  terrainShadowColor?.set(fogColor)
+  terrainUniforms.uTime.value = time
+  terrainUniforms.uFogColor.value.set(terrainPalette.fog)
+  terrainUniforms.uBass.value = bass
+  terrainUniforms.uMid.value = mid
+  terrainUniforms.uTreble.value = treble
+  terrainUniforms.uBeat.value = beat
+  terrainUniforms.uVolume.value = volume
+  terrainUniforms.uSubBass.value = subBass
+  terrainUniforms.uLowMid.value = lowMid
+  terrainUniforms.uHighMid.value = highMid
+  terrainUniforms.uEnergy.value = energy
+  terrainUniforms.uTriggerEnergy.value = triggerEnergy
+  terrainUniforms.uKickEnvelope.value = kickEnvelope
+  terrainUniforms.uCenterPulseData.value.set(
+    centerPulse.radius,
+    Math.max(0.001, centerPulse.width),
+    centerPulse.fade,
+    centerPulse.strength,
+  )
+  terrainUniforms.uIntensity.value = intensity
+  terrainUniforms.uReducedMotion.value = props.reducedMotion ? 1 : 0
+  terrainUniforms.uMaxHeight.value = maxHeight
+  terrainUniforms.uBaseHeight.value = 0.064
+  terrainUniforms.uResponse.value = immediate ? 1 : responseTuning
+  terrainUniforms.uWave.value = waveTuning
+  terrainUniforms.uColorLow.value.set(terrainPalette.coolCore)
+  terrainUniforms.uColorMid.value.set(terrainPalette.coolEdge)
+  terrainUniforms.uColorHigh.value.set(terrainPalette.rim)
+  terrainUniforms.uColorPulse.value.set(terrainPalette.warmCore)
+  terrainUniforms.uColorShadow.value.set(terrainPalette.fog)
+  terrainUniforms.uBaseColor1.value.set(terrainPalette.baseDeep)
+  terrainUniforms.uBaseColor2.value.set(terrainPalette.baseLift)
+  terrainUniforms.uCoolCore.value.set(terrainPalette.coolCore)
+  terrainUniforms.uCoolEdge.value.set(terrainPalette.coolEdge)
+  terrainUniforms.uWarmCore.value.set(terrainPalette.warmCore)
+  terrainUniforms.uWarmEdge.value.set(terrainPalette.warmEdge)
+  terrainUniforms.uRippleColor.value.set(terrainPalette.ripple)
+  terrainUniforms.uSparkColor.value.set(terrainPalette.spark)
+  terrainUniforms.uRimColor.value.set(terrainPalette.rim)
+  terrainUniforms.uGlowIntensity.value = terrainPalette.glowIntensity
+  terrainUniforms.uWarmth.value = warmth
+  terrainUniforms.uBrightness.value = brightness
+  terrainUniforms.uPresence.value = presence
+  terrainUniforms.uBrilliance.value = brilliance
+  terrainUniforms.uAir.value = air
+  terrainUniforms.uSharpness.value = sharpness
+  updateTerrainRippleUniforms(terrainUniforms, activeRipples)
+}
 
-  for (let index = 0; index < terrainCells.length; index += 1) {
-    const cell = terrainCells[index]
-    const visibleFade = 1 - cell.edgeFade * 0.34
-    const innerFade = 0.5 + smoothstep(0.02, 0.2, cell.ring) * 0.5
-    const radialGate = innerFade * visibleFade
-    const centerCore = 1 - smoothstep(0.02, 0.2, cell.ring)
-    const innerBand = 1 - smoothstep(0.12, 0.44, cell.ring)
-    const middleBand = 1 - smoothstep(0, 0.26, Math.abs(cell.ring - (0.42 + bass * 0.025)))
-    const outerBand = smoothstep(0.48, 0.86, cell.ring) * (1 - cell.edgeFade * 0.28)
-    const ripple = terrainRippleInfluence(cell, activeRipples)
-    const localWave = clamp01(ripple.lift * waveTuning)
-    const rippleGlow = clamp01(ripple.glow * (0.72 + waveTuning * 0.28))
-    const rippleTail = (Math.sin(cell.ring * 32 + cell.spiral * 2.4 - time * 0.34 + rippleGlow * 2.1) + 1) * 0.5
-    const angularFlow =
-      Math.sin(cell.angle * 2 + cell.ring * 3.1 + time * 0.18) * 0.58 +
-      Math.cos(cell.angle * 3 - cell.ring * 2.4 - time * 0.14) * 0.42
-    const radialPhase =
-      cell.ring * 18 +
-      Math.sin(cell.angle) * 1.45 +
-      Math.cos(cell.angle) * 0.9 -
-      time * 0.52 +
-      cell.seed * 1.4
-    const slowFlow =
-      (Math.sin(cell.ring * 17.5 - time * 0.32 + cell.spiral * 2.2) +
-        angularFlow) *
-        0.25 +
-      0.5
-    const radialCurrent = Math.max(
-      0,
-      Math.sin(radialPhase),
-    )
-    const spikeGate = cell.seed > 0.925 ? Math.max(0, Math.sin(time * 5.8 + cell.seed * Math.PI * 2)) : 0
-    const microSpark = cell.seed > 0.982 ? Math.max(0, Math.sin(time * 8.4 + cell.seed * Math.PI * 4)) : 0
-    const coreLift = centerCore * (subBass * 0.34 + bass * 0.16 + beat * 0.1 + volume * 0.055)
-    const bassChunkLift = bass * (0.1 + innerBand * 0.24 + middleBand * 0.14) * (0.58 + slowFlow * 0.42)
-    const waveLift = localWave * (0.58 + rippleTail * 0.2) * (1 + innerBand * 0.26 + middleBand * 0.16)
-    const lowMidLift = lowMid * slowFlow * (0.13 + middleBand * 0.21)
-    const midLift = mid * radialCurrent * (0.12 + middleBand * 0.22 + outerBand * 0.08)
-    const highMidLift = highMid * (spikeGate * outerBand * 0.12 + ripple.sharp * 0.22)
-    const energySpike = microSpark * beat * energy * (0.07 + outerBand * 0.08)
-    const terrainEnergy = clamp(
-      (coreLift + bassChunkLift + lowMidLift + midLift + highMidLift + energySpike) * radialGate - 0.03,
-      0,
-      1.25,
-    )
-    const rippleEnergy = clamp(waveLift * radialGate, 0, 1.18)
-    const rippleHeight = Math.pow(rippleEnergy, 0.82) * maxHeight * (0.24 + waveTuning * 0.08)
-    const ringRipple = (Math.sin(cell.ring * 34 - time * 0.32 + cell.spiral * 3.1) * 0.005 + (slowFlow - 0.5) * 0.007) * radialGate
-    const horizonBase = baseHeight * (0.3 + radialGate * 0.7)
-    const targetHeight =
-      horizonBase +
-      Math.pow(terrainEnergy, 0.86) * maxHeight +
-      rippleHeight +
-      ringRipple
+function updateTerrainRippleUniforms(uniforms: TerrainUniforms, ripples: ActiveTerrainRipple[]) {
+  const count = Math.min(ripples.length, TERRAIN_RIPPLE_LIMIT)
+  uniforms.uRippleCount.value = count
 
-    const height = clamp(targetHeight, 0.006, maxHeight * 1.18 + 0.1)
-    terrainHeights[index] += (height - terrainHeights[index]) * response
-    const currentHeight = Math.max(0.006, terrainHeights[index])
-    const heightRatio = clamp01(currentHeight / Math.max(0.1, maxHeight))
-
-    const currentSize = cell.size * (0.68 + radialGate * 0.32)
-
-    terrainDummy.position.set(cell.x, groundY + currentHeight * 0.5, cell.z)
-    terrainDummy.scale.set(currentSize, currentHeight, currentSize)
-    terrainDummy.updateMatrix()
-    terrainMesh.setMatrixAt(index, terrainDummy.matrix)
-
-    if (terrainLowColor && terrainMidColor && terrainHighColor && terrainPulseColor && terrainShadowColor) {
-      const waveGlow = clamp01(rippleGlow * (0.72 + triggerEnergy * 0.24) + localWave * 0.1 + centerCore * subBass * 0.1 + spikeGate * highMid * 0.12)
-      terrainScratchColor.copy(terrainLowColor)
-      terrainScratchColor.lerp(terrainMidColor, clamp01(cell.ring * 0.42 + slowFlow * 0.18 + lowMid * 0.08))
-      terrainScratchColor.lerp(terrainHighColor, clamp01(waveGlow * 0.22 + heightRatio * 0.08 + highMidLift * 0.26))
-      terrainScratchColor.lerp(
-        terrainPulseColor,
-        clamp01(waveGlow * beat * 0.08 + localWave * (0.08 + triggerEnergy * 0.08) + ripple.sharp * 0.1 + energySpike * 0.18),
-      )
-      terrainScratchColor.lerp(terrainShadowColor, clamp01(cell.edgeFade * 0.38))
-      terrainScratchColor.multiplyScalar(0.36 + radialGate * 0.28 + heightRatio * 0.18 + waveGlow * 0.2 + energy * 0.035)
-      terrainScratchColor.r = clamp(terrainScratchColor.r, 0, 0.72)
-      terrainScratchColor.g = clamp(terrainScratchColor.g, 0, 0.72)
-      terrainScratchColor.b = clamp(terrainScratchColor.b, 0, 0.72)
-      terrainColorAttribute.setXYZ(index, terrainScratchColor.r, terrainScratchColor.g, terrainScratchColor.b)
+  for (let index = 0; index < TERRAIN_RIPPLE_LIMIT; index += 1) {
+    const ripple = ripples[index]
+    const pos = uniforms.uRipplePos.value[index]
+    const data = uniforms.uRippleData.value[index]
+    if (ripple) {
+      pos.set(ripple.x, ripple.z)
+      data.set(ripple.radius, Math.max(0.001, ripple.width), ripple.fade, ripple.strength)
+      uniforms.uRippleKind.value[index] = terrainRippleKindCode(ripple.kind)
+    } else {
+      pos.set(999, 999)
+      data.set(0, 1, 0, 0)
+      uniforms.uRippleKind.value[index] = 0
     }
   }
+}
 
-  terrainMesh.instanceMatrix.needsUpdate = true
-  terrainColorAttribute.needsUpdate = true
+function terrainRippleKindCode(kind: TerrainRippleKind) {
+  if (kind === 'spark') {
+    return 2
+  }
+  if (kind === 'snare') {
+    return 1
+  }
+  return 0
 }
 
 function terrainGridSize(preset: MusicVisualStagePreset, reducedMotion: boolean, densityTuning = 1) {
@@ -672,51 +768,21 @@ function terrainGridSize(preset: MusicVisualStagePreset, reducedMotion: boolean,
     const maxSize = reducedMotion ? 220 : 300
     return Math.round(clamp(baseSize * densityTuning, minSize, maxSize))
   }
-  if (reducedMotion) {
-    return 34
-  }
-  if (preset === 'cinematic') {
-    return 58
-  }
-  if (preset === 'galaxy') {
-    return 42
-  }
-  if (preset === 'lyric') {
-    return 38
-  }
-  return 52
+  return reducedMotion ? 34 : 42
 }
 
 function terrainMaxHeight(preset: MusicVisualStagePreset) {
-  if (preset === 'cinematic') {
-    return 3.6
-  }
   if (preset === 'dj') {
     return 1.34
   }
-  if (preset === 'galaxy') {
-    return 0.95
-  }
-  if (preset === 'lyric') {
-    return 0.72
-  }
-  return 2.55
+  return 0.95
 }
 
 function terrainLayerOpacity(preset: MusicVisualStagePreset) {
   if (preset === 'galaxy') {
     return 0
   }
-  if (preset === 'lyric') {
-    return 0.24
-  }
-  if (preset === 'cinematic') {
-    return 0.86
-  }
-  if (preset === 'dj') {
-    return 1
-  }
-  return 0.76
+  return 1
 }
 
 function disposeWebgl() {
@@ -758,18 +824,10 @@ function disposeWebgl() {
   terrainGeometry = null
   terrainMaterial = null
   terrainUniforms = null
-  terrainColorAttribute = null
-  terrainFogAttribute = null
-  terrainDummy = null
+  terrainInfoAttribute = null
+  terrainBandAttribute = null
   terrainCells = []
-  terrainHeights = new Float32Array(0)
   resetTerrainRipples()
-  terrainScratchColor = null
-  terrainLowColor = null
-  terrainMidColor = null
-  terrainHighColor = null
-  terrainPulseColor = null
-  terrainShadowColor = null
   geometry = null
   mainMaterial = null
   glowMaterial = null
@@ -850,9 +908,9 @@ function updateCamera(time: number) {
   const isDjPreset = props.stagePreset === 'dj'
   const cameraTuning =
     props.stagePreset === 'galaxy' ? stageTuningValue('camera', 0.55, 1.75) : stageTuningValue('camera', 0.55, 1.65)
-  const cinematicBoost = props.stagePreset === 'cinematic' ? 1.42 : isDjPreset ? 0.58 : 1
-  const driftScale = props.stagePreset === 'galaxy' ? 1.36 : props.stagePreset === 'lyric' ? 0.38 : isDjPreset ? 0.16 : 1
-  const radiusBias = props.stagePreset === 'galaxy' ? 0.62 : props.stagePreset === 'lyric' ? 1.18 : isDjPreset ? 2.05 : 0
+  const cameraBoost = isDjPreset ? 0.58 : 1
+  const driftScale = props.stagePreset === 'galaxy' ? 1.36 : 0.16
+  const radiusBias = props.stagePreset === 'galaxy' ? 0.62 : 2.05
   const dragYaw = degreesToRadians(props.stageYaw) * 1.18 * motionScale
   const dragPitch = degreesToRadians(props.stagePitch) * 0.96 * motionScale
   const idleYaw = Math.sin(time * 0.075) * 0.055 * motionScale * driftScale
@@ -865,13 +923,13 @@ function updateCamera(time: number) {
   const targetRadius = isDjPreset
     ? (8.15 + radiusBias) * cameraTuning - beatPunch * 0.08 * motionScale - clamp(props.intensity, 0.2, 1) * 0.08
     : (8.15 + radiusBias) * cameraTuning -
-      beatPunch * 0.42 * motionScale * cinematicBoost -
+      beatPunch * 0.42 * motionScale * cameraBoost -
       clamp(props.intensity, 0.2, 1) * 0.22
 
   orbitYaw += (targetYaw - orbitYaw) * (props.stageDragging ? 0.22 : 0.105)
   orbitPitch += (targetPitch - orbitPitch) * 0.1
   orbitRadius += (targetRadius - orbitRadius) * 0.075
-  cameraPunch = Math.max(cameraPunch * 0.86, beatPunch * 0.72 * motionScale * cinematicBoost)
+  cameraPunch = Math.max(cameraPunch * 0.86, beatPunch * 0.72 * motionScale * cameraBoost)
 
   const cy = Math.cos(orbitPitch)
   const sy = Math.sin(orbitPitch)
@@ -885,8 +943,8 @@ function updateCamera(time: number) {
     camera.position.set(orbitRadius * cy * st, 0.7 + orbitRadius * sy, orbitRadius * cy * ct)
     camera.lookAt(0, 0, -0.45)
   }
-  camera.rotation.z += Math.sin(time * 0.9) * cameraPunch * 0.008 * cinematicBoost
-  const targetFov = isDjPreset ? 46 - cameraPunch * 0.62 : 46 - cameraPunch * 2.6 * cinematicBoost
+  camera.rotation.z += Math.sin(time * 0.9) * cameraPunch * 0.008 * cameraBoost
+  const targetFov = isDjPreset ? 46 - cameraPunch * 0.62 : 46 - cameraPunch * 2.6 * cameraBoost
   camera.fov += (targetFov - camera.fov) * 0.12
   camera.updateProjectionMatrix()
 }
@@ -920,10 +978,8 @@ function updateSceneGroup(time: number) {
 
   const energy = props.energy
   const motionScale = props.reducedMotion ? 0.36 : 1
-  const presetSpin =
-    props.stagePreset === 'galaxy' ? 1.72 : props.stagePreset === 'dj' ? 0.18 : props.stagePreset === 'lyric' ? 0.42 : 1
-  const presetLift =
-    props.stagePreset === 'cinematic' ? 1.36 : props.stagePreset === 'dj' ? 0.26 : props.stagePreset === 'lyric' ? 0.44 : 1
+  const presetSpin = props.stagePreset === 'galaxy' ? 1.72 : 0.18
+  const presetLift = props.stagePreset === 'dj' ? 0.26 : 1
   const beatLift = props.playing ? clamp01(energy.beat * 0.75 + energy.bass * 0.35) * presetLift : 0
   const freeCameraMode = props.freeCamera.active || props.freeCamera.locked
   sceneGroup.rotation.y =
@@ -1084,14 +1140,6 @@ function visualKindCounts(
 
   if (reducedMotion) {
     return { dust: 520, nebula: 180, stage: 360, burst: 110, trail: 120 }
-  }
-
-  if (preset === 'cinematic') {
-    return { dust: 260, nebula: 80, stage: 520, burst: 360, trail: 160 }
-  }
-
-  if (preset === 'lyric') {
-    return { dust: 160, nebula: 40, stage: 120, burst: 24, trail: 60 }
   }
 
   return { dust: 420, nebula: 120, stage: 360, burst: 180, trail: 140 }
@@ -1319,24 +1367,268 @@ function createDotTexture(three: ThreeModule) {
 }
 
 const terrainVertexShaderSource = `
-attribute vec3 aTerrainColor;
-attribute float aTerrainFog;
+precision highp float;
+
+attribute vec4 aTerrainInfo;
+attribute vec4 aTerrainBand;
+
+uniform float uTime;
+uniform float uBass;
+uniform float uMid;
+uniform float uTreble;
+uniform float uBeat;
+uniform float uVolume;
+uniform float uSubBass;
+uniform float uLowMid;
+uniform float uHighMid;
+uniform float uEnergy;
+uniform float uTriggerEnergy;
+uniform float uKickEnvelope;
+uniform float uIntensity;
+uniform float uReducedMotion;
+uniform float uMaxHeight;
+uniform float uBaseHeight;
+uniform float uResponse;
+uniform float uWave;
+uniform vec3 uColorLow;
+uniform vec3 uColorMid;
+uniform vec3 uColorHigh;
+uniform vec3 uColorPulse;
+uniform vec3 uColorShadow;
+uniform vec3 uFogColor;
+uniform vec3 uBaseColor1;
+uniform vec3 uBaseColor2;
+uniform vec3 uCoolCore;
+uniform vec3 uCoolEdge;
+uniform vec3 uWarmCore;
+uniform vec3 uWarmEdge;
+uniform vec3 uRippleColor;
+uniform vec3 uSparkColor;
+uniform vec3 uRimColor;
+uniform float uGlowIntensity;
+uniform float uWarmth;
+uniform float uBrightness;
+uniform float uPresence;
+uniform float uBrilliance;
+uniform float uAir;
+uniform float uSharpness;
+uniform float uRippleCount;
+uniform vec2 uRipplePos[${TERRAIN_RIPPLE_LIMIT}];
+uniform vec4 uRippleData[${TERRAIN_RIPPLE_LIMIT}];
+uniform float uRippleKind[${TERRAIN_RIPPLE_LIMIT}];
+uniform vec4 uCenterPulseData;
 
 varying vec3 vTerrainColor;
 varying vec3 vTerrainLocalPosition;
+varying vec3 vTerrainNormal;
 varying float vTerrainTop;
 varying float vTerrainDepth;
 varying float vTerrainFog;
+varying float vTerrainHeightRatio;
+varying float vTerrainRippleGlow;
+varying float vTerrainRippleSharp;
+varying float vTerrainLiftAccent;
+varying float vTerrainImpactAccent;
+varying float vTerrainRing;
+varying float vTerrainSeed;
+varying float vTerrainEdgeFade;
+varying float vTerrainDistance;
+varying float vTerrainBand;
+varying float vTerrainWarmZone;
+
+const float PI = 3.141592653589793;
 
 void main() {
-  vTerrainColor = aTerrainColor;
-  vTerrainLocalPosition = position;
-  vTerrainTop = position.y + 0.5;
-  vTerrainFog = aTerrainFog;
+  float ring = aTerrainInfo.x;
+  float angle = aTerrainInfo.y;
+  float spiral = aTerrainInfo.z;
+  float seed = aTerrainInfo.w;
+  float band = aTerrainBand.x;
+  float lane = aTerrainBand.y;
+  float edgeFade = aTerrainBand.z;
+  float yPos = position.y + 0.5;
+  float motion = mix(1.0, 0.38, uReducedMotion);
+  float time = uTime * (0.72 + clamp(uResponse, 0.2, 2.4) * 0.38) * motion;
+  vec4 instanceOrigin = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+  vec2 cellPos = instanceOrigin.xz;
 
-  vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+  float rippleLift = 0.0;
+  float rippleGlow = 0.0;
+  float rippleSharp = 0.0;
+  for (int i = 0; i < ${TERRAIN_RIPPLE_LIMIT}; i++) {
+    if (float(i) < uRippleCount) {
+      vec4 rippleData = uRippleData[i];
+      float distanceToWave = length(cellPos - uRipplePos[i]);
+      float delta = distanceToWave - rippleData.x;
+      float wave = exp(-(delta * delta) / max(0.001, rippleData.y)) * rippleData.z * rippleData.w;
+      float localFade = 1.0 - edgeFade * 0.18;
+      float kind = uRippleKind[i];
+      if (kind > 1.5) {
+        rippleSharp += wave * 0.9 * localFade;
+        rippleGlow += wave * 0.62 * localFade;
+        rippleLift += wave * 0.16 * localFade;
+      } else if (kind > 0.5) {
+        rippleSharp += wave * 0.72 * localFade;
+        rippleGlow += wave * 0.76 * localFade;
+        rippleLift += wave * 0.2 * localFade;
+      } else {
+        rippleGlow += wave * 0.94 * localFade;
+        rippleLift += wave * 0.42 * localFade;
+      }
+    }
+  }
+
+  if (uCenterPulseData.w > 0.0) {
+    float centerDistance = length(cellPos);
+    float centerDelta = centerDistance - uCenterPulseData.x;
+    float centerWave = exp(-(centerDelta * centerDelta) / max(0.001, uCenterPulseData.y)) * uCenterPulseData.z * uCenterPulseData.w;
+    float centerFillRamp = smoothstep(0.18, 1.15, uCenterPulseData.x);
+    float centerFillEdge = 1.0 - smoothstep(
+      max(0.0, uCenterPulseData.x - uCenterPulseData.y * 5.2),
+      uCenterPulseData.x + uCenterPulseData.y * 1.25,
+      centerDistance
+    );
+    float centerFill = centerFillEdge * centerFillRamp * uCenterPulseData.z * uCenterPulseData.w;
+    float centerLocalFade = 1.0 - edgeFade * 0.18;
+    rippleGlow += centerWave * 0.94 * centerLocalFade;
+    rippleLift += centerWave * 0.42 * centerLocalFade;
+    rippleGlow += centerFill * 0.28 * centerLocalFade;
+    rippleLift += centerFill * (0.18 + centerFillEdge * 0.04) * centerLocalFade;
+  }
+
+  float visibleFade = 1.0 - edgeFade * 0.34;
+  float innerFade = 0.5 + smoothstep(0.02, 0.2, ring) * 0.5;
+  float radialGate = innerFade * visibleFade;
+  float centerCoreRaw = 1.0 - smoothstep(0.02, 0.2, ring);
+  float centerCore = centerCoreRaw;
+  float innerBand = 1.0 - smoothstep(0.12, 0.44, ring);
+  float transientInnerBand = innerBand;
+  float middleBand = 0.0;
+  float outerBand = smoothstep(0.48, 0.86, ring) * (1.0 - edgeFade * 0.28);
+  float localWave = clamp(rippleLift * uWave, 0.0, 1.0);
+  float localRippleGlow = clamp(rippleGlow * (0.72 + uWave * 0.28), 0.0, 1.0);
+  float expansionRippleSharp = rippleSharp;
+  float rippleTailPattern = (sin(ring * 32.0 + spiral * 2.4 - time * 0.34 + localRippleGlow * 2.1) + 1.0) * 0.5;
+  float rippleTail = rippleTailPattern;
+  float radialPhase =
+    ring * 18.0 +
+    sin(angle) * 1.45 +
+    cos(angle) * 0.9 -
+    time * 0.52 +
+    seed * 1.4;
+  float lateralSlowFlow = clamp(
+    (
+      sin(cellPos.x * 0.34 + cellPos.y * 0.21 - time * 0.22 + seed * 2.6) +
+      cos(cellPos.x * 0.18 - cellPos.y * 0.3 + time * 0.16 + seed * 1.9)
+    ) * 0.18 + 0.5,
+    0.0,
+    1.0
+  );
+  float slowFlow = lateralSlowFlow;
+  float radialCurrent = max(0.0, sin(radialPhase));
+  float spikeGate = seed > 0.925 ? max(0.0, sin(time * 5.8 + seed * PI * 2.0)) : 0.0;
+  float microSpark = seed > 0.982 ? max(0.0, sin(time * 8.4 + seed * PI * 4.0)) : 0.0;
+  float kickImpact = clamp(uKickEnvelope, 0.0, 1.0);
+  float kickLift = kickImpact * (centerCore * 0.54 + transientInnerBand * 0.16) * (0.9 + uWave * 0.08);
+  float coreLift = centerCore * (uSubBass * 0.34 + uBass * 0.16 + uBeat * 0.1 + uVolume * 0.055);
+  float bassChunkLift = uBass * (0.1 + transientInnerBand * 0.24 + middleBand * 0.14) * (0.58 + slowFlow * 0.42);
+  float waveLift = localWave * (0.58 + rippleTail * 0.2) * (1.0 + transientInnerBand * 0.26 + middleBand * 0.16);
+  float lowMidLift = uLowMid * slowFlow * (0.13 + middleBand * 0.21);
+  float midLift = uMid * radialCurrent * (0.12 + middleBand * 0.22 + outerBand * 0.08);
+  float highMidLift = uHighMid * (spikeGate * outerBand * 0.12 + expansionRippleSharp * 0.22);
+  float energySpike = microSpark * uBeat * uEnergy * (0.07 + outerBand * 0.08);
+  float terrainEnergy = clamp(
+    (coreLift + bassChunkLift + kickLift + lowMidLift + midLift + highMidLift + energySpike) * radialGate - 0.03,
+    0.0,
+    1.25
+  );
+  float rippleEnergy = clamp(waveLift * radialGate, 0.0, 1.18);
+  float rippleHeight = pow(rippleEnergy, 0.82) * uMaxHeight * (0.24 + uWave * 0.08);
+  float kickHeight = kickImpact * (centerCore * 0.18 + transientInnerBand * 0.05) * uMaxHeight * (0.32 + uWave * 0.04);
+  float ringRipple =
+    (sin(ring * 34.0 - time * 0.32 + spiral * 3.1) * 0.005 + (slowFlow - 0.5) * 0.007) *
+    radialGate;
+  float idleRelief = (0.018 + seed * 0.012 + slowFlow * 0.012) * radialGate * (1.0 - edgeFade * 0.4);
+  float horizonBase = uBaseHeight * (0.3 + radialGate * 0.7);
+  float targetHeight =
+    horizonBase +
+    idleRelief +
+    pow(terrainEnergy, 0.86) * uMaxHeight +
+    kickHeight +
+    rippleHeight +
+    ringRipple;
+  float height = clamp(targetHeight, 0.006, uMaxHeight * 1.18 + 0.1);
+  float heightRatio = clamp(height / max(0.1, uMaxHeight), 0.0, 1.0);
+
+  vec3 pos = position;
+  pos.y = -0.5 + yPos * height;
+
+  float waveGlow = clamp(
+    localRippleGlow * (0.72 + uTriggerEnergy * 0.24) +
+      localWave * 0.1 +
+      centerCore * uSubBass * 0.1 +
+      centerCore * kickImpact * 0.28 +
+      spikeGate * uHighMid * 0.12,
+    0.0,
+    1.0
+  );
+  float amplifiedRippleSharp = clamp(
+    expansionRippleSharp * 0.72 + kickImpact * (centerCore * 0.42 + transientInnerBand * 0.12) + energySpike * 1.4 + spikeGate * uHighMid * 0.28,
+    0.0,
+    1.0
+  );
+  float liftGlow = smoothstep(0.08, 0.78, heightRatio);
+  float liftAccent = clamp(
+    liftGlow * (0.22 + uBass * 0.16 + uBeat * 0.18) +
+      waveGlow * 0.22 +
+      localWave * (0.08 + uTriggerEnergy * 0.08),
+    0.0,
+    1.0
+  );
+  float impactAccent = clamp(
+    smoothstep(0.18, 0.78, amplifiedRippleSharp) * (0.56 + uBeat * 0.18) +
+      kickImpact * (centerCore * 0.24 + transientInnerBand * 0.14),
+    0.0,
+    1.0
+  );
+  vec3 color = uColorLow;
+  color = mix(color, uColorMid, clamp(ring * 0.42 + slowFlow * 0.18 + uLowMid * 0.08, 0.0, 1.0));
+  color = mix(color, uColorHigh, clamp(waveGlow * 0.28 + heightRatio * 0.18 + liftAccent * 0.1 + highMidLift * 0.3, 0.0, 1.0));
+  color = mix(
+    color,
+    uColorPulse,
+    clamp(waveGlow * uBeat * 0.13 + localWave * (0.1 + uTriggerEnergy * 0.1) + expansionRippleSharp * 0.14 + energySpike * 0.22 + impactAccent * 0.14, 0.0, 1.0)
+  );
+  color = mix(color, uColorShadow, clamp(edgeFade * 0.38, 0.0, 1.0));
+  color *= clamp(0.38 + radialGate * 0.28 + heightRatio * 0.23 + liftAccent * 0.18 + waveGlow * 0.24 + impactAccent * 0.12 + uEnergy * 0.045, 0.0, 1.22);
+
+  vTerrainColor = clamp(color, vec3(0.0), vec3(0.86));
+  vTerrainLocalPosition = position;
+  vTerrainNormal = normal;
+  vTerrainTop = yPos;
+  vTerrainHeightRatio = heightRatio;
+  vTerrainRippleGlow = waveGlow;
+  vTerrainRippleSharp = amplifiedRippleSharp;
+  vTerrainLiftAccent = liftAccent;
+  vTerrainImpactAccent = impactAccent;
+  vTerrainRing = ring;
+  vTerrainSeed = seed;
+  vTerrainEdgeFade = edgeFade;
+  vTerrainDistance = length(cellPos);
+  vTerrainBand = band;
+  vTerrainWarmZone = clamp(
+      centerCore * (0.34 + kickImpact * 0.18) +
+      transientInnerBand * 0.2 +
+      middleBand * 0.22 +
+      slowFlow * 0.16 +
+      lane * 0.08,
+    0.0,
+    1.0
+  );
+
+  vec4 mvPosition = modelViewMatrix * instanceMatrix * vec4(pos, 1.0);
   float depthFog = smoothstep(7.6, 15.8, -mvPosition.z);
-  vTerrainFog = clamp(vTerrainFog * 0.4 + depthFog * 0.6, 0.0, 1.0);
+  vTerrainFog = clamp(edgeFade * 0.4 + depthFog * 0.6, 0.0, 1.0);
   vTerrainDepth = clamp(1.0 - depthFog * 0.36, 0.5, 1.0);
   gl_Position = projectionMatrix * mvPosition;
 }
@@ -1347,29 +1639,140 @@ precision highp float;
 
 uniform float uOpacity;
 uniform vec3 uFogColor;
+uniform vec3 uBaseColor1;
+uniform vec3 uBaseColor2;
+uniform vec3 uCoolCore;
+uniform vec3 uCoolEdge;
+uniform vec3 uWarmCore;
+uniform vec3 uWarmEdge;
+uniform vec3 uRippleColor;
+uniform vec3 uSparkColor;
+uniform vec3 uRimColor;
+uniform float uGlowIntensity;
+uniform float uWarmth;
+uniform float uBrightness;
+uniform float uPresence;
+uniform float uBrilliance;
+uniform float uAir;
+uniform float uSharpness;
+uniform float uEnergy;
+uniform float uBeat;
 
 varying vec3 vTerrainColor;
 varying vec3 vTerrainLocalPosition;
+varying vec3 vTerrainNormal;
 varying float vTerrainTop;
 varying float vTerrainDepth;
 varying float vTerrainFog;
+varying float vTerrainHeightRatio;
+varying float vTerrainRippleGlow;
+varying float vTerrainRippleSharp;
+varying float vTerrainLiftAccent;
+varying float vTerrainImpactAccent;
+varying float vTerrainRing;
+varying float vTerrainSeed;
+varying float vTerrainEdgeFade;
+varying float vTerrainDistance;
+varying float vTerrainBand;
+varying float vTerrainWarmZone;
+
+float terrainRandom(float value) {
+  return fract(sin(value * 127.1 + 17.17) * 43758.5453123);
+}
 
 void main() {
-  float topGlow = smoothstep(0.68, 1.0, vTerrainTop);
-  float sideGlow = max(
-    smoothstep(0.36, 0.5, abs(vTerrainLocalPosition.x)),
-    smoothstep(0.36, 0.5, abs(vTerrainLocalPosition.z))
+  float topFace = smoothstep(0.48, 0.86, vTerrainNormal.y) * smoothstep(0.62, 0.98, vTerrainTop);
+  float vertical = clamp(vTerrainTop, 0.0, 1.0);
+  float sideEdge = max(
+    smoothstep(0.34, 0.5, abs(vTerrainLocalPosition.x)),
+    smoothstep(0.34, 0.5, abs(vTerrainLocalPosition.z))
   );
-  float baseLight = 0.5 + topGlow * 0.22 + sideGlow * 0.1;
-  vec3 color = vTerrainColor * baseLight;
-  color = mix(color, vec3(0.72, 0.74, 0.7), topGlow * 0.035);
-  color = min(color, vec3(0.72));
-  float farSilhouette = smoothstep(0.48, 0.92, vTerrainFog);
-  vec3 distantColumn = mix(uFogColor * 0.7, uFogColor * 0.42, topGlow * 0.28 + sideGlow * 0.18);
-  color = mix(color, distantColumn, farSilhouette * 0.42);
-  color = mix(color, uFogColor * 0.6, vTerrainFog * 0.34);
+  float topEdge = sideEdge * topFace;
+  float seedA = terrainRandom(vTerrainSeed + vTerrainBand * 2.7);
+  float seedB = terrainRandom(vTerrainSeed * 3.1 + vTerrainRing * 5.3);
+  float localSpark = terrainRandom(vTerrainSeed * 11.7 + floor(uBeat * 8.0) + floor(uEnergy * 6.0));
+  float heightGlow = smoothstep(0.015, 0.48, vTerrainHeightRatio);
+  float liftAccent = clamp(vTerrainLiftAccent, 0.0, 1.0);
+  float impactAccent = clamp(vTerrainImpactAccent, 0.0, 1.0);
+  float distanceFade = 1.0 - smoothstep(0.6, 1.0, vTerrainRing);
+  float surfaceFade = 1.0 - vTerrainEdgeFade * 0.36;
 
-  gl_FragColor = vec4(color * vTerrainDepth, 1.0);
+  float warmBlend = clamp(
+    uWarmth * 0.64 +
+      vTerrainWarmZone * 0.22 +
+      liftAccent * 0.08 +
+      impactAccent * 0.1 +
+      (1.0 - vTerrainRing) * 0.14 -
+      uBrightness * 0.03,
+    0.0,
+    1.0
+  );
+  vec3 coolZone = mix(uCoolCore, uCoolEdge, clamp(seedA * 0.72 + vTerrainBand * 0.28, 0.0, 1.0));
+  vec3 warmZone = mix(uWarmCore, uWarmEdge, clamp(seedB * 0.62 + (1.0 - vTerrainRing) * 0.38, 0.0, 1.0));
+  vec3 glowColor = mix(coolZone, warmZone, warmBlend);
+  glowColor = mix(glowColor, uSparkColor, clamp(uBrightness * 0.16 + vTerrainRippleSharp * 0.1 + impactAccent * 0.16, 0.0, 0.44));
+
+  float materialGlow = clamp(
+    heightGlow * (0.46 + vTerrainHeightRatio * 0.34) +
+      vTerrainRippleGlow * 0.36 +
+      vTerrainRippleSharp * 0.26 +
+      liftAccent * 0.34 +
+      impactAccent * 0.3 +
+      uEnergy * 0.08,
+    0.0,
+    1.65
+  ) * uGlowIntensity * (0.72 + distanceFade * 0.28) * surfaceFade;
+
+  float intrinsicLift = clamp(
+    smoothstep(0.05, 0.82, vTerrainHeightRatio) * 0.62 +
+      liftAccent * 0.62 +
+      impactAccent * 0.34,
+    0.0,
+    1.48
+  );
+  float bodyBrightness = clamp(0.72 + intrinsicLift * 0.46 + uBrightness * 0.08 + impactAccent * 0.12, 0.58, 1.48);
+  vec3 bodyBaseColor = mix(uBaseColor1, uBaseColor2, vertical * 0.5 + vTerrainHeightRatio * 0.16 + distanceFade * 0.06);
+  vec3 intrinsicColor = mix(vTerrainColor, glowColor, clamp(vTerrainRippleGlow * 0.08 + impactAccent * 0.06, 0.0, 0.22));
+  vec3 bodyColor = mix(
+    bodyBaseColor,
+    intrinsicColor,
+    clamp(0.26 + intrinsicLift * 0.44 + vTerrainHeightRatio * 0.12, 0.0, 0.88)
+  ) * bodyBrightness;
+  float sharpSideFalloff = mix(0.52, 0.18, clamp(uSharpness, 0.0, 1.0));
+  float sideGlow = (1.0 - smoothstep(0.02, sharpSideFalloff, 1.0 - vertical)) * heightGlow;
+  vec3 sideColor = mix(bodyColor, glowColor, sideGlow * (0.44 + materialGlow * 0.58 + liftAccent * 0.18));
+  sideColor += intrinsicColor * (0.035 + intrinsicLift * 0.12) * (0.55 + vertical * 0.45);
+  sideColor += glowColor * sideEdge * (0.04 + vTerrainHeightRatio * 0.07 + vTerrainRippleGlow * 0.1 + liftAccent * 0.12 + impactAccent * 0.08);
+
+  float idleTopTone = (0.045 + distanceFade * 0.04) * (1.0 - vTerrainEdgeFade * 0.4);
+  float topIntensity = clamp(idleTopTone + materialGlow * 0.84 + vTerrainHeightRatio * 0.24 + vTerrainRippleGlow * 0.26 + liftAccent * 0.24 + impactAccent * 0.18, 0.0, 1.55);
+  vec3 topBaseColor = mix(uBaseColor2, intrinsicColor, clamp(0.3 + intrinsicLift * 0.38, 0.0, 0.82));
+  vec3 topColor = mix(topBaseColor, glowColor, topIntensity);
+  topColor = mix(topColor, uWarmCore, clamp(liftAccent * 0.14 + impactAccent * 0.2, 0.0, 0.38));
+  topColor += uRimColor * topEdge * (0.12 + vTerrainHeightRatio * 0.28 + uBrilliance * 0.16);
+  topColor += uRippleColor * vTerrainRippleGlow * (0.38 + uBeat * 0.22 + liftAccent * 0.1);
+  topColor += uSparkColor * impactAccent * (0.08 + topFace * 0.12);
+
+  float idleAirSpark = step(0.955, seedA) * smoothstep(0.0, 0.32, uAir) * (1.0 - smoothstep(0.08, 0.3, vTerrainHeightRatio));
+  float presenceFlash = step(0.978 - uPresence * 0.09, localSpark) *
+    (0.5 + 0.5 * sin(vTerrainSeed * 45.0 + uBeat * 12.0 + uEnergy * 8.0));
+  float brillianceFlash = topEdge * step(0.986 - uBrilliance * 0.1, seedB) * (0.36 + uBrilliance * 0.74);
+  float spark = clamp(idleAirSpark * 0.16 + presenceFlash * uPresence * 0.22 + brillianceFlash * 0.18 + vTerrainRippleSharp * 0.18 + impactAccent * 0.22, 0.0, 0.72);
+  topColor += uSparkColor * spark;
+
+  vec3 color = mix(sideColor, topColor, topFace);
+  color *= 0.6 + vertical * 0.32 + topFace * 0.14 + liftAccent * 0.06 + impactAccent * 0.04;
+  color += intrinsicColor * intrinsicLift * (0.12 + topFace * 0.1 + impactAccent * 0.06) * (1.0 - vTerrainFog * 0.32);
+  color += uRimColor * topEdge * (0.025 + uAir * 0.035) * (1.0 - vTerrainFog);
+  color = mix(color, uRippleColor, clamp(vTerrainRippleGlow * 0.12 + vTerrainRippleSharp * 0.07 + impactAccent * 0.08, 0.0, 0.24));
+
+  float farSilhouette = smoothstep(0.46, 0.95, vTerrainFog);
+  vec3 atmosphericColor = mix(uBaseColor1, uBaseColor2, 0.35);
+  color = mix(color, atmosphericColor, farSilhouette * 0.36);
+  color = mix(color, uFogColor * 0.72, vTerrainFog * 0.3);
+  color = clamp(color * vTerrainDepth * uOpacity, vec3(0.0), vec3(1.12));
+
+  gl_FragColor = vec4(color, 1.0);
 }
 `
 
@@ -1439,18 +1842,15 @@ float presetMatch(float target) {
 void main() {
   float motion = mix(1.0, 0.34, uReducedMotion);
   float playMix = 0.34 + uPlaying * 0.66;
-  float defaultPreset = presetMatch(0.0);
   float galaxyPreset = presetMatch(1.0);
-  float cinematicPreset = presetMatch(2.0);
   float djPreset = presetMatch(3.0);
-  float lyricPreset = presetMatch(4.0);
   float rawTime = uTime * motion;
   float rhythmTime = uRhythmTime * motion;
   float t = mix(rawTime, rhythmTime, galaxyPreset);
   float energy = bandEnergy(aBand);
   float twinkle = pow(0.5 + 0.5 * sin(t * (0.65 + aSeed * 1.25) + aSeed * TAU), 4.0);
-  float stagePower = 1.0 + cinematicPreset * 0.62 + djPreset * 0.46 - lyricPreset * 0.54;
-  float driftPower = 1.0 + galaxyPreset * 0.72 + djPreset * 0.18 - lyricPreset * 0.58;
+  float stagePower = 1.0 + djPreset * 0.46;
+  float driftPower = 1.0 + galaxyPreset * 0.72 + djPreset * 0.18;
   float galaxyDepth = mix(1.0, clamp(uStageHeight, 0.45, 2.2), galaxyPreset);
   float galaxyMotion = mix(1.0, clamp(uStageResponse, 0.25, 2.4), galaxyPreset);
   float galaxyNebula = mix(1.0, clamp(uStageWave, 0.15, 2.6), galaxyPreset);
@@ -1475,14 +1875,6 @@ void main() {
       color = mix(color, uColorPulse, uBeat * 0.2 * galaxySparkle);
       glow = twinkle * (0.72 + galaxySparkle * 0.28) + uBeat * 0.34 * galaxySparkle;
       alpha = 0.1 + twinkle * 0.46 * (0.72 + galaxySparkle * 0.28) + uVolume * 0.14;
-    } else if (cinematicPreset > 0.5) {
-      pos.x = (aBand - 0.5) * 8.6 + sin(t * 0.28 + aSeed * TAU) * 0.28;
-      pos.y = -1.18 + pow(aLane, 1.7) * 2.75 + sin(t * 0.36 + aSeed * 8.0) * 0.08;
-      pos.z = -4.35 + aLane * 3.85 + uBeat * 0.28;
-      color = mix(uColorShadow, uColorLine, aLane);
-      color = mix(color, uColorPulse, twinkle * 0.24 + uBeat * 0.28);
-      glow = twinkle * 0.18 + uBeat * 0.34;
-      alpha = 0.035 + twinkle * 0.08 + uBeat * 0.08;
     } else if (djPreset > 0.5) {
       float scanRow = floor(aLane * 14.0) / 13.0;
       pos.x = (aBand - 0.5) * 8.4;
@@ -1491,13 +1883,6 @@ void main() {
       color = mix(uColorLine, uColorPulse, twinkle * 0.45 + uTreble * 0.22);
       glow = twinkle * 0.24 + uBeat * 0.26;
       alpha = 0.04 + twinkle * 0.11 + uVolume * 0.06;
-    } else if (lyricPreset > 0.5) {
-      pos.x = (aBand - 0.5) * 5.4 + sin(aSeed * TAU) * 0.16;
-      pos.y = -0.82 + sin(t * 0.18 + aSeed * 5.0) * 0.04;
-      pos.z = -3.12 + aLane * 0.82;
-      color = mix(uColorShadow, uColorHalo, 0.42 + twinkle * 0.12);
-      glow = twinkle * 0.08 + uVolume * 0.08;
-      alpha = 0.026 + twinkle * 0.045;
     } else {
       float stageSpin = t * (0.006 + aSeed * 0.01) * playMix;
       pos.xz = rotate2d(stageSpin) * pos.xz;
@@ -1522,14 +1907,6 @@ void main() {
       color = mix(color, uColorHigh, twinkle * 0.2 * galaxySparkle);
       glow = ribbonEnergy * galaxyNebula + twinkle * 0.26 * galaxySparkle + 0.12;
       alpha = 0.08 + ribbonEnergy * 0.38 * galaxyNebula + twinkle * 0.18 * galaxySparkle;
-    } else if (cinematicPreset > 0.5) {
-      pos.x = (aBand - 0.5) * 8.2;
-      pos.y = -1.12 + aLane * 2.75 + sin(aBand * PI * 2.0 + t * 0.38) * (0.14 + uMid * 0.18);
-      pos.z = -4.18 + aLane * 3.8 + ribbonEnergy * 0.38;
-      color = mix(uColorShadow, uColorHalo, aLane);
-      color = mix(color, uColorPulse, ribbonEnergy * 0.34);
-      glow = ribbonEnergy * 0.54 + uBeat * 0.32;
-      alpha = 0.055 + ribbonEnergy * 0.16 + twinkle * 0.06;
     } else if (djPreset > 0.5) {
       float gridRow = floor(aLane * 10.0) / 9.0;
       pos.x = fract(aBand + t * 0.06 + aSeed * 0.18) * 8.4 - 4.2;
@@ -1538,13 +1915,6 @@ void main() {
       color = mix(uColorLine, uColorPulse, ribbonEnergy * 0.56 + twinkle * 0.2);
       glow = ribbonEnergy * 0.46 + twinkle * 0.18;
       alpha = 0.045 + ribbonEnergy * 0.18 + twinkle * 0.07;
-    } else if (lyricPreset > 0.5) {
-      pos.x = (aBand - 0.5) * 5.2;
-      pos.y = -0.92 + sin(aBand * PI + t * 0.16) * 0.05;
-      pos.z = -3.16 + aLane * 0.64;
-      color = mix(uColorShadow, uColorHalo, 0.5 + ribbonEnergy * 0.16);
-      glow = ribbonEnergy * 0.16 + twinkle * 0.08;
-      alpha = 0.025 + ribbonEnergy * 0.055;
     } else {
       float flow = t * (0.08 + aSeed * 0.03) * playMix;
       float haloWave = sin(aLane * TAU * 2.0 + flow + aSeed * 3.0) * (0.08 + uMid * 0.16);
@@ -1558,7 +1928,7 @@ void main() {
     }
   } else if (aKind < 2.5) {
     float columnEnergy = bandEnergy(aBand);
-    float bandPulse = smoothstep(0.04, 1.0, columnEnergy + uBeat * (0.25 + cinematicPreset * 0.25 + djPreset * 0.18));
+    float bandPulse = smoothstep(0.04, 1.0, columnEnergy + uBeat * (0.25 + djPreset * 0.18));
     float x = (aBand - 0.5) * 6.7;
     float y = (aLane - 0.5) * (1.0 + bandPulse * 2.8);
     float z = -2.3 + sin(aBand * PI) * 1.0 + bandPulse * 0.5;
@@ -1582,12 +1952,6 @@ void main() {
       x = galaxyCluster.x;
       y = galaxyCluster.y;
       z = galaxyCluster.z;
-    } else if (cinematicPreset > 0.5) {
-      float terrainWave = sin(aBand * PI * 3.0 + t * 0.42) * 0.18 + sin(aLane * PI * 5.0 - t * 0.34) * 0.14;
-      float lift = pow(bandPulse, 1.25) * (0.52 + aLane * 1.58);
-      x = (aBand - 0.5) * 8.2;
-      y = -1.28 + terrainWave + lift;
-      z = -4.15 + aLane * 4.9 + bandPulse * 0.42;
     } else if (djPreset > 0.5) {
       float gridBand = floor(aBand * 32.0) / 31.0;
       float heightStep = floor(aLane * 20.0) / 19.0;
@@ -1605,10 +1969,6 @@ void main() {
       djColumnMask = max(columnBody, columnCap * 0.78);
       djColumnCap = columnCap;
       bandPulse = columnPulse;
-    } else if (lyricPreset > 0.5) {
-      x = (aBand - 0.5) * 5.3;
-      y = -0.88 + sin(aBand * PI * 2.0 + t * 0.16) * 0.06 + bandPulse * 0.12;
-      z = -3.08 + aLane * 0.76;
     } else {
       x = (aBand - 0.5) * 6.0;
       y = (aLane - 0.48) * (0.78 + bandPulse * 1.42);
@@ -1622,15 +1982,15 @@ void main() {
       glow = (0.10 + bandPulse * 0.95) * djColumnMask + djColumnCap * 0.58 + twinkle * 0.08;
       alpha = 0.035 + djColumnMask * 0.48 + djColumnCap * 0.22;
     } else {
-      vec3 stageLow = mix(uColorLow, uColorShadow, cinematicPreset * 0.44);
-      vec3 stageMid = mix(uColorMid, uColorLine, cinematicPreset * 0.58);
+      vec3 stageLow = uColorLow;
+      vec3 stageMid = uColorMid;
       vec3 stageHigh = uColorHigh;
       stageMid = mix(stageMid, uColorHalo, galaxyPreset * 0.42);
       color = mix(stageLow, stageMid, aBand);
       color = mix(color, stageHigh, bandPulse * 0.52);
-      glow = bandPulse * (1.0 + cinematicPreset * 0.36) + twinkle * 0.18;
+      glow = bandPulse + twinkle * 0.18;
       alpha = 0.10 + bandPulse * 0.48 + twinkle * 0.08;
-      alpha *= 1.0 + cinematicPreset * 0.18 - galaxyPreset * 0.18 - lyricPreset * 0.46;
+      alpha *= 1.0 - galaxyPreset * 0.18;
     }
   } else if (aKind < 3.5) {
     float ringEnergy = max(uBeat, uBass * 0.58 + uVolume * 0.18);
@@ -1653,17 +2013,10 @@ void main() {
         (pos.z + 1.95) * (0.78 + galaxyDepth * 0.26) -
         1.95 +
         sin(t * 0.22 * galaxyMotion + aSeed * 11.0) * 0.16 * galaxyNebula;
-    } else if (cinematicPreset > 0.5) {
-      radius = 0.92 + ring * 3.45 + ringEnergy * (1.0 + ring * 0.9);
-      radius += ringEnergy * sin(t * 3.4 + ring * PI) * 0.58;
-      pos.y = sin(angle) * radius * 0.24 + ringEnergy * 0.12;
     } else if (djPreset > 0.5) {
       radius = 0.7 + ring * 2.2 + ringEnergy * 0.9;
       pos.y = -1.02 + floor(aLane * 8.0) * 0.055 + ringEnergy * 0.22;
       pos.z = -3.65 + ring * 3.8;
-    } else if (lyricPreset > 0.5) {
-      radius = 1.15 + ring * 1.75 + ringEnergy * 0.2;
-      pos.y = wave * 0.12 - 0.34;
     } else {
       radius = 1.05 + ring * 2.55 + ringEnergy * 0.56;
       pos.y = sin(angle) * radius * 0.13 + wave * 0.52;
@@ -1675,24 +2028,20 @@ void main() {
         pos.z = sin(angle) * radius - 2.0 - ring * 0.18;
       }
     }
-    vec3 burstBase = mix(uColorRipple, uColorLine, max(cinematicPreset, djPreset) * 0.52);
-    vec3 burstPeak = mix(uColorHalo, uColorHigh, cinematicPreset * 0.46);
+    vec3 burstBase = mix(uColorRipple, uColorLine, djPreset * 0.52);
+    vec3 burstPeak = uColorHalo;
     burstPeak = mix(burstPeak, uColorPulse, djPreset * 0.4);
     color = mix(burstBase, burstPeak, ringEnergy * 0.48 + ring * 0.2);
     glow = ringEnergy + twinkle * 0.16;
     alpha = 0.07 + ringEnergy * 0.42 + (1.0 - ring) * 0.08;
-    alpha *= 1.0 + cinematicPreset * 0.18 - galaxyPreset * 0.22 - lyricPreset * 0.78;
+    alpha *= 1.0 - galaxyPreset * 0.22;
   } else {
     float linePulse = max(uBeat * 0.75, energy * 0.45);
     float path = aLane * TAU * 2.0 + t * 0.35;
     pos.xz = rotate2d(t * 0.025 * driftPower + uBass * 0.08) * pos.xz;
     pos.y += sin(path + aSeed * 5.0) * (0.12 + uMid * 0.28);
 
-    if (cinematicPreset > 0.5) {
-      pos.x = (fract(aLane + t * 0.05 + aSeed * 0.12) - 0.5) * 8.6;
-      pos.y = -0.96 + sin(aBand * PI * 2.0 + t * 0.7) * (0.18 + uMid * 0.18) + linePulse * 0.24;
-      pos.z = -4.0 + aBand * 4.6;
-    } else if (djPreset > 0.5) {
+    if (djPreset > 0.5) {
       float scan = fract(aLane + t * 0.1);
       pos.x = scan * 8.2 - 4.1;
       pos.y = -0.92 + floor(aBand * 9.0) * 0.09 + linePulse * 0.18;
@@ -1704,10 +2053,6 @@ void main() {
       pos.x = cos(angle) * radius;
       pos.y = (comet - 0.5) * 2.2 * galaxyNebula * (0.58 + galaxyLayer * 0.42) + sin(aLane * TAU * 3.0 + t * 0.34 * galaxyMotion) * 0.24 * galaxyNebula * (0.68 + galaxyLayer * 0.32);
       pos.z = sin(angle) * radius - 2.05 - comet * 0.52 * galaxySparkle;
-    } else if (lyricPreset > 0.5) {
-      pos.x = (aBand - 0.5) * 5.6;
-      pos.y = -0.72 + sin(aBand * PI + t * 0.18) * 0.04;
-      pos.z = -3.28 + aLane * 0.58;
     } else {
       pos.xyz *= 0.82 + linePulse * 0.04;
       pos.y *= 0.62;
@@ -1715,17 +2060,17 @@ void main() {
     }
 
     vec3 trailBase = mix(uColorLine, uColorShadow, djPreset * 0.28);
-    vec3 trailPeak = mix(uColorPulse, uColorHigh, cinematicPreset * 0.4 + galaxyPreset * 0.28);
+    vec3 trailPeak = mix(uColorPulse, uColorHigh, galaxyPreset * 0.28);
     color = mix(trailBase, trailPeak, 0.42 + linePulse * 0.48);
     glow = linePulse + twinkle * 0.2;
     alpha = 0.06 + linePulse * 0.34 + twinkle * 0.12;
-    alpha *= 1.0 + galaxyPreset * 0.1 + djPreset * 0.16 - lyricPreset * 0.62;
+    alpha *= 1.0 + galaxyPreset * 0.1 + djPreset * 0.16;
   }
 
   float layerBoost = uLayerScale > 2.0 ? 0.55 : 1.0;
   vColor = color;
   vGlow = glow;
-  float presetAlpha = 1.0 + galaxyPreset * 0.08 - lyricPreset * 0.28 + defaultPreset * 0.02;
+  float presetAlpha = 1.0 + galaxyPreset * 0.08;
   vAlpha = max(0.0, alpha) * presetAlpha * uLayerAlpha * layerBoost * (0.62 + uIntensity * 0.74);
 
   vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
@@ -1875,43 +2220,148 @@ function visualPalette(theme: MusicImmersiveTheme | string, mode: MusicVisualMod
   }
 }
 
-function terrainFogColor(theme: MusicImmersiveTheme | string, mode: MusicVisualMode) {
+function terrainMaterialPalette(theme: MusicImmersiveTheme | string, mode: MusicVisualMode): TerrainMaterialPalette {
   if (theme === 'animal-island') {
-    return '#241b12'
+    return {
+      baseDeep: '#1c2116',
+      baseLift: '#3f3b24',
+      fog: '#1a1710',
+      coolCore: '#52d6b5',
+      coolEdge: '#7fb6a6',
+      warmCore: '#ffe0a1',
+      warmEdge: '#b48244',
+      ripple: '#92e5bd',
+      spark: '#fff8e8',
+      rim: '#ffe9b9',
+      glowIntensity: 0.98,
+    }
   }
   if (theme === 'cinema') {
-    return '#17080e'
+    return {
+      baseDeep: '#130810',
+      baseLift: '#2a141f',
+      fog: '#16070d',
+      coolCore: '#7ad7c2',
+      coolEdge: '#326c73',
+      warmCore: '#ff6b72',
+      warmEdge: '#f3b86f',
+      ripple: '#ff8c92',
+      spark: '#fff4d6',
+      rim: '#ffd89a',
+      glowIntensity: 1.02,
+    }
   }
   if (theme === 'galaxy') {
-    return '#07142d'
+    return {
+      baseDeep: '#061225',
+      baseLift: '#132b4b',
+      fog: '#07142d',
+      coolCore: '#73a7ff',
+      coolEdge: '#7e5cff',
+      warmCore: '#fff0b8',
+      warmEdge: '#9cffdf',
+      ripple: '#6d83ff',
+      spark: '#f9fcff',
+      rim: '#cce8ff',
+      glowIntensity: 1.16,
+    }
   }
   if (theme === 'neon') {
-    return '#10061f'
+    return {
+      baseDeep: '#0c0718',
+      baseLift: '#231044',
+      fog: '#10061f',
+      coolCore: '#00f5d4',
+      coolEdge: '#7df9ff',
+      warmCore: '#ff4fd8',
+      warmEdge: '#b76cff',
+      ripple: '#00f5d4',
+      spark: '#eff7ff',
+      rim: '#f6c8ff',
+      glowIntensity: 1.24,
+    }
   }
   if (theme === 'sunset') {
-    return '#281018'
+    return {
+      baseDeep: '#211018',
+      baseLift: '#4a2231',
+      fog: '#281018',
+      coolCore: '#f4d28a',
+      coolEdge: '#ff9b72',
+      warmCore: '#ff705f',
+      warmEdge: '#ffb861',
+      ripple: '#ff9b72',
+      spark: '#fff8df',
+      rim: '#ffe4aa',
+      glowIntensity: 1.08,
+    }
   }
   if (theme === 'midnight') {
-    return '#07101d'
+    return {
+      baseDeep: '#07101d',
+      baseLift: '#16253b',
+      fog: '#07101d',
+      coolCore: '#9fb7d9',
+      coolEdge: '#5f7da9',
+      warmCore: '#dceaff',
+      warmEdge: '#7898cb',
+      ripple: '#7898cb',
+      spark: '#eef6ff',
+      rim: '#c7d8ee',
+      glowIntensity: 0.86,
+    }
   }
   if (mode === 'sleep') {
-    return '#081526'
+    return {
+      baseDeep: '#071322',
+      baseLift: '#172a44',
+      fog: '#081526',
+      coolCore: '#86b7ff',
+      coolEdge: '#4d6f9f',
+      warmCore: '#dceaff',
+      warmEdge: '#8fb3ff',
+      ripple: '#86b7ff',
+      spark: '#ffffff',
+      rim: '#cfe1ff',
+      glowIntensity: 0.82,
+    }
   }
   if (mode === 'focus') {
-    return '#0d211d'
+    return {
+      baseDeep: '#0d211d',
+      baseLift: '#1f4038',
+      fog: '#0d211d',
+      coolCore: '#78d3c7',
+      coolEdge: '#4aa798',
+      warmCore: '#b6e6cf',
+      warmEdge: '#6fd8c7',
+      ripple: '#6fd8c7',
+      spark: '#f5fff9',
+      rim: '#c8f6e3',
+      glowIntensity: 0.92,
+    }
   }
-  return '#0b1624'
+  return {
+    baseDeep: '#07111f',
+    baseLift: '#10253a',
+    fog: '#0b1624',
+    coolCore: '#35d4ff',
+    coolEdge: '#2a8ed9',
+    warmCore: '#ffca72',
+    warmEdge: '#ff8a5c',
+    ripple: '#77d6ff',
+    spark: '#f8fbff',
+    rim: '#d7faff',
+    glowIntensity: 1.08,
+  }
 }
 
 function stagePresetCode(preset: MusicVisualStagePreset) {
   const codes: Record<MusicVisualStagePreset, number> = {
-    default: 0,
     galaxy: 1,
-    cinematic: 2,
     dj: 3,
-    lyric: 4,
   }
-  return codes[preset] ?? 0
+  return codes[preset] ?? codes.dj
 }
 
 function spectrumStyleCode(style: MusicSpectrumStyle) {
@@ -2022,6 +2472,65 @@ function resetTerrainRipples() {
   lastTerrainBassRippleTime = -999
   lastTerrainMidRippleTime = -999
   lastTerrainSparkRippleTime = -999
+  terrainKickEnvelope = 0
+  terrainKickTarget = 0
+  lastTerrainKickEnvelopeTime = 0
+  terrainCenterPulseStartedAt = -999
+  terrainCenterPulseStrength = 0
+  terrainCenterPulseSpeedScale = 1
+}
+
+function inactiveTerrainCenterPulse() {
+  return { radius: 0, width: TERRAIN_PULSE_WIDTH, fade: 0, strength: 0 }
+}
+
+function clearTerrainCenterPulse() {
+  terrainCenterPulseStartedAt = -999
+  terrainCenterPulseStrength = 0
+  terrainCenterPulseSpeedScale = 1
+}
+
+function triggerTerrainKickEnvelope(strength: number) {
+  const motionScale = props.reducedMotion ? 0.62 : 1
+  const impulse = clamp(Math.max(TERRAIN_KICK_MIN_IMPULSE, strength * 0.88) * motionScale, 0, 1)
+  terrainKickTarget = clamp(Math.max(terrainKickTarget, impulse), 0, 1)
+  terrainKickEnvelope = clamp(Math.max(terrainKickEnvelope, impulse * 0.68), 0, 1)
+}
+
+function triggerTerrainCenterPulse(time: number, strength: number) {
+  const safeStrength = clamp(strength, 0, 1.08)
+  if (safeStrength <= 0.08) {
+    return
+  }
+
+  terrainCenterPulseStartedAt = time
+  terrainCenterPulseStrength = safeStrength
+  terrainCenterPulseSpeedScale = terrainRippleSpeedScale('pulse', safeStrength)
+  triggerTerrainKickEnvelope(safeStrength)
+}
+
+function updateTerrainKickEnvelope(time: number, playing: boolean, reducedMotion: boolean) {
+  const delta =
+    lastTerrainKickEnvelopeTime > 0
+      ? clamp(time - lastTerrainKickEnvelopeTime, 0, 0.08)
+      : 1 / 60
+  lastTerrainKickEnvelopeTime = time
+
+  const targetDecayRate = reducedMotion ? TERRAIN_KICK_TARGET_DECAY_RATE * 1.35 : TERRAIN_KICK_TARGET_DECAY_RATE
+  const responseRate = reducedMotion ? TERRAIN_KICK_RESPONSE_RATE * 0.72 : TERRAIN_KICK_RESPONSE_RATE
+  const releaseBoost = playing ? 1 : 1.8
+  const targetDecay = 1 - Math.exp(-delta * targetDecayRate * releaseBoost)
+  terrainKickTarget += (0 - terrainKickTarget) * clamp(targetDecay, 0, 1)
+
+  const response = 1 - Math.exp(-delta * responseRate * releaseBoost)
+  terrainKickEnvelope += (terrainKickTarget - terrainKickEnvelope) * clamp(response, 0, 1)
+
+  if (terrainKickEnvelope < 0.002 && terrainKickTarget < 0.002) {
+    terrainKickEnvelope = 0
+    terrainKickTarget = 0
+  }
+
+  return clamp01(terrainKickEnvelope)
 }
 
 function updateTerrainRippleTriggers(
@@ -2065,6 +2574,9 @@ function updateTerrainRippleTriggers(
       )
       if (strength > 0) {
         spawnTerrainRipple(time, strength, trigger.kind)
+        if (trigger.kind === 'pulse') {
+          triggerTerrainCenterPulse(time, strength)
+        }
       }
     }
     updateTerrainPreviousFrequencyData(frame.frequencyData)
@@ -2196,6 +2708,8 @@ function updateTerrainFallbackRippleTriggers(
 
   if (bassTriggered && time - lastTerrainBassRippleTime > bassCooldown) {
     const rippleCount = !frame.reducedMotion && (frame.beat > 0.7 || bassPush > 0.72) ? 2 : 1
+    const centerStrength = clamp01(bassPush * strengthScale * 1.16)
+    triggerTerrainCenterPulse(time, centerStrength)
     for (let index = 0; index < rippleCount; index += 1) {
       spawnTerrainRipple(time, clamp01(bassPush * strengthScale * (index === 0 ? 1.16 : 0.78)), 'pulse')
     }
@@ -2261,20 +2775,46 @@ function activeTerrainRipples(time: number, reducedMotion: boolean, waveTuning: 
     }
 
     const speed =
-      (ripple.kind === 'spark' ? 4.45 : ripple.kind === 'snare' ? 4.15 : 3.05) *
+      (ripple.kind === 'spark' ? 4.45 : ripple.kind === 'snare' ? 4.15 : TERRAIN_PULSE_SPEED) *
       (0.9 + waveTuning * 0.08) *
       ripple.speedScale
     const radius = age * speed
     const speedWidth = 0.94 + ripple.speedScale * 0.06
-    const width = (ripple.kind === 'spark' ? 0.12 : ripple.kind === 'snare' ? 0.16 : 0.34) * (0.76 + waveTuning * 0.24) * speedWidth
+    const width =
+      (ripple.kind === 'spark' ? 0.12 : ripple.kind === 'snare' ? 0.16 : TERRAIN_PULSE_WIDTH) *
+      (0.76 + waveTuning * 0.24) *
+      speedWidth
     const fadeDistance =
-      (ripple.kind === 'spark' ? 2.65 : ripple.kind === 'snare' ? 3.2 : 5.15) *
+      (ripple.kind === 'spark' ? 2.65 : ripple.kind === 'snare' ? 3.2 : TERRAIN_PULSE_FADE_DISTANCE) *
       (0.82 + waveTuning * 0.18) *
       (0.9 + ripple.speedScale * 0.1)
     const fade = Math.exp(-radius / fadeDistance) * (1 - smoothstep(maxAge * 0.76, maxAge, age))
     ripples.push({ ...ripple, radius, width, fade })
   }
   return ripples
+}
+
+function activeTerrainCenterPulse(time: number, reducedMotion: boolean, waveTuning: number) {
+  const maxAge = (reducedMotion ? 3.25 : 3.65) * (0.86 + waveTuning * 0.14)
+  const age = time - terrainCenterPulseStartedAt
+  if (age < 0 || age > maxAge || terrainCenterPulseStrength <= 0.08) {
+    return inactiveTerrainCenterPulse()
+  }
+
+  const speed =
+    TERRAIN_CENTER_PULSE_SPEED *
+    (0.9 + waveTuning * 0.08) *
+    terrainCenterPulseSpeedScale
+  const radius = age * speed
+  const speedWidth = 0.94 + terrainCenterPulseSpeedScale * 0.06
+  const width = TERRAIN_PULSE_WIDTH * (0.76 + waveTuning * 0.24) * speedWidth
+  const fadeDistance =
+    TERRAIN_PULSE_FADE_DISTANCE *
+    (0.82 + waveTuning * 0.18) *
+    (0.9 + terrainCenterPulseSpeedScale * 0.1)
+  const fade = Math.exp(-radius / fadeDistance) * (1 - smoothstep(maxAge * 0.76, maxAge, age))
+
+  return { radius, width, fade, strength: terrainCenterPulseStrength }
 }
 
 function terrainRippleSpeedScale(kind: TerrainRippleKind, strength: number) {
@@ -2291,38 +2831,6 @@ function terrainRippleSpeedScale(kind: TerrainRippleKind, strength: number) {
   const speedScale = 0.82 + musicDrive * tuningDrive
 
   return clamp(speedScale, props.reducedMotion ? 0.74 : 0.8, props.reducedMotion ? 1.22 : 1.58)
-}
-
-function terrainRippleInfluence(cell: TerrainCell, ripples: ActiveTerrainRipple[]): TerrainRippleInfluence {
-  let lift = 0
-  let glow = 0
-  let sharp = 0
-
-  for (const ripple of ripples) {
-    const distance = Math.hypot(cell.x - ripple.x, cell.z - ripple.z)
-    const delta = distance - ripple.radius
-    const wave = Math.exp(-(delta * delta) / ripple.width) * ripple.fade * ripple.strength
-    const localFade = 1 - cell.edgeFade * 0.18
-
-    if (ripple.kind === 'spark') {
-      sharp += wave * 0.9 * localFade
-      glow += wave * 0.62 * localFade
-      lift += wave * 0.16 * localFade
-    } else if (ripple.kind === 'snare') {
-      sharp += wave * 0.72 * localFade
-      glow += wave * 0.76 * localFade
-      lift += wave * 0.2 * localFade
-    } else {
-      glow += wave * 0.94 * localFade
-      lift += wave * 0.42 * localFade
-    }
-  }
-
-  return {
-    lift: clamp01(lift),
-    glow: clamp01(glow),
-    sharp: clamp01(sharp),
-  }
 }
 
 function degreesToRadians(value: number) {
