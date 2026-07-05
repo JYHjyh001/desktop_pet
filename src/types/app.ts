@@ -547,6 +547,7 @@ export interface PetDrawerConfig {
   }
   shortcut: {
     toggleDrawer: string
+    translateSelection?: string
     petSingleClick?: PetActionBinding | string
     petDoubleClick?: PetActionBinding | string
     petRightClick?: PetActionBinding | string

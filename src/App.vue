@@ -8,6 +8,7 @@ import PetChatWindow from './windows/PetChatWindow.vue'
 import PetMenuWindow from './windows/PetMenuWindow.vue'
 import PetWindow from './windows/PetWindow.vue'
 import StoryWindow from './windows/StoryWindow.vue'
+import TranslatorWindow from './windows/TranslatorWindow.vue'
 
 const windowLabel = ref('drawer')
 
@@ -26,6 +27,7 @@ onMounted(() => {
   <PetMenuWindow v-else-if="windowLabel === 'pet-menu'" />
   <PetChatWindow v-else-if="windowLabel === 'pet-chat'" />
   <StoryWindow v-else-if="windowLabel === 'story'" />
+  <TranslatorWindow v-else-if="windowLabel === 'translator'" />
   <MusicWindow v-else-if="windowLabel === 'music'" />
   <DrawerWindow v-else />
 </template>

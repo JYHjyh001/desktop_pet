@@ -69,9 +69,11 @@ button:disabled {
 
 .pet-chat-window.window-open-prepared,
 .story-window.window-open-prepared,
+.translator-window.window-open-prepared,
 .music-window.window-open-prepared,
 .pet-chat-window.window-opening,
 .story-window.window-opening,
+.translator-window.window-opening,
 .music-window.window-opening {
   --window-open-duration: 260ms;
   --window-open-start-scale: 0.91;
@@ -215,6 +217,21 @@ button:disabled {
   padding: 0 8px;
 }
 
+.pet-bubble-stack {
+  display: flex;
+  width: 100%;
+  max-height: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.pet-bubble-window.placement-bottom .pet-bubble-stack {
+  justify-content: flex-start;
+}
+
 .pet-bubble-window.kind-bubble.placement-top {
   padding-top: 8px;
   padding-bottom: 16px;
@@ -266,6 +283,7 @@ button:disabled {
   position: relative;
   top: auto;
   left: auto;
+  flex: 0 0 auto;
   width: 100%;
   height: auto;
   max-width: 100%;
@@ -275,7 +293,13 @@ button:disabled {
   transform: none;
 }
 
-.pet-bubble-window .codex-pet-bubble::after {
+.pet-bubble-window .codex-pet-bubble.expanded {
+  align-items: flex-start;
+  min-height: 76px;
+  padding: 8px 10px;
+}
+
+.pet-bubble-window .codex-pet-bubble.tail-anchor::after {
   position: absolute;
   left: var(--tail-x, 50%);
   width: 11px;
@@ -286,13 +310,13 @@ button:disabled {
   transform: translateX(-50%) rotate(45deg);
 }
 
-.pet-bubble-window.placement-top .codex-pet-bubble::after {
+.pet-bubble-window.placement-top .codex-pet-bubble.tail-anchor::after {
   bottom: -6px;
   border-top: 0;
   border-left: 0;
 }
 
-.pet-bubble-window.placement-bottom .codex-pet-bubble::after {
+.pet-bubble-window.placement-bottom .codex-pet-bubble.tail-anchor::after {
   top: -6px;
   border-right: 0;
   border-bottom: 0;
@@ -323,6 +347,32 @@ button:disabled {
   text-align: left;
   text-overflow: ellipsis;
   word-break: break-word;
+}
+
+.pet-bubble-window .codex-pet-bubble-text.expanded {
+  display: block;
+  max-height: min(312px, calc(100vh - 44px));
+  overflow: auto;
+  padding-right: 2px;
+  -webkit-line-clamp: initial;
+  white-space: pre-wrap;
+}
+
+.pet-bubble-window .codex-pet-bubble-text.expanded::-webkit-scrollbar {
+  width: 6px;
+}
+
+.pet-bubble-window .codex-pet-bubble-text.expanded::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.pet-bubble-window .codex-pet-bubble-text.expanded::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--codex-bubble-accent, #4f73d9) 36%, transparent);
+}
+
+.pet-bubble-window .codex-pet-bubble-text.expanded::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--codex-bubble-accent, #4f73d9) 52%, transparent);
 }
 
 .codex-pet-badge {
@@ -453,11 +503,34 @@ button:disabled {
   --codex-bubble-bg: rgba(255, 246, 247, 0.97);
 }
 
+.pet-bubble-window .codex-pet-bubble.channel-translation.state-running {
+  --codex-bubble-accent: #3478c9;
+  --codex-bubble-border: rgba(52, 120, 201, 0.25);
+  --codex-bubble-bg: rgba(241, 247, 255, 0.97);
+}
+
+.pet-bubble-window .codex-pet-bubble.channel-translation.state-completed,
+.pet-bubble-window .codex-pet-bubble.channel-translation.state-connected {
+  --codex-bubble-accent: #27866f;
+  --codex-bubble-border: rgba(39, 134, 111, 0.25);
+  --codex-bubble-bg: rgba(240, 252, 248, 0.97);
+}
+
+.pet-bubble-window .codex-pet-bubble.channel-translation.state-failed {
+  --codex-bubble-accent: #c44d5a;
+  --codex-bubble-border: rgba(196, 77, 90, 0.28);
+  --codex-bubble-bg: rgba(255, 246, 247, 0.98);
+}
+
 .codex-bubble-enter-active,
 .codex-bubble-leave-active {
   transition:
     opacity 180ms ease,
     transform 180ms ease;
+}
+
+.codex-bubble-move {
+  transition: transform 180ms ease;
 }
 
 .codex-bubble-enter-from,
@@ -686,7 +759,7 @@ button:disabled {
 
 .pet-menu-window {
   display: grid;
-  grid-template-rows: repeat(6, minmax(0, 1fr));
+  grid-template-rows: repeat(7, minmax(0, 1fr));
   gap: 4px;
   width: 100vw;
   height: 100vh;
@@ -1569,13 +1642,13 @@ button:disabled {
   --lyric-stage-tilt-y: 0deg;
   --lyric-stage-roll: 0deg;
   --lyric-stage-glow-strength: 0.48;
-  --lyric-stage-beat-glow: 0;
   --lyric-stage-audio-glow: 0.42;
   --lyric-stage-air: 0;
+  --lyric-stage-solar: 0;
+  --lyric-stage-readability: 0.78;
   --lyric-stage-line-lift: 0px;
   --lyric-stage-shadow-depth: 0.64;
   --lyric-stage-floor-width: 1;
-  --lyric-stage-particle-opacity: 0;
   --lyric-music-pulse: 0;
   --lyric-music-breath: 0;
   --lyric-music-phrase: 0;
@@ -1788,11 +1861,11 @@ button:disabled {
       color-mix(in srgb, var(--immersive-lyric-highlight) 22%, transparent),
       transparent
     );
-  opacity: calc(0.08 + var(--lyric-stage-glow-strength) * 0.2 + var(--lyric-stage-beat-glow) * 0.12 + var(--lyric-stage-audio-glow) * 0.1 + var(--lyric-music-breath) * 0.08 + var(--lyric-music-focus) * 0.06);
+  opacity: calc(0.08 + var(--lyric-stage-glow-strength) * 0.2 + var(--lyric-stage-audio-glow) * 0.1 + var(--lyric-stage-solar) * 0.1 + var(--lyric-music-breath) * 0.08 + var(--lyric-music-focus) * 0.06);
   filter:
-    blur(calc(20px + var(--lyric-stage-audio-glow) * 8px + var(--lyric-music-breath) * 4px))
-    saturate(calc(1 + var(--lyric-stage-beat-glow) * 0.2 + var(--lyric-stage-air) * 0.16))
-    brightness(calc(0.98 + var(--lyric-stage-audio-glow) * 0.06 + var(--lyric-music-focus) * 0.06));
+    blur(calc(20px + var(--lyric-stage-audio-glow) * 8px + var(--lyric-stage-solar) * 8px + var(--lyric-music-breath) * 4px))
+    saturate(calc(1 + var(--lyric-stage-air) * 0.16 + var(--lyric-stage-solar) * 0.14))
+    brightness(calc(0.98 + var(--lyric-stage-audio-glow) * 0.06 + var(--lyric-stage-solar) * 0.08 + var(--lyric-music-focus) * 0.06));
   transform:
     translate3d(calc(var(--lyric-music-drift) * 4px), calc(4px + var(--lyric-stage-line-lift) * -0.12 + var(--lyric-music-phrase) * -3px), -104px)
     scale(calc(0.88 + var(--lyric-stage-glow-strength) * 0.18 + var(--lyric-stage-audio-glow) * 0.03 + var(--lyric-music-breath) * 0.025));
@@ -1811,7 +1884,7 @@ button:disabled {
   box-shadow:
     0 0 22px var(--immersive-lyric-glow-strong),
     0 0 calc(46px + var(--lyric-stage-audio-glow) * 28px) var(--immersive-lyric-glow);
-  opacity: calc(0.1 + var(--immersive-stage-glow) * 0.16 + var(--lyric-stage-glow-strength) * 0.14 + var(--lyric-stage-beat-glow) * 0.1 + var(--lyric-stage-audio-glow) * 0.12 + var(--lyric-music-phrase) * 0.12);
+  opacity: calc(0.1 + var(--immersive-stage-glow) * 0.16 + var(--lyric-stage-glow-strength) * 0.14 + var(--lyric-stage-audio-glow) * 0.12 + var(--lyric-stage-solar) * 0.1 + var(--lyric-music-phrase) * 0.12);
   transform: translate3d(calc(var(--lyric-music-drift) * -3px), calc(-50% + var(--lyric-stage-line-lift) * -0.08 + var(--lyric-music-phrase) * -2px), -72px);
 }
 
@@ -1873,7 +1946,7 @@ button:disabled {
       color-mix(in srgb, var(--immersive-lyric-glow) 42%, transparent),
       transparent
     );
-  opacity: calc(0.12 + var(--lyric-stage-audio-glow) * 0.14 + var(--lyric-stage-beat-glow) * 0.1 + var(--lyric-music-breath) * 0.08 + var(--lyric-music-phrase) * 0.06);
+  opacity: calc(0.12 + var(--lyric-stage-audio-glow) * 0.14 + var(--lyric-stage-solar) * 0.08 + var(--lyric-music-breath) * 0.08 + var(--lyric-music-phrase) * 0.06);
   filter:
     blur(0.4px)
     drop-shadow(0 0 calc(18px + var(--lyric-stage-audio-glow) * 24px) var(--immersive-lyric-glow));
@@ -1930,56 +2003,9 @@ button:disabled {
   isolation: isolate;
 }
 
-.music-immersive-lyrics-slot.main::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: -38px calc(var(--immersive-lyrics-edge) * 0.36) -20px;
-  border-radius: 999px;
-  background:
-    radial-gradient(circle, var(--immersive-lyric-highlight) 0 1.2px, transparent 1.9px) 0 0 / 38px 24px,
-    radial-gradient(circle, var(--immersive-lyric-glow-strong) 0 1px, transparent 1.7px) 17px 9px / 52px 32px;
-  opacity: calc(var(--lyric-stage-particle-opacity) + var(--lyric-stage-air) * 0.08);
-  filter:
-    drop-shadow(0 0 10px var(--immersive-lyric-glow-strong))
-    brightness(calc(1 + var(--lyric-stage-air) * 0.12));
-  transform: translate3d(0, calc(4px + var(--lyric-stage-line-lift) * -0.16), -42px);
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
-  mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
-  animation: immersive-lyric-particles 5.4s linear infinite;
-}
-
 .music-immersive-lyrics-slot.main::after {
-  content: "";
-  position: absolute;
-  z-index: -2;
-  left: calc(var(--immersive-lyrics-edge) * 0.68);
-  right: calc(var(--immersive-lyrics-edge) * 0.68);
-  top: 58%;
-  height: 52%;
-  border-radius: 999px;
-  background:
-    radial-gradient(
-      ellipse at 50% 20%,
-      color-mix(in srgb, var(--immersive-lyric-highlight) 20%, transparent),
-      color-mix(in srgb, var(--immersive-lyric-glow) 34%, transparent) 44%,
-      transparent 76%
-    ),
-    linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--immersive-lyric-primary) 9%, transparent),
-      transparent
-    );
-  opacity: calc((0.09 + var(--lyric-stage-audio-glow) * 0.12 + var(--lyric-stage-beat-glow) * 0.1 + var(--lyric-music-phrase) * 0.08) * var(--lyric-stage-shadow-depth));
-  filter: blur(calc(4px + var(--lyric-stage-audio-glow) * 4px + var(--lyric-music-pulse) * 2px));
-  transform:
-    translate3d(calc(var(--lyric-music-drift) * -3px), calc(14px + var(--lyric-stage-line-lift) * -0.18 + var(--lyric-music-phrase) * -4px), -86px)
-    rotateX(66deg)
-    scaleX(calc(0.84 + var(--lyric-stage-floor-width) * 0.1));
-  transform-origin: 50% 12%;
-  -webkit-mask-image: radial-gradient(ellipse, #000 0 44%, transparent 76%);
-  mask-image: radial-gradient(ellipse, #000 0 44%, transparent 76%);
+  content: none;
+  display: none;
 }
 
 .music-immersive-lyrics-slot.main > .music-immersive-lyrics-line {
@@ -2022,30 +2048,63 @@ button:disabled {
   font-weight: var(--immersive-lyric-current-weight);
   line-height: var(--immersive-main-line-height);
   overflow: hidden;
-  padding: 0 0 18px;
+  padding: 0 0 28px;
   -webkit-text-stroke: 0.018em var(--immersive-lyric-outline);
   paint-order: stroke fill;
+  isolation: isolate;
   filter:
     drop-shadow(0 2px 2px var(--immersive-lyric-edge-shadow))
     drop-shadow(0 8px 18px rgba(0, 0, 0, 0.32))
-    drop-shadow(0 0 calc(8px + var(--lyric-stage-glow-strength) * 18px + var(--lyric-stage-beat-glow) * 12px + var(--lyric-stage-audio-glow) * 8px + var(--lyric-music-focus) * 12px) var(--immersive-lyric-glow));
+    drop-shadow(0 0 calc(8px + var(--lyric-stage-glow-strength) * 18px + var(--lyric-stage-audio-glow) * 8px + var(--lyric-stage-solar) * 16px + var(--lyric-music-focus) * 12px) var(--immersive-lyric-glow));
   transform:
     translate3d(
       calc(var(--lyric-music-drift) * 2px),
       calc(var(--lyric-stage-line-lift) - var(--lyric-music-phrase) * 3px),
-      calc(30px + var(--lyric-stage-beat-glow) * 12px + var(--lyric-stage-audio-glow) * 6px + var(--lyric-music-focus) * 10px)
+      calc(30px + var(--lyric-stage-audio-glow) * 6px + var(--lyric-music-focus) * 10px)
     )
     scale(calc(1 + var(--lyric-music-pulse) * 0.012 + var(--lyric-music-phrase) * 0.008));
+}
+
+.music-immersive-lyrics-line.current::before {
+  content: "";
+  position: absolute;
+  z-index: -2;
+  left: max(10px, 7%);
+  right: max(10px, 7%);
+  top: 8%;
+  bottom: 12px;
+  border-radius: 999px;
+  background:
+    radial-gradient(
+      ellipse at calc(var(--lyric-progress) + 3%) 48%,
+      color-mix(in srgb, var(--immersive-lyric-highlight) 30%, transparent),
+      color-mix(in srgb, var(--immersive-lyric-glow-strong) 18%, transparent) 26%,
+      transparent 56%
+    ),
+    radial-gradient(
+      ellipse at 50% 52%,
+      color-mix(in srgb, var(--immersive-lyric-primary) 12%, transparent),
+      color-mix(in srgb, var(--immersive-lyric-glow) 28%, transparent) 38%,
+      transparent 72%
+    );
+  opacity: calc(0.1 + var(--lyric-stage-readability) * 0.16 + var(--lyric-stage-solar) * 0.12 + var(--lyric-music-focus) * 0.1);
+  filter:
+    blur(calc(7px + var(--lyric-stage-solar) * 5px))
+    saturate(calc(1 + var(--lyric-stage-air) * 0.08));
+  transform:
+    translate3d(calc(var(--lyric-music-drift) * -2px), calc(2px + var(--lyric-stage-line-lift) * -0.08), -22px)
+    scaleX(calc(0.9 + var(--lyric-stage-floor-width) * 0.06));
+  pointer-events: none;
 }
 
 .music-immersive-lyrics-line.current::after {
   content: "";
   position: absolute;
   left: 2px;
-  bottom: 4px;
+  bottom: 9px;
   width: var(--lyric-progress);
   max-width: 100%;
-  height: 2px;
+  height: calc(2px + var(--lyric-stage-solar) * 1px);
   border-radius: 999px;
   background: linear-gradient(
     90deg,
@@ -2056,11 +2115,13 @@ button:disabled {
   box-shadow:
     0 0 18px var(--immersive-lyric-glow-strong),
     0 0 calc(16px + var(--lyric-stage-audio-glow) * 14px + var(--lyric-music-focus) * 10px) var(--immersive-lyric-glow);
-  opacity: calc((0.42 + var(--lyric-stage-glow-strength) * 0.18 + var(--lyric-stage-beat-glow) * 0.14 + var(--lyric-stage-audio-glow) * 0.12 + var(--lyric-music-phrase) * 0.16) * var(--lyric-progress-strength));
+  opacity: calc((0.42 + var(--lyric-stage-glow-strength) * 0.18 + var(--lyric-stage-audio-glow) * 0.12 + var(--lyric-music-phrase) * 0.16) * var(--lyric-progress-strength));
   transition: width 180ms linear, opacity 280ms ease;
 }
 
 .music-immersive-lyrics-line-text {
+  position: relative;
+  z-index: 2;
   display: inline;
   color: var(--immersive-lyric-primary);
   background:
@@ -2078,12 +2139,44 @@ button:disabled {
   -webkit-text-stroke: 0.018em var(--immersive-lyric-outline);
   paint-order: stroke fill;
   filter:
-    saturate(calc(0.88 + var(--lyric-progress-strength) * 0.18 + var(--lyric-stage-air) * 0.06))
-    brightness(calc(0.94 + var(--lyric-progress-strength) * 0.08 + var(--lyric-stage-audio-glow) * 0.04 + var(--lyric-music-focus) * 0.08));
+    saturate(calc(0.88 + var(--lyric-progress-strength) * 0.18 + var(--lyric-stage-air) * 0.06 + var(--lyric-stage-solar) * 0.08))
+    brightness(calc(0.94 + var(--lyric-progress-strength) * 0.08 + var(--lyric-stage-audio-glow) * 0.04 + var(--lyric-stage-solar) * 0.08 + var(--lyric-music-focus) * 0.08));
 }
 
 .music-immersive-lyrics.is-synced .music-immersive-lyrics-line.current {
   animation: immersive-lyric-glow 1.8s ease-in-out infinite alternate;
+}
+
+.music-immersive-lyrics.is-galaxy-float::before {
+  top: 18%;
+  bottom: 6%;
+  opacity: calc(0.06 + var(--lyric-stage-glow-strength) * 0.13 + var(--lyric-stage-solar) * 0.08 + var(--lyric-music-breath) * 0.05);
+  transform:
+    translate3d(calc(var(--lyric-music-drift) * 4px), calc(0px + var(--lyric-stage-line-lift) * -0.1 + var(--lyric-music-phrase) * -4px), -150px)
+    scale(calc(0.9 + var(--lyric-stage-glow-strength) * 0.12 + var(--lyric-stage-solar) * 0.04));
+}
+
+.music-immersive-lyrics.is-galaxy-float .music-immersive-lyrics-stack::before {
+  top: 50%;
+  height: 66%;
+  background:
+    radial-gradient(
+      ellipse at 50% 52%,
+      color-mix(in srgb, var(--immersive-lyric-highlight) 22%, transparent),
+      color-mix(in srgb, var(--immersive-lyric-glow) 42%, transparent) 34%,
+      transparent 74%
+    ),
+    repeating-linear-gradient(
+      100deg,
+      color-mix(in srgb, var(--immersive-lyric-scanline) 20%, transparent) 0 1px,
+      transparent 1px 38px
+    ),
+    linear-gradient(90deg, transparent, color-mix(in srgb, var(--immersive-lyric-glow) 36%, transparent), transparent);
+  opacity: calc(0.08 + var(--lyric-stage-audio-glow) * 0.08 + var(--lyric-stage-solar) * 0.05 + var(--lyric-music-breath) * 0.04);
+  transform:
+    translate3d(calc(var(--lyric-music-drift) * -5px), calc(18px + var(--lyric-stage-line-lift) * -0.2 + var(--lyric-music-phrase) * -5px), -184px)
+    rotateX(64deg)
+    scaleX(calc(var(--lyric-stage-floor-width) + 0.02));
 }
 
 .music-immersive-lyrics.is-dj-float {
@@ -2096,10 +2189,10 @@ button:disabled {
 .music-immersive-lyrics.is-dj-float::before {
   top: 16%;
   bottom: 0;
-  opacity: calc(0.08 + var(--lyric-stage-glow-strength) * 0.18 + var(--lyric-stage-beat-glow) * 0.1 + var(--lyric-music-breath) * 0.08);
+  opacity: calc(0.08 + var(--lyric-stage-glow-strength) * 0.18 + var(--lyric-music-breath) * 0.08);
   filter:
     blur(calc(22px + var(--lyric-stage-audio-glow) * 14px))
-    saturate(calc(1 + var(--lyric-stage-beat-glow) * 0.28));
+    saturate(calc(1 + var(--lyric-stage-air) * 0.08));
   transform:
     translate3d(calc(var(--lyric-music-drift) * 3px), calc(2px + var(--lyric-stage-line-lift) * -0.08 + var(--lyric-music-phrase) * -3px), -92px)
     scale(calc(0.9 + var(--lyric-stage-glow-strength) * 0.1 + var(--lyric-music-breath) * 0.03));
@@ -2122,7 +2215,7 @@ button:disabled {
 .music-immersive-lyrics.is-dj-float .music-immersive-lyrics-stack::before {
   top: 66%;
   height: 76%;
-  opacity: calc(0.12 + var(--lyric-stage-audio-glow) * 0.12 + var(--lyric-stage-beat-glow) * 0.09 + var(--lyric-music-breath) * 0.08);
+  opacity: calc(0.12 + var(--lyric-stage-audio-glow) * 0.12 + var(--lyric-music-breath) * 0.08);
   filter:
     blur(0.3px)
     drop-shadow(0 0 calc(18px + var(--lyric-stage-audio-glow) * 24px) var(--immersive-lyric-glow));
@@ -2135,7 +2228,7 @@ button:disabled {
 .music-immersive-lyrics.is-dj-float .music-immersive-lyrics-stack::after {
   top: 63%;
   height: 58%;
-  opacity: calc(0.07 + var(--lyric-stage-air) * 0.1 + var(--lyric-stage-beat-glow) * 0.06 + var(--lyric-music-breath) * 0.06);
+  opacity: calc(0.07 + var(--lyric-stage-air) * 0.1 + var(--lyric-music-breath) * 0.06);
   transform: translate3d(calc(var(--lyric-music-drift) * 3px), calc(48px + var(--lyric-music-phrase) * -3px), -148px) rotateX(72deg) scaleX(1.04);
 }
 
@@ -2147,18 +2240,18 @@ button:disabled {
 }
 
 .music-immersive-lyrics.is-dj-float .music-immersive-lyrics-line.current {
-  padding-bottom: 16px;
+  padding-bottom: 30px;
   letter-spacing: 0;
   -webkit-text-stroke: 0.022em var(--immersive-lyric-outline);
   filter:
     drop-shadow(0 2px 2px rgba(0, 0, 0, 0.82))
     drop-shadow(0 10px 24px rgba(0, 0, 0, 0.48))
-    drop-shadow(0 0 calc(14px + var(--lyric-stage-glow-strength) * 24px + var(--lyric-stage-beat-glow) * 14px + var(--lyric-stage-audio-glow) * 12px + var(--lyric-music-focus) * 14px) var(--immersive-lyric-glow));
+    drop-shadow(0 0 calc(14px + var(--lyric-stage-glow-strength) * 24px + var(--lyric-stage-audio-glow) * 12px + var(--lyric-music-focus) * 14px) var(--immersive-lyric-glow));
   transform:
     translate3d(
       calc(var(--lyric-music-drift) * 2px),
       calc(var(--lyric-stage-line-lift) - 10px - var(--lyric-music-phrase) * 3px),
-      calc(82px + var(--lyric-stage-beat-glow) * 14px + var(--lyric-stage-audio-glow) * 10px + var(--lyric-music-focus) * 12px)
+      calc(82px + var(--lyric-stage-audio-glow) * 10px + var(--lyric-music-focus) * 12px)
     )
     scale(calc(1 + var(--lyric-music-pulse) * 0.01 + var(--lyric-music-phrase) * 0.006));
 }
@@ -2169,19 +2262,7 @@ button:disabled {
     brightness(calc(1.05 + var(--lyric-stage-glow-strength) * 0.08 + var(--lyric-music-focus) * 0.08));
 }
 
-.music-immersive-lyrics.is-dj-float .music-immersive-lyrics-slot.main::after {
-  top: 74%;
-  height: 68%;
-  opacity: calc((0.1 + var(--lyric-stage-audio-glow) * 0.1 + var(--lyric-stage-beat-glow) * 0.08 + var(--lyric-music-phrase) * 0.08) * var(--lyric-stage-shadow-depth));
-  filter: blur(calc(5px + var(--lyric-stage-audio-glow) * 5px + var(--lyric-music-pulse) * 2px));
-  transform:
-    translate3d(calc(var(--lyric-music-drift) * -3px), calc(46px + var(--lyric-stage-line-lift) * -0.08 + var(--lyric-music-phrase) * -3px), -138px)
-    rotateX(72deg)
-    scaleX(calc(0.9 + var(--lyric-stage-floor-width) * 0.14));
-}
-
 .music-immersive-lyrics.is-reduced-motion::before,
-.music-immersive-lyrics.is-reduced-motion .music-immersive-lyrics-slot.main::before,
 .music-immersive-lyrics.is-reduced-motion .music-immersive-lyrics-line.current {
   animation: none;
 }
@@ -2206,16 +2287,6 @@ button:disabled {
   background: none;
   -webkit-text-fill-color: currentColor;
   -webkit-text-stroke: 0;
-}
-
-.music-immersive-lyrics.is-empty .music-immersive-lyrics-slot.main::before,
-.music-immersive-lyrics.is-error .music-immersive-lyrics-slot.main::before,
-.music-immersive-lyrics.is-idle .music-immersive-lyrics-slot.main::before,
-.music-immersive-lyrics.is-empty .music-immersive-lyrics-slot.main::after,
-.music-immersive-lyrics.is-error .music-immersive-lyrics-slot.main::after,
-.music-immersive-lyrics.is-idle .music-immersive-lyrics-slot.main::after {
-  opacity: 0.08;
-  animation: none;
 }
 
 .music-immersive-lyrics.is-empty .music-immersive-lyrics-stack::before,
@@ -2301,14 +2372,14 @@ button:disabled {
 
 @keyframes immersive-lyric-stage-breathe {
   from {
-    opacity: calc(0.06 + var(--lyric-stage-glow-strength) * 0.18 + var(--lyric-stage-beat-glow) * 0.12 + var(--lyric-stage-audio-glow) * 0.1);
+    opacity: calc(0.06 + var(--lyric-stage-glow-strength) * 0.18 + var(--lyric-stage-audio-glow) * 0.1);
     transform:
       translate3d(-10px, calc(5px + var(--lyric-stage-line-lift) * -0.16), -104px)
       scale(calc(0.88 + var(--lyric-stage-glow-strength) * 0.2 + var(--lyric-stage-audio-glow) * 0.03));
   }
 
   to {
-    opacity: calc(0.1 + var(--lyric-stage-glow-strength) * 0.28 + var(--lyric-stage-beat-glow) * 0.18 + var(--lyric-stage-audio-glow) * 0.13);
+    opacity: calc(0.1 + var(--lyric-stage-glow-strength) * 0.28 + var(--lyric-stage-audio-glow) * 0.13);
     transform:
       translate3d(8px, calc(-2px + var(--lyric-stage-line-lift) * -0.2), -104px)
       scale(calc(0.94 + var(--lyric-stage-glow-strength) * 0.24 + var(--lyric-stage-audio-glow) * 0.04));
@@ -2334,18 +2405,6 @@ button:disabled {
   to {
     opacity: 0.46;
     transform: translate3d(12px, -2px, -34px) skewX(-3deg);
-  }
-}
-
-@keyframes immersive-lyric-particles {
-  from {
-    background-position: 0 0, 17px 9px;
-    transform: translate3d(-8px, 6px, -42px);
-  }
-
-  to {
-    background-position: 76px -24px, -35px 41px;
-    transform: translate3d(8px, -4px, -42px);
   }
 }
 
@@ -2554,16 +2613,6 @@ button:disabled {
   white-space: nowrap;
 }
 
-.music-immersive.is-stage-only {
-  --immersive-lyrics-left: 7vw;
-  --immersive-lyrics-right: 7vw;
-  --immersive-lyrics-top: 18vh;
-  --immersive-lyrics-bottom: 22vh;
-  --immersive-lyrics-max-width: min(1080px, 86vw);
-  --immersive-lyrics-edge: 56px;
-  --immersive-stage-scale: 1.02;
-}
-
 .music-immersive-stage-only-restore {
   position: absolute;
   top: 18px;
@@ -2600,17 +2649,85 @@ button:disabled {
     0 0 24px color-mix(in srgb, var(--immersive-accent) 30%, transparent);
 }
 
+.music-immersive-reopen-actions {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.music-immersive-panel-reopen {
+  position: absolute;
+  top: 50%;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  border: 1px solid color-mix(in srgb, var(--immersive-accent) 44%, rgba(255, 255, 255, 0.2));
+  border-radius: 999px;
+  color: var(--immersive-text-strong);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.17), rgba(255, 255, 255, 0.07)),
+    rgba(9, 17, 33, 0.58);
+  box-shadow:
+    0 16px 34px rgba(0, 0, 0, 0.28),
+    0 0 18px color-mix(in srgb, var(--immersive-accent) 22%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  opacity: 0.92;
+  pointer-events: auto;
+  transform: translateY(-50%);
+  transition:
+    opacity 160ms ease,
+    transform 180ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.music-immersive-panel-reopen.playlist {
+  left: 18px;
+}
+
+.music-immersive-panel-reopen.panel {
+  right: 18px;
+}
+
+.music-immersive-panel-reopen:hover,
+.music-immersive-panel-reopen:focus-visible {
+  border-color: color-mix(in srgb, var(--immersive-accent) 70%, rgba(255, 255, 255, 0.28));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--immersive-accent) 32%, rgba(255, 255, 255, 0.2)), rgba(255, 255, 255, 0.09)),
+    rgba(12, 24, 44, 0.7);
+  opacity: 1;
+  transform: translateY(-50%) scale(1.04);
+}
+
+.theme-animal-island .music-immersive-panel-reopen {
+  border: 2px solid rgba(255, 231, 173, 0.62);
+  color: var(--immersive-text-strong);
+  background:
+    linear-gradient(145deg, rgba(255, 248, 233, 0.26), rgba(154, 222, 192, 0.18)),
+    rgba(34, 93, 112, 0.42);
+  box-shadow:
+    0 10px 0 rgba(26, 73, 94, 0.12),
+    0 16px 32px rgba(24, 42, 38, 0.2),
+    0 0 18px color-mix(in srgb, var(--immersive-accent) 24%, transparent);
+}
+
 .music-immersive-playlist,
 .music-immersive-panel {
   grid-column: 1;
   grid-row: 2;
   align-self: center;
   min-width: 0;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(9, 17, 33, 0.54);
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24);
-  backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.07), transparent 46%),
+    rgba(9, 17, 33, 0.42);
+  box-shadow:
+    0 18px 42px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(22px) saturate(1.16);
   pointer-events: auto;
+  transform-style: preserve-3d;
 }
 
 .music-immersive-playlist {
@@ -3138,27 +3255,6 @@ button:disabled {
   font-variant-numeric: tabular-nums;
   font-weight: 950;
   text-align: right;
-}
-
-.music-lyric-stage-switches {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.music-lyric-stage-check {
-  min-height: 30px;
-  padding: 6px 7px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.07);
-}
-
-.music-lyric-stage-check span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .music-lyric-stage-actions {
@@ -3923,6 +4019,63 @@ button:disabled {
   background: var(--immersive-accent);
 }
 
+.music-immersive.is-stage-galaxy .music-immersive-vignette {
+  background:
+    linear-gradient(180deg, rgba(8, 14, 28, 0.5), rgba(8, 14, 28, 0.02) 34%, rgba(8, 14, 28, 0.6)),
+    radial-gradient(ellipse at 50% 48%, transparent 0 42%, rgba(5, 9, 20, 0.34) 78%),
+    linear-gradient(90deg, rgba(8, 14, 28, 0.48), rgba(8, 14, 28, 0.04) 44%, rgba(8, 14, 28, 0.44));
+  box-shadow: inset 0 0 116px rgba(0, 0, 0, 0.44);
+}
+
+.music-immersive.is-stage-galaxy .music-immersive-playlist:not(.is-collapsed),
+.music-immersive.is-stage-galaxy .music-immersive-panel:not(.is-collapsed) {
+  border-color: color-mix(in srgb, var(--immersive-accent) 26%, rgba(255, 255, 255, 0.12));
+  background:
+    radial-gradient(circle at 18% 0%, color-mix(in srgb, var(--immersive-accent) 14%, transparent), transparent 42%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.08), transparent 48%),
+    rgba(6, 12, 27, 0.34);
+  box-shadow:
+    0 24px 56px rgba(0, 0, 0, 0.28),
+    0 0 38px color-mix(in srgb, var(--immersive-accent) 18%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -18px 40px rgba(0, 0, 0, 0.12);
+  backdrop-filter: blur(28px) saturate(1.24);
+}
+
+.music-immersive.is-stage-galaxy .music-immersive-playlist:not(.is-collapsed) {
+  transform: perspective(980px) rotateY(4deg) translate3d(0, -2px, 18px);
+  transform-origin: 0 50%;
+}
+
+.music-immersive.is-stage-galaxy .music-immersive-panel:not(.is-collapsed) {
+  transform: perspective(980px) rotateY(-4deg) translate3d(0, -2px, 18px);
+  transform-origin: 100% 50%;
+}
+
+.music-immersive.is-stage-galaxy .music-stage-parameter-card,
+.music-immersive.is-stage-galaxy .music-lyric-stage-panel {
+  border-color: color-mix(in srgb, var(--immersive-accent) 24%, transparent);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--immersive-accent) 10%, transparent), transparent 64%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.music-immersive.is-stage-galaxy .music-stage-preset-grid button,
+.music-immersive.is-stage-galaxy .music-immersive-playlist-row {
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.music-immersive.is-stage-galaxy .music-immersive-playlist-row:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--immersive-accent) 13%, rgba(255, 255, 255, 0.055));
+}
+
+.music-immersive.is-stage-galaxy .music-immersive-playlist-row.active {
+  background: color-mix(in srgb, var(--immersive-accent) 18%, rgba(255, 255, 255, 0.05));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--immersive-accent) 12%, transparent),
+    0 0 22px color-mix(in srgb, var(--immersive-accent) 14%, transparent);
+}
+
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-range input,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-options input,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-progress input,
@@ -3958,6 +4111,18 @@ button:disabled {
   }
 
   .music-immersive-playlist {
+    position: absolute;
+    left: 18px;
+    top: clamp(84px, 12vh, 112px);
+    bottom: 94px;
+    z-index: 5;
+    display: grid;
+    width: min(320px, calc(100vw - 36px));
+    max-height: none;
+    margin-left: 0;
+  }
+
+  .music-immersive-playlist.is-collapsed {
     display: none;
   }
 }
@@ -3976,6 +4141,17 @@ button:disabled {
     --immersive-lyrics-right: 18px;
     --immersive-lyrics-max-width: calc(100vw - 36px);
     --immersive-lyrics-edge: 24px;
+  }
+
+  .music-immersive-panel-reopen {
+    top: auto;
+    bottom: 96px;
+    transform: none;
+  }
+
+  .music-immersive-panel-reopen:hover,
+  .music-immersive-panel-reopen:focus-visible {
+    transform: scale(1.04);
   }
 
   .music-immersive-lyrics {
@@ -4014,6 +4190,7 @@ button:disabled {
   .music-immersive-lyrics-line.current {
     font-size: min(var(--immersive-main-font-size), 44px);
     line-height: var(--immersive-main-line-height);
+    padding-bottom: 24px;
   }
 
   .music-immersive-lyrics.is-empty .music-immersive-lyrics-line.current,
@@ -4025,10 +4202,6 @@ button:disabled {
     opacity: 0.18;
   }
 
-  .music-lyric-stage-switches {
-    grid-template-columns: 1fr;
-  }
-
   .music-lyric-stage-range {
     grid-template-columns: 34px minmax(0, 1fr) 52px;
   }
@@ -4038,6 +4211,11 @@ button:disabled {
     justify-self: stretch;
     width: auto;
     margin: 0 18px;
+  }
+
+  .music-immersive.is-stage-galaxy .music-immersive-panel:not(.is-collapsed) {
+    transform: none;
+    transform-origin: 50% 50%;
   }
 
   .music-immersive-controls {
@@ -6948,6 +7126,255 @@ button:disabled {
   background: #df3c46;
 }
 
+.translator-window {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  border: 1px solid rgba(68, 78, 103, 0.18);
+  border-radius: 14px;
+  background: rgba(248, 251, 255, 0.97);
+  box-shadow: 0 18px 44px rgba(24, 39, 75, 0.16);
+  backdrop-filter: blur(18px);
+}
+
+.translator-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 10px;
+  color: #ffffff;
+  background: linear-gradient(135deg, #263754, #2d6a7e 58%, #5b6ee1);
+  user-select: none;
+}
+
+.translator-header h1,
+.translator-header p,
+.translator-editor-panel span,
+.translator-editor-panel small,
+.translator-notice strong,
+.translator-notice span,
+.translator-error {
+  margin: 0;
+}
+
+.translator-header h1 {
+  font-size: 17px;
+}
+
+.translator-header p {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 12px;
+}
+
+.translator-header-actions,
+.translator-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.translator-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 12px 0;
+  padding: 9px 10px;
+  border: 1px solid #ffd7a8;
+  border-radius: 10px;
+  color: #6e4315;
+  background: #fff7ec;
+  font-size: 12px;
+}
+
+.translator-notice strong,
+.translator-language-bar label span,
+.translator-editor-panel > span {
+  font-weight: 800;
+}
+
+.translator-language-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  padding: 12px 12px 0;
+}
+
+.translator-language-bar label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: #44506a;
+  font-size: 12px;
+}
+
+.translator-language-bar select {
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  border: 1px solid #d6e0eb;
+  border-radius: 8px;
+  outline: none;
+  padding: 0 10px;
+  color: #162033;
+  background: #ffffff;
+  font-size: 13px;
+}
+
+.translator-language-bar select:focus,
+.translator-editor-panel textarea:focus {
+  border-color: #347cff;
+  box-shadow: 0 0 0 3px rgba(52, 124, 255, 0.14);
+}
+
+.translator-swap-button,
+.translator-mode-toggle button,
+.translator-ghost-button {
+  min-height: 36px;
+  border-radius: 8px;
+  color: #34445e;
+  background: #e8eef6;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.translator-swap-button {
+  width: 38px;
+  padding: 0;
+  font-size: 18px;
+}
+
+.translator-mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 8px;
+  background: #e5edf6;
+}
+
+.translator-mode-toggle button {
+  min-width: 48px;
+  min-height: 30px;
+  padding: 0 10px;
+  background: transparent;
+}
+
+.translator-mode-toggle button.active {
+  color: #10203d;
+  background: #ffffff;
+}
+
+.translator-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
+}
+
+.translator-editor-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 7px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  border: 1px solid #dfe7f0;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(27, 43, 73, 0.08);
+}
+
+.translator-editor-panel > span {
+  color: #18243a;
+  font-size: 14px;
+}
+
+.translator-editor-panel small {
+  color: #657188;
+  font-size: 11px;
+}
+
+.translator-editor-panel textarea,
+.translator-output {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #d6e0eb;
+  border-radius: 10px;
+  outline: none;
+  padding: 10px;
+  color: #162033;
+  background: #ffffff;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.translator-editor-panel textarea {
+  resize: none;
+}
+
+.translator-output {
+  background: #f8fbff;
+}
+
+.translator-output.empty {
+  display: grid;
+  place-items: center;
+  color: #7a879d;
+  text-align: center;
+}
+
+.translator-error {
+  margin: 0 12px 10px;
+  padding: 8px 10px;
+  border: 1px solid #ffd1d6;
+  border-radius: 8px;
+  color: #a82d38;
+  background: #fff2f4;
+  font-size: 12px;
+}
+
+.translator-actions {
+  justify-content: flex-end;
+  padding: 0 12px 12px;
+}
+
+.translator-ghost-button,
+.translator-primary-button {
+  min-width: 82px;
+  min-height: 36px;
+  padding: 0 13px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.translator-primary-button {
+  color: #ffffff;
+  background: #1f6f70;
+}
+
+.translator-swap-button:hover:not(:disabled),
+.translator-mode-toggle button:hover:not(:disabled),
+.translator-ghost-button:hover:not(:disabled) {
+  background: #d7e4f2;
+}
+
+.translator-primary-button:hover:not(:disabled) {
+  background: #185d5e;
+}
+
 .pet-chat-delete-dialog h2,
 .pet-chat-delete-dialog p,
 .pet-chat-settings-dialog h2,
@@ -9781,7 +10208,8 @@ button:disabled {
 .pet-chat-window.theme-animal-island,
 .pet-menu-window.theme-animal-island,
 .music-window.theme-animal-island,
-.story-window.theme-animal-island {
+.story-window.theme-animal-island,
+.translator-window.theme-animal-island {
   border: 2px solid #d9ac67;
   background:
     radial-gradient(circle at 12% 10%, rgba(255, 203, 111, 0.24), transparent 26%),
@@ -9915,7 +10343,19 @@ button:disabled {
   backdrop-filter: none;
 }
 
-.pet-bubble-window.theme-animal-island .codex-pet-bubble::after {
+.pet-bubble-window.theme-animal-island .codex-pet-bubble.expanded {
+  padding: 9px 11px;
+}
+
+.pet-bubble-window.theme-animal-island .codex-pet-bubble-text.expanded::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--codex-bubble-accent, var(--island-mint)) 44%, transparent);
+}
+
+.pet-bubble-window.theme-animal-island .codex-pet-bubble-text.expanded::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--codex-bubble-accent, var(--island-mint)) 62%, transparent);
+}
+
+.pet-bubble-window.theme-animal-island .codex-pet-bubble.tail-anchor::after {
   border-color: var(--codex-bubble-border, var(--island-border-soft));
   background: var(--codex-bubble-bg, rgba(255, 250, 240, 0.96));
 }
@@ -10009,6 +10449,25 @@ button:disabled {
 
 .pet-bubble-window.theme-animal-island .codex-pet-bubble.state-failed,
 .pet-bubble-window.theme-animal-island .codex-pet-badge.state-failed {
+  --codex-bubble-accent: var(--island-coral-dark);
+  --codex-bubble-border: rgba(196, 99, 94, 0.42);
+  --codex-bubble-bg: rgba(255, 240, 234, 0.98);
+}
+
+.pet-bubble-window.theme-animal-island .codex-pet-bubble.channel-translation.state-running {
+  --codex-bubble-accent: #4f94bf;
+  --codex-bubble-border: rgba(79, 148, 191, 0.4);
+  --codex-bubble-bg: rgba(237, 247, 252, 0.98);
+}
+
+.pet-bubble-window.theme-animal-island .codex-pet-bubble.channel-translation.state-completed,
+.pet-bubble-window.theme-animal-island .codex-pet-bubble.channel-translation.state-connected {
+  --codex-bubble-accent: var(--island-mint);
+  --codex-bubble-border: rgba(67, 198, 169, 0.38);
+  --codex-bubble-bg: rgba(239, 251, 237, 0.98);
+}
+
+.pet-bubble-window.theme-animal-island .codex-pet-bubble.channel-translation.state-failed {
   --codex-bubble-accent: var(--island-coral-dark);
   --codex-bubble-border: rgba(196, 99, 94, 0.42);
   --codex-bubble-bg: rgba(255, 240, 234, 0.98);
@@ -10334,7 +10793,8 @@ button:disabled {
 .pet-chat-window.theme-animal-island,
 .pet-menu-window.theme-animal-island,
 .music-window.theme-animal-island,
-.story-window.theme-animal-island {
+.story-window.theme-animal-island,
+.translator-window.theme-animal-island {
   font-family:
     Nunito, "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Trebuchet MS", system-ui,
     sans-serif;
@@ -10373,8 +10833,123 @@ button:disabled {
 }
 
 .pet-chat-window.theme-animal-island,
-.story-window.theme-animal-island {
+.story-window.theme-animal-island,
+.translator-window.theme-animal-island {
   border-radius: 26px;
+}
+
+.translator-window.theme-animal-island {
+  background:
+    var(--island-paper-dots),
+    radial-gradient(circle at 12% 8%, rgba(255, 205, 111, 0.3), transparent 24%),
+    radial-gradient(circle at 90% 15%, rgba(107, 206, 174, 0.18), transparent 24%),
+    linear-gradient(165deg, var(--island-paper), var(--island-cream));
+  background-size:
+    28px 28px,
+    auto,
+    auto,
+    auto;
+}
+
+.theme-animal-island .translator-header {
+  color: var(--island-ink);
+  background:
+    radial-gradient(circle at 92% 14%, rgba(255, 205, 111, 0.34), transparent 28%),
+    linear-gradient(135deg, #fff2cb, #d8f1d8 58%, #fff8e8);
+}
+
+.theme-animal-island .translator-header p,
+.theme-animal-island .translator-language-bar label,
+.theme-animal-island .translator-editor-panel small {
+  color: var(--island-muted);
+}
+
+.theme-animal-island .translator-editor-panel,
+.theme-animal-island .translator-notice {
+  border: 2px solid var(--island-border-soft);
+  border-radius: 18px;
+  background:
+    var(--island-paper-dots),
+    rgba(255, 250, 240, 0.94);
+  background-size:
+    28px 28px,
+    auto;
+  box-shadow: 0 4px 0 rgba(189, 135, 62, 0.16);
+}
+
+.theme-animal-island .translator-editor-panel > span,
+.theme-animal-island .translator-notice strong {
+  color: var(--island-ink);
+}
+
+.theme-animal-island .translator-notice {
+  color: #8a5b2c;
+}
+
+.theme-animal-island .translator-language-bar select,
+.theme-animal-island .translator-editor-panel textarea,
+.theme-animal-island .translator-output {
+  border: 1px solid var(--island-border-soft);
+  color: var(--island-ink);
+  background: #fffdf6;
+}
+
+.theme-animal-island .translator-language-bar select:focus,
+.theme-animal-island .translator-editor-panel textarea:focus {
+  border-color: rgba(56, 138, 104, 0.52);
+  box-shadow: 0 0 0 3px rgba(111, 180, 132, 0.18);
+}
+
+.theme-animal-island .translator-output.empty {
+  color: var(--island-muted);
+}
+
+.theme-animal-island .translator-swap-button,
+.theme-animal-island .translator-mode-toggle,
+.theme-animal-island .translator-ghost-button,
+.theme-animal-island .translator-header-actions .secondary-button,
+.theme-animal-island .translator-header-actions .window-close {
+  border: 1px solid #efcf88;
+  border-radius: 999px;
+  color: var(--island-ink);
+  background: #ffe7ad;
+  box-shadow: 0 3px 0 rgba(206, 156, 85, 0.24);
+}
+
+.theme-animal-island .translator-mode-toggle {
+  padding: 3px;
+}
+
+.theme-animal-island .translator-mode-toggle button {
+  border: 0;
+  box-shadow: none;
+}
+
+.theme-animal-island .translator-mode-toggle button.active,
+.theme-animal-island .translator-primary-button {
+  color: #ffffff;
+  background: var(--island-mint);
+  box-shadow: 0 3px 0 var(--island-mint-dark);
+}
+
+.theme-animal-island .translator-swap-button:hover:not(:disabled),
+.theme-animal-island .translator-mode-toggle button:hover:not(:disabled),
+.theme-animal-island .translator-ghost-button:hover:not(:disabled),
+.theme-animal-island .translator-header-actions .secondary-button:hover:not(:disabled),
+.theme-animal-island .translator-header-actions .window-close:hover:not(:disabled) {
+  color: var(--island-ink);
+  background: #ffda86;
+  transform: translateY(-1px);
+}
+
+.theme-animal-island .translator-primary-button:hover:not(:disabled) {
+  background: var(--island-mint-dark);
+}
+
+.theme-animal-island .translator-error {
+  border-color: #f0b2a6;
+  color: #a84832;
+  background: #fff0e7;
 }
 
 .theme-animal-island button {
@@ -11312,6 +11887,12 @@ button:disabled {
   box-shadow: 0 0 18px rgba(244, 191, 102, 0.42);
 }
 
+.theme-animal-island .music-immersive-lyrics-line.current::before {
+  background:
+    radial-gradient(ellipse at calc(var(--lyric-progress) + 3%) 48%, rgba(255, 231, 173, 0.28), rgba(236, 178, 88, 0.14) 28%, transparent 58%),
+    radial-gradient(ellipse at 50% 52%, rgba(255, 253, 246, 0.12), rgba(127, 182, 166, 0.16) 38%, transparent 72%);
+}
+
 .theme-animal-island .music-immersive-lyrics-stack::before {
   background:
     radial-gradient(
@@ -11327,8 +11908,7 @@ button:disabled {
     drop-shadow(0 0 calc(18px + var(--lyric-stage-audio-glow) * 18px) rgba(236, 178, 88, 0.28));
 }
 
-.theme-animal-island .music-immersive-lyrics-stack::after,
-.theme-animal-island .music-immersive-lyrics-slot.main::after {
+.theme-animal-island .music-immersive-lyrics-stack::after {
   background:
     linear-gradient(90deg, transparent, rgba(255, 231, 173, 0.18), transparent),
     radial-gradient(ellipse at 50% 22%, rgba(127, 182, 166, 0.12), transparent 70%);
@@ -11347,6 +11927,18 @@ button:disabled {
     drop-shadow(0 2px 2px rgba(54, 37, 20, 0.78))
     drop-shadow(0 8px 20px rgba(69, 47, 24, 0.42))
     drop-shadow(0 0 calc(12px + var(--lyric-stage-glow-strength) * 20px) rgba(244, 191, 102, 0.34));
+}
+
+.theme-animal-island .music-immersive-lyrics.is-galaxy-float::before {
+  opacity: calc(0.06 + var(--lyric-stage-glow-strength) * 0.12 + var(--lyric-stage-solar) * 0.08);
+}
+
+.theme-animal-island .music-immersive-lyrics.is-galaxy-float .music-immersive-lyrics-stack::before {
+  background:
+    radial-gradient(ellipse at 50% 52%, rgba(255, 231, 173, 0.18), rgba(127, 182, 166, 0.11) 38%, transparent 74%),
+    repeating-linear-gradient(100deg, rgba(255, 231, 173, 0.09) 0 1px, transparent 1px 38px),
+    linear-gradient(90deg, transparent, rgba(127, 182, 166, 0.12), transparent);
+  opacity: calc(0.07 + var(--lyric-stage-audio-glow) * 0.08 + var(--lyric-stage-solar) * 0.05);
 }
 
 .theme-animal-island .music-immersive-lyrics-line.previous,
@@ -11376,6 +11968,48 @@ button:disabled {
   border-radius: 20px;
   background: rgba(255, 248, 233, 0.24);
   box-shadow: 0 5px 0 rgba(89, 60, 31, 0.2);
+}
+
+.theme-animal-island .music-immersive.is-stage-galaxy .music-immersive-vignette {
+  background:
+    linear-gradient(180deg, rgba(54, 45, 27, 0.36), rgba(54, 45, 27, 0.02) 34%, rgba(54, 45, 27, 0.48)),
+    radial-gradient(ellipse at 50% 48%, transparent 0 42%, rgba(43, 32, 19, 0.26) 78%),
+    linear-gradient(90deg, rgba(54, 45, 27, 0.32), rgba(54, 45, 27, 0.04) 46%, rgba(54, 45, 27, 0.3));
+  box-shadow: inset 0 0 94px rgba(88, 59, 30, 0.34);
+}
+
+.theme-animal-island .music-immersive.is-stage-galaxy .music-immersive-playlist:not(.is-collapsed),
+.theme-animal-island .music-immersive.is-stage-galaxy .music-immersive-panel:not(.is-collapsed) {
+  border-color: rgba(255, 231, 173, 0.42);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255, 231, 173, 0.16), transparent 40%),
+    linear-gradient(145deg, rgba(255, 248, 233, 0.12), transparent 48%),
+    rgba(59, 45, 26, 0.32);
+  box-shadow:
+    0 20px 44px rgba(55, 38, 21, 0.28),
+    0 0 34px rgba(127, 182, 166, 0.16),
+    inset 0 1px 0 rgba(255, 248, 233, 0.14);
+  backdrop-filter: blur(26px) saturate(1.18);
+}
+
+.theme-animal-island .music-immersive.is-stage-galaxy .music-stage-parameter-card,
+.theme-animal-island .music-immersive.is-stage-galaxy .music-lyric-stage-panel {
+  border-color: rgba(239, 207, 136, 0.44);
+  background:
+    radial-gradient(circle at 12% 18%, rgba(255, 231, 173, 0.12), transparent 42%),
+    rgba(255, 248, 233, 0.09);
+}
+
+.theme-animal-island .music-immersive.is-stage-galaxy .music-stage-preset-grid button,
+.theme-animal-island .music-immersive.is-stage-galaxy .music-immersive-playlist-row {
+  background: rgba(255, 231, 173, 0.12);
+}
+
+.theme-animal-island .music-immersive.is-stage-galaxy .music-immersive-playlist-row.active {
+  background: rgba(91, 184, 150, 0.24);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 248, 233, 0.12),
+    0 0 22px rgba(127, 182, 166, 0.16);
 }
 
 .theme-animal-island .music-immersive-playlist-heading strong,
@@ -11420,8 +12054,7 @@ button:disabled {
     rgba(255, 248, 233, 0.14);
 }
 
-.theme-animal-island .music-stage-center-wave-check,
-.theme-animal-island .music-lyric-stage-check {
+.theme-animal-island .music-stage-center-wave-check {
   border-color: rgba(239, 207, 136, 0.52);
   background: rgba(255, 231, 173, 0.14);
 }
@@ -12567,14 +13200,14 @@ button:disabled {
     7px 7px;
 }
 
-.pet-bubble-window.theme-animal-island .codex-pet-bubble::after {
+.pet-bubble-window.theme-animal-island .codex-pet-bubble.tail-anchor::after {
   width: 14px;
   height: 14px;
   border-radius: 50%;
   transform: translateX(-50%) rotate(0deg);
 }
 
-.pet-bubble-window.theme-animal-island.placement-side .codex-pet-bubble::after {
+.pet-bubble-window.theme-animal-island.placement-side .codex-pet-bubble.tail-anchor::after {
   transform: translateY(-50%) rotate(0deg);
 }
 

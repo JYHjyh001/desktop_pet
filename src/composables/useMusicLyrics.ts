@@ -21,6 +21,10 @@ export interface MusicLyricLine {
   source?: 'lrc' | 'plain' | 'yrc-line' | 'yrc-word'
 }
 
+interface DisplayLyricLine extends MusicLyricLine {
+  sourceIndex: number
+}
+
 export interface MusicLyricWord {
   text: string
   time: number
@@ -59,6 +63,7 @@ const LINE_SWITCH_EARLY_TOLERANCE_SECONDS = 0.18
 const LONG_INTERLUDE_GAP_SECONDS = 8
 const INTERLUDE_FADE_AFTER_SECONDS = 0.65
 const DEFAULT_LAST_LINE_SWEEP_SECONDS = 4.2
+const LYRICS_REQUEST_TIMEOUT_MS = 15000
 
 export function useMusicLyrics() {
   const lyricsStatus = ref<MusicLyricsStatus>('idle')
@@ -85,22 +90,23 @@ export function useMusicLyrics() {
     lyricsStatus.value = 'loading'
 
     try {
-      const result =
+      const result = await withLyricsRequestTimeout(
         track.source === 'netease' && track.neteaseSongId
-          ? await invoke<MusicLyricsResult | null>('read_netease_lyrics', {
+          ? invoke<MusicLyricsResult | null>('read_netease_lyrics', {
               songId: track.neteaseSongId,
             })
           : track.source === 'kugou' && track.kugouSongHash
-            ? await invoke<MusicLyricsResult | null>('read_kugou_lyrics', {
+            ? invoke<MusicLyricsResult | null>('read_kugou_lyrics', {
                 hash: track.kugouSongHash,
                 name: track.title,
                 artist: track.artist,
                 durationMs: track.duration ? Math.round(track.duration * 1000) : null,
               })
-          : await invoke<MusicLyricsResult | null>('read_music_lyrics', {
+          : invoke<MusicLyricsResult | null>('read_music_lyrics', {
               path: track.path,
               sourcePath: track.sourcePath ?? track.path,
-            })
+            }),
+      )
       if (currentRequestId !== requestId) {
         return
       }
@@ -145,26 +151,35 @@ export function useMusicLyrics() {
       return fallbackLyrics(track, lyricsStatus.value, false)
     }
 
-    const synced = lyricLines.value.some((line) => line.time !== null)
+    const displayLines = displayableLyricLines(lyricLines.value, track)
+    if (displayLines.length === 0) {
+      return emptyReadyLyrics(track, false)
+    }
+
+    const synced = displayLines.some((line) => line.time !== null)
     const index = synced
-      ? syncedLineIndex(lyricLines.value, safeTime)
-      : unsyncedLineIndex(lyricLines.value, safeTime, track.duration)
-    const line = lyricLines.value[index]
+      ? syncedLineIndex(displayLines, safeTime)
+      : unsyncedLineIndex(displayLines, safeTime, track.duration)
+    const line = displayLines[index]
+    const currentText = line?.text.trim() ?? ''
     const progress = synced
-      ? syncedLineProgress(lyricLines.value, index, safeTime, track.duration)
-      : unsyncedLineProgress(lyricLines.value, index, safeTime, track.duration)
+      ? syncedLineProgress(displayLines, index, safeTime, track.duration)
+      : unsyncedLineProgress(displayLines, index, safeTime, track.duration)
     const interlude = synced
-      ? syncedLineInterlude(lyricLines.value, index, safeTime, track.duration)
+      ? syncedLineInterlude(displayLines, index, safeTime, track.duration)
       : false
     const karaoke = Boolean(line?.words?.length)
 
+    const previousLine = displayLines[index - 1]
+    const nextLine = displayLines[index + 1]
+
     return {
-      previous: lyricLines.value[index - 1]?.text ?? '',
-      current: line?.text || track.title,
-      next: lyricLines.value[index + 1]?.text ?? '',
-      previousKey: lyricWindowKey(track.id, index - 1, lyricLines.value[index - 1]?.text ?? ''),
-      currentKey: lyricWindowKey(track.id, index, line?.text || track.title),
-      nextKey: lyricWindowKey(track.id, index + 1, lyricLines.value[index + 1]?.text ?? ''),
+      previous: previousLine?.text ?? '',
+      current: currentText,
+      next: nextLine?.text ?? '',
+      previousKey: lyricLineWindowKey(track.id, previousLine, index - 1),
+      currentKey: lyricLineWindowKey(track.id, line, index),
+      nextKey: lyricLineWindowKey(track.id, nextLine, index + 1),
       progress,
       interlude,
       karaoke,
@@ -182,6 +197,20 @@ export function useMusicLyrics() {
     resetLyrics,
     lyricsAt,
   }
+}
+
+function withLyricsRequestTimeout(promise: Promise<MusicLyricsResult | null>) {
+  return new Promise<MusicLyricsResult | null>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error('歌词读取超时，请稍后重试。'))
+    }, LYRICS_REQUEST_TIMEOUT_MS)
+
+    promise
+      .then(resolve, reject)
+      .finally(() => {
+        window.clearTimeout(timer)
+      })
+  })
 }
 
 function parseLyricsResult(result: MusicLyricsResult | null | undefined) {
@@ -224,13 +253,16 @@ function parseLyrics(content: string): MusicLyricLine[] {
     const timestamps = [...line.matchAll(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g)]
     if (timestamps.length === 0) {
       if (!isLrcMetadataLine(line)) {
-        plainLines.push({ time: null, text: stripLrcTags(line), source: 'plain' })
+        const plainText = stripLrcTags(line)
+        if (!isNoLyricText(plainText)) {
+          plainLines.push({ time: null, text: plainText, source: 'plain' })
+        }
       }
       continue
     }
 
     const text = line.replace(/\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g, '').trim()
-    if (!text || isLrcMetadataLine(line)) {
+    if (!text || isLrcMetadataLine(line) || isNoLyricText(text)) {
       continue
     }
 
@@ -543,6 +575,88 @@ function fallbackLyrics(
   }
 }
 
+function emptyReadyLyrics(track: MusicLyricsTrack, synced: boolean): MusicLyricsWindow {
+  return {
+    previous: '',
+    current: '',
+    next: '',
+    previousKey: lyricWindowKey(track.id, -1, 'ready-empty-previous'),
+    currentKey: lyricWindowKey(track.id, 0, 'ready-empty-current'),
+    nextKey: lyricWindowKey(track.id, 1, 'ready-empty-next'),
+    progress: 0,
+    interlude: false,
+    karaoke: false,
+    status: 'ready',
+    synced,
+  }
+}
+
+function displayableLyricLines(lines: MusicLyricLine[], track: MusicLyricsTrack) {
+  return lines
+    .map<DisplayLyricLine>((line, index) => ({ ...line, sourceIndex: index }))
+    .filter((line) => isDisplayableLyricText(line.text, track))
+}
+
+function isDisplayableLyricText(text: string, track: MusicLyricsTrack) {
+  const trimmed = text.trim()
+  if (!trimmed || isNoLyricText(trimmed)) {
+    return false
+  }
+
+  return !isTrackIdentityText(trimmed, track)
+}
+
+function isTrackIdentityText(text: string, track: MusicLyricsTrack) {
+  const normalizedText = normalizeTrackIdentityText(text)
+  if (!normalizedText || !isFullTrackIdentityCandidate(text)) {
+    return false
+  }
+
+  const title = track.title.trim()
+  const sourceName = lastPathSegment(track.sourcePath || track.path)
+  const candidates = [
+    title,
+    stripAudioFileExtension(title),
+    sourceName,
+    stripAudioFileExtension(sourceName),
+  ].filter(Boolean)
+
+  return candidates.some((candidate) => {
+    if (!isFullTrackIdentityCandidate(candidate)) {
+      return false
+    }
+
+    return normalizeTrackIdentityText(candidate) === normalizedText
+  })
+}
+
+function isFullTrackIdentityCandidate(text: string) {
+  return hasAudioFileExtension(text) || /[-–—_]/.test(text)
+}
+
+function normalizeTrackIdentityText(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/\.(mp3|flac|wav|m4a|aac|ogg|opus|wma)$/i, '')
+    .replace(/[\s"'“”‘’《》<>()[\]【】{}.,，。!！?？、:：;；~～\-–—_·/\\]+/g, '')
+}
+
+function stripAudioFileExtension(text: string) {
+  return text.trim().replace(/\.(mp3|flac|wav|m4a|aac|ogg|opus|wma)$/i, '')
+}
+
+function hasAudioFileExtension(text: string) {
+  return /\.(mp3|flac|wav|m4a|aac|ogg|opus|wma)$/i.test(text.trim())
+}
+
+function lastPathSegment(path: string) {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? ''
+}
+
+function lyricLineWindowKey(trackId: string, line: DisplayLyricLine | undefined, fallbackIndex: number) {
+  return lyricWindowKey(trackId, line?.sourceIndex ?? fallbackIndex, line?.text ?? '')
+}
+
 function lyricWindowKey(trackId: string, index: number, text: string) {
   return `${trackId}:${index}:${text}`
 }
@@ -560,8 +674,12 @@ function isLrcMetadataLine(line: string) {
 
 function isNoLyricText(text: string) {
   const compact = text.replace(/\s+/g, '').replace(/[，,。.!！?？、~～]/g, '')
+  const normalized = compact.toLowerCase()
   return (
     !compact ||
+    compact === '间奏' ||
+    compact === '音乐间奏' ||
+    normalized === 'instrumental' ||
     compact === '纯音乐请欣赏' ||
     compact === '暂无歌词' ||
     compact === '暂无歌词敬请期待' ||

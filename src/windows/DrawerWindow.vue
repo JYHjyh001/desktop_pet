@@ -549,6 +549,7 @@ const settingsDraft = reactive({
   drawerTheme: 'light' as DrawerTheme,
   musicImmersiveTheme: 'follow' as MusicImmersiveThemePreference,
   shortcutToggleDrawer: 'Ctrl+Space',
+  translateSelectionShortcut: 'Ctrl+Alt+T',
   petSingleClickAction: 'smartCodexOrDrawer' as PetActionBinding,
   petDoubleClickAction: 'toggleDrawer' as PetActionBinding,
   petRightClickAction: 'petMenu' as PetActionBinding,
@@ -794,6 +795,7 @@ function syncSettingsDraft(config: PetDrawerConfig) {
   settingsDraft.drawerTheme = normalizeDrawerTheme(config.drawer.theme)
   settingsDraft.musicImmersiveTheme = normalizeMusicImmersiveTheme(config.drawer.musicImmersiveTheme)
   settingsDraft.shortcutToggleDrawer = config.shortcut?.toggleDrawer || 'Ctrl+Space'
+  settingsDraft.translateSelectionShortcut = config.shortcut?.translateSelection || 'Ctrl+Alt+T'
   settingsDraft.petSingleClickAction = normalizePetActionBinding(
     config.shortcut?.petSingleClick,
     'smartCodexOrDrawer',
@@ -1147,6 +1149,7 @@ function buildDrawerPreferences(tagMode: 'compact' | 'detailed') {
     autoFavoriteEnabled: settingsDraft.autoFavoriteEnabled,
     shortcut: {
       toggleDrawer: settingsDraft.shortcutToggleDrawer,
+      translateSelection: settingsDraft.translateSelectionShortcut,
       petSingleClick: settingsDraft.petSingleClickAction,
       petDoubleClick: settingsDraft.petDoubleClickAction,
       petRightClick: settingsDraft.petRightClickAction,
@@ -2651,6 +2654,10 @@ async function hideDrawer() {
 async function openStoryMode() {
   await invoke('show_story')
 }
+
+async function openTranslator() {
+  await invoke('show_translator')
+}
 </script>
 
 <template>
@@ -2682,6 +2689,7 @@ async function openStoryMode() {
           </button>
         </div>
         <button class="secondary-button" type="button" @click="openStoryMode">故事模式</button>
+        <button class="secondary-button" type="button" @click="openTranslator">翻译</button>
         <button class="secondary-button" type="button" @click="openSettings">设置</button>
         <button class="window-close" type="button" title="隐藏抽屉" @click="hideDrawer">×</button>
       </div>
@@ -3130,9 +3138,18 @@ async function openStoryMode() {
             <section v-show="activeSettingsSection === 'actions'" class="settings-section">
               <h3>宠物操作绑定</h3>
               <p class="settings-empty">
-                单击、双击和右键只保存动作类型；Codex 动作只会尝试聚焦已打开的 Codex 窗口。
+                单击、双击和右键只保存动作类型；划选翻译快捷键只保存按键字符串。
               </p>
               <div class="settings-form-grid">
+                <label class="settings-field wide">
+                  划选翻译快捷键
+                  <input
+                    v-model="settingsDraft.translateSelectionShortcut"
+                    maxlength="64"
+                    placeholder="例如：Ctrl+Alt+T 或 F3"
+                  />
+                  <small>在其他应用选中文字后按下快捷键，会通过桌宠气泡显示短译文；F3 可能和查找功能冲突。</small>
+                </label>
                 <label class="settings-field">
                   单击宠物
                   <select v-model="settingsDraft.petSingleClickAction">

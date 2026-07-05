@@ -9,7 +9,10 @@ import type {
   InstancedBufferAttribute,
   InstancedMesh,
   IUniform,
+  Mesh,
+  MeshBasicMaterial,
   PerspectiveCamera,
+  PlaneGeometry,
   Points,
   Scene,
   ShaderMaterial,
@@ -36,6 +39,9 @@ type VisualKindCounts = Record<VisualKind, number>
 
 const DJ_TERRAIN_CENTER_Z = -3.28
 const DJ_TERRAIN_GROUND_Y = -1.86
+const DJ_LYRIC_ANCHOR_Y = -0.58
+const DJ_LYRIC_ANCHOR_Z = DJ_TERRAIN_CENTER_Z + 0.24
+const LYRIC_LINE_TRANSITION_SECONDS = 0.42
 const TERRAIN_FLUX_HISTORY_SIZE = 40
 const TERRAIN_RIPPLE_LIMIT = 12
 const TERRAIN_CENTER_PULSE_SPEED = 24
@@ -227,6 +233,46 @@ interface ImmersiveFreeCameraView {
   fov: number
 }
 
+interface WebglLyricStageState {
+  active: boolean
+  textMode: 'lyric' | 'loading' | 'empty' | 'error' | 'placeholder'
+  statusText: string
+  current: string
+  currentKey: string
+  previous: string
+  previousKey: string
+  next: string
+  nextKey: string
+  progress: number
+  status: string
+  synced: boolean
+  interlude: boolean
+  fontScale: number
+  tilt: number
+  glow: number
+  verticalOffsetPx: number
+  distanceOffsetPx: number
+  distanceScale: number
+  sideOpacity: number
+  currentLines: number
+  sideLines: number
+}
+
+type WebglLyricPlaneRole = 'current' | 'side'
+type WebglLyricTextMode = WebglLyricStageState['textMode']
+
+interface WebglLyricTextPlane {
+  canvas: HTMLCanvasElement
+  texture: Texture
+  geometry: PlaneGeometry
+  material: MeshBasicMaterial
+  mesh: Mesh
+  signature: string
+  worldWidth: number
+  worldHeight: number
+  role: WebglLyricPlaneRole
+}
+
 const props = withDefaults(
   defineProps<{
     energy: MusicEnergyFrame
@@ -245,6 +291,7 @@ const props = withDefaults(
     stagePitch: number
     stageDragging: boolean
     freeCamera: ImmersiveFreeCameraView
+    lyricStage: WebglLyricStageState
   }>(),
   {
     mode: 'rhythm',
@@ -260,6 +307,30 @@ const props = withDefaults(
     stageYaw: 0,
     stagePitch: 0,
     stageDragging: false,
+    lyricStage: () => ({
+      active: false,
+      textMode: 'placeholder',
+      statusText: '',
+      current: '',
+      currentKey: 'default-current',
+      previous: '',
+      previousKey: 'default-previous',
+      next: '',
+      nextKey: 'default-next',
+      progress: 0,
+      status: 'idle',
+      synced: false,
+      interlude: false,
+      fontScale: 1,
+      tilt: 0.5,
+      glow: 0.5,
+      verticalOffsetPx: 0,
+      distanceOffsetPx: 0,
+      distanceScale: 1,
+      sideOpacity: 0.62,
+      currentLines: 1,
+      sideLines: 1,
+    }),
     freeCamera: () => ({
       active: false,
       locked: false,
@@ -315,6 +386,17 @@ let mainUniforms: StarUniforms | null = null
 let glowUniforms: StarUniforms | null = null
 let mainPoints: Points | null = null
 let glowPoints: Points | null = null
+let lyricStageGroup: Group | null = null
+let lyricCurrentPlane: WebglLyricTextPlane | null = null
+let lyricPreviousPlane: WebglLyricTextPlane | null = null
+let lyricNextPlane: WebglLyricTextPlane | null = null
+let lyricGlowGeometry: PlaneGeometry | null = null
+let lyricGlowMaterial: MeshBasicMaterial | null = null
+let lyricGlowMesh: Mesh | null = null
+let lyricMistTexture: Texture | null = null
+let lyricDepthVeilGeometry: PlaneGeometry | null = null
+let lyricDepthVeilMaterial: MeshBasicMaterial | null = null
+let lyricDepthVeilMesh: Mesh | null = null
 let dotTexture: Texture | null = null
 let resizeObserver: ResizeObserver | null = null
 let animationFrameId: number | null = null
@@ -330,6 +412,9 @@ let lastRenderSeconds: number | null = null
 let rhythmTime = 0
 let rhythmVelocity = 0.7
 let smoothedEnergy = createSilentSmoothedEnergy()
+let lyricStageOpacity = 0
+let lastLyricCurrentKey = ''
+let lyricLineTransitionStartedAt = -999
 
 onMounted(() => {
   disposed = false
@@ -412,6 +497,8 @@ async function initializeWebgl() {
     mainPoints.renderOrder = 1
     sceneGroup.add(mainPoints)
 
+    createLyricStageLayer(three)
+
     element.addEventListener('webglcontextlost', handleContextLost)
     resizeObserver = new ResizeObserver(() => resizeRenderer())
     resizeObserver.observe(element)
@@ -433,6 +520,99 @@ function createMaterial(three: ThreeModule, uniforms: StarUniforms) {
     depthTest: true,
     blending: three.AdditiveBlending,
   })
+}
+
+function createLyricStageLayer(three: ThreeModule) {
+  if (!scene) {
+    return
+  }
+
+  lyricStageGroup = new three.Group()
+  lyricStageGroup.visible = false
+
+  lyricMistTexture = createLyricMistTexture(three)
+  lyricGlowGeometry = new three.PlaneGeometry(1, 1, 1, 1)
+  lyricGlowMaterial = new three.MeshBasicMaterial({
+    map: lyricMistTexture,
+    color: 0x9cffdf,
+    transparent: true,
+    opacity: 0,
+    depthTest: false,
+    depthWrite: false,
+    blending: three.AdditiveBlending,
+    toneMapped: false,
+  })
+  lyricGlowMesh = new three.Mesh(lyricGlowGeometry, lyricGlowMaterial)
+  lyricGlowMesh.renderOrder = 0.7
+  lyricGlowMesh.position.set(0, -0.05, -0.28)
+  lyricStageGroup.add(lyricGlowMesh)
+
+  lyricCurrentPlane = createLyricTextPlane(three, 'current')
+  lyricPreviousPlane = createLyricTextPlane(three, 'side')
+  lyricNextPlane = createLyricTextPlane(three, 'side')
+
+  lyricPreviousPlane.mesh.renderOrder = 1.26
+  lyricNextPlane.mesh.renderOrder = 1.26
+  lyricCurrentPlane.mesh.renderOrder = 1.28
+  lyricStageGroup.add(lyricPreviousPlane.mesh)
+  lyricStageGroup.add(lyricNextPlane.mesh)
+  lyricStageGroup.add(lyricCurrentPlane.mesh)
+
+  lyricDepthVeilGeometry = new three.PlaneGeometry(1, 1, 1, 1)
+  lyricDepthVeilMaterial = new three.MeshBasicMaterial({
+    map: lyricMistTexture,
+    color: 0xb8f2ff,
+    transparent: true,
+    opacity: 0,
+    depthTest: false,
+    depthWrite: false,
+    blending: three.AdditiveBlending,
+    side: three.DoubleSide,
+    toneMapped: false,
+  })
+  lyricDepthVeilMesh = new three.Mesh(lyricDepthVeilGeometry, lyricDepthVeilMaterial)
+  lyricDepthVeilMesh.renderOrder = 1.18
+  lyricDepthVeilMesh.position.set(0, -0.04, 0.46)
+  lyricStageGroup.add(lyricDepthVeilMesh)
+
+  scene.add(lyricStageGroup)
+}
+
+function createLyricTextPlane(three: ThreeModule, role: WebglLyricPlaneRole): WebglLyricTextPlane {
+  const canvasElement = document.createElement('canvas')
+  canvasElement.width = role === 'current' ? 1536 : 1280
+  canvasElement.height = role === 'current' ? 384 : 192
+  const texture = new three.CanvasTexture(canvasElement)
+  texture.colorSpace = three.SRGBColorSpace
+  texture.minFilter = three.LinearFilter
+  texture.magFilter = three.LinearFilter
+  texture.generateMipmaps = false
+
+  const geometryElement = new three.PlaneGeometry(1, 1, 1, 1)
+  const material = new three.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    opacity: 0,
+    alphaTest: role === 'current' ? 0.035 : 0.025,
+    depthTest: false,
+    depthWrite: false,
+    blending: three.NormalBlending,
+    toneMapped: false,
+  })
+  const mesh = new three.Mesh(geometryElement, material)
+  mesh.frustumCulled = false
+
+  return {
+    canvas: canvasElement,
+    texture,
+    geometry: geometryElement,
+    material,
+    mesh,
+    signature: '',
+    worldWidth: 1,
+    worldHeight: 1,
+    role,
+  }
 }
 
 function createTerrainUniforms(three: ThreeModule): TerrainUniforms {
@@ -801,6 +981,9 @@ function disposeWebgl() {
   if (glowPoints && sceneGroup) {
     sceneGroup.remove(glowPoints)
   }
+  if (lyricStageGroup?.parent) {
+    lyricStageGroup.parent.remove(lyricStageGroup)
+  }
   if (terrainMesh && sceneGroup) {
     sceneGroup.remove(terrainMesh)
   }
@@ -809,6 +992,14 @@ function disposeWebgl() {
   }
 
   geometry?.dispose()
+  disposeLyricTextPlane(lyricCurrentPlane)
+  disposeLyricTextPlane(lyricPreviousPlane)
+  disposeLyricTextPlane(lyricNextPlane)
+  lyricGlowGeometry?.dispose()
+  lyricGlowMaterial?.dispose()
+  lyricMistTexture?.dispose()
+  lyricDepthVeilGeometry?.dispose()
+  lyricDepthVeilMaterial?.dispose()
   terrainGeometry?.dispose()
   terrainMaterial?.dispose()
   mainMaterial?.dispose()
@@ -835,12 +1026,36 @@ function disposeWebgl() {
   glowUniforms = null
   mainPoints = null
   glowPoints = null
+  lyricStageGroup = null
+  lyricCurrentPlane = null
+  lyricPreviousPlane = null
+  lyricNextPlane = null
+  lyricGlowGeometry = null
+  lyricGlowMaterial = null
+  lyricGlowMesh = null
+  lyricMistTexture = null
+  lyricDepthVeilGeometry = null
+  lyricDepthVeilMaterial = null
+  lyricDepthVeilMesh = null
   dotTexture = null
   threeRuntime = null
   lastRenderSeconds = null
   rhythmTime = 0
   rhythmVelocity = 0.7
   smoothedEnergy = createSilentSmoothedEnergy()
+  lyricStageOpacity = 0
+  lastLyricCurrentKey = ''
+  lyricLineTransitionStartedAt = -999
+}
+
+function disposeLyricTextPlane(plane: WebglLyricTextPlane | null) {
+  if (!plane) {
+    return
+  }
+
+  plane.geometry.dispose()
+  plane.material.dispose()
+  plane.texture.dispose()
 }
 
 function handleContextLost(event: Event) {
@@ -890,6 +1105,7 @@ function render(time: number) {
   updateTerrainLayer(seconds)
   updateUniforms(mainUniforms, seconds)
   updateUniforms(glowUniforms, seconds)
+  updateLyricStage(seconds, deltaSeconds)
   renderer.render(scene, camera)
 }
 
@@ -906,11 +1122,12 @@ function updateCamera(time: number) {
   const motionScale = props.reducedMotion ? 0.38 : 1
   const energy = props.energy
   const isDjPreset = props.stagePreset === 'dj'
+  const isGalaxyPreset = props.stagePreset === 'galaxy'
   const cameraTuning =
-    props.stagePreset === 'galaxy' ? stageTuningValue('camera', 0.55, 1.75) : stageTuningValue('camera', 0.55, 1.65)
+    isGalaxyPreset ? stageTuningValue('camera', 0.55, 1.75) : stageTuningValue('camera', 0.55, 1.65)
   const cameraBoost = isDjPreset ? 0.58 : 1
-  const driftScale = props.stagePreset === 'galaxy' ? 1.36 : 0.16
-  const radiusBias = props.stagePreset === 'galaxy' ? 0.62 : 2.05
+  const driftScale = isGalaxyPreset ? 0 : 0.16
+  const radiusBias = isGalaxyPreset ? 0.62 : 2.05
   const dragYaw = degreesToRadians(props.stageYaw) * 1.18 * motionScale
   const dragPitch = degreesToRadians(props.stagePitch) * 0.96 * motionScale
   const idleYaw = Math.sin(time * 0.075) * 0.055 * motionScale * driftScale
@@ -943,7 +1160,9 @@ function updateCamera(time: number) {
     camera.position.set(orbitRadius * cy * st, 0.7 + orbitRadius * sy, orbitRadius * cy * ct)
     camera.lookAt(0, 0, -0.45)
   }
-  camera.rotation.z += Math.sin(time * 0.9) * cameraPunch * 0.008 * cameraBoost
+  if (!isGalaxyPreset) {
+    camera.rotation.z += Math.sin(time * 0.9) * cameraPunch * 0.008 * cameraBoost
+  }
   const targetFov = isDjPreset ? 46 - cameraPunch * 0.62 : 46 - cameraPunch * 2.6 * cameraBoost
   camera.fov += (targetFov - camera.fov) * 0.12
   camera.updateProjectionMatrix()
@@ -978,14 +1197,15 @@ function updateSceneGroup(time: number) {
 
   const energy = props.energy
   const motionScale = props.reducedMotion ? 0.36 : 1
-  const presetSpin = props.stagePreset === 'galaxy' ? 1.72 : 0.18
+  const isGalaxyPreset = props.stagePreset === 'galaxy'
+  const presetSpin = isGalaxyPreset ? 0 : 0.18
   const presetLift = props.stagePreset === 'dj' ? 0.26 : 1
   const beatLift = props.playing ? clamp01(energy.beat * 0.75 + energy.bass * 0.35) * presetLift : 0
   const freeCameraMode = props.freeCamera.active || props.freeCamera.locked
-  sceneGroup.rotation.y =
-    time * 0.018 * motionScale * presetSpin +
-    (freeCameraMode ? 0 : degreesToRadians(props.stageYaw) * 0.16 * motionScale)
-  sceneGroup.rotation.x = freeCameraMode ? 0 : -degreesToRadians(props.stagePitch) * 0.08 * motionScale
+  sceneGroup.rotation.y = isGalaxyPreset || freeCameraMode
+    ? 0
+    : time * 0.018 * motionScale * presetSpin + degreesToRadians(props.stageYaw) * 0.16 * motionScale
+  sceneGroup.rotation.x = isGalaxyPreset || freeCameraMode ? 0 : -degreesToRadians(props.stagePitch) * 0.08 * motionScale
   sceneGroup.position.y = props.stagePreset === 'dj' ? -0.16 : 0
   sceneGroup.position.z =
     props.stagePreset === 'dj' ? DJ_TERRAIN_CENTER_Z - beatLift * 0.02 * motionScale : -0.45 - beatLift * 0.16 * motionScale
@@ -1029,6 +1249,456 @@ function updateUniforms(uniforms: StarUniforms, time: number) {
   uniforms.uColorLine.value.set(palette.line)
   uniforms.uColorRipple.value.set(palette.ripple)
   uniforms.uColorHalo.value.set(palette.halo)
+}
+
+function updateLyricStage(time: number, deltaSeconds: number) {
+  if (
+    !lyricStageGroup ||
+    !lyricCurrentPlane ||
+    !lyricPreviousPlane ||
+    !lyricNextPlane ||
+    !lyricGlowMaterial ||
+    !lyricGlowMesh ||
+    !lyricDepthVeilMaterial ||
+    !lyricDepthVeilMesh
+  ) {
+    return
+  }
+
+  const lyric = props.lyricStage
+  const active = lyric.active
+  const textMode = lyric.textMode || 'placeholder'
+  const lyricReady = textMode === 'lyric'
+  const primaryText = lyric.current.trim() || lyric.statusText.trim()
+  const targetOpacity = active && primaryText ? 1 : 0
+  const opacityEase = 1 - Math.exp(-deltaSeconds * (targetOpacity > lyricStageOpacity ? 9.5 : 7.2))
+  lyricStageOpacity += (targetOpacity - lyricStageOpacity) * clamp(opacityEase, 0.04, 0.5)
+  lyricStageGroup.visible = lyricStageOpacity > 0.012
+
+  if (!lyricStageGroup.visible) {
+    setLyricPlaneOpacity(lyricCurrentPlane, 0, false)
+    setLyricPlaneOpacity(lyricPreviousPlane, 0, false)
+    setLyricPlaneOpacity(lyricNextPlane, 0, false)
+    lyricGlowMaterial.opacity = 0
+    lyricDepthVeilMaterial.opacity = 0
+    return
+  }
+
+  const palette = visualPalette(props.theme, props.mode)
+  const fontScale = clamp(lyric.fontScale || 1, 0.62, 1.46)
+  const distanceScale = clamp(lyric.distanceScale || 1, 0.86, 1.12)
+  const glow = clamp(lyric.glow, 0, 1)
+  const progress = lyricReady ? clamp01(lyric.progress) : 0
+  const sideOpacity = clamp(lyric.sideOpacity, 0, 1)
+  const breath = smoothedEnergy.volume * 0.52 + smoothedEnergy.mid * 0.24 + smoothedEnergy.treble * 0.12
+  const phrase = lyricReady ? Math.sin(Math.PI * progress) : 0.18
+  const statusWeightScale = lyricReady ? 1 : 0.82
+  const textWeight = lyricTextWeight(primaryText)
+
+  drawLyricTextureIfNeeded(lyricCurrentPlane, {
+    text: primaryText,
+    textKey: lyric.currentKey,
+    progress,
+    fontScale,
+    lineCount: clamp(Math.round(lyric.currentLines || 1), 1, 4),
+    palette,
+    role: 'current',
+    textMode,
+  })
+  drawLyricTextureIfNeeded(lyricPreviousPlane, {
+    text: lyric.previous,
+    textKey: lyric.previousKey,
+    progress: 0,
+    fontScale,
+    lineCount: clamp(Math.round(lyric.sideLines || 1), 1, 2),
+    palette,
+    role: 'side',
+    textMode,
+  })
+  drawLyricTextureIfNeeded(lyricNextPlane, {
+    text: lyric.next,
+    textKey: lyric.nextKey,
+    progress: 0,
+    fontScale,
+    lineCount: clamp(Math.round(lyric.sideLines || 1), 1, 2),
+    palette,
+    role: 'side',
+    textMode,
+  })
+
+  const mainWidth = clamp(
+    (4.95 + Math.min(textWeight, 48) * 0.04) * fontScale * distanceScale * statusWeightScale,
+    lyricReady ? 4.2 : 3.45,
+    lyricReady ? 7.9 : 6.25,
+  )
+  const mainHeight = syncLyricPlaneSize(lyricCurrentPlane, mainWidth)
+  const sideWidth = clamp(mainWidth * 0.78, 3.25, 5.75)
+  const previousHeight = syncLyricPlaneSize(lyricPreviousPlane, sideWidth)
+  const nextHeight = syncLyricPlaneSize(lyricNextPlane, sideWidth)
+  const transitionProgress = updateLyricLineTransition(
+    time,
+    active,
+    lyricReady,
+    lyric.currentKey,
+    lyric.current,
+    lyric.previous,
+  )
+
+  const motionScale = props.reducedMotion ? 0.18 : 1
+  const isDjPreset = props.stagePreset === 'dj'
+  const verticalWorld = -clamp(lyric.verticalOffsetPx, -280, 280) / 215
+  const distanceWorld = clamp(lyric.distanceOffsetPx, -190, 190) / 165
+  const lift = props.playing ? (breath * 0.055 + phrase * 0.045) * motionScale : 0
+  const driftY = Math.cos(time * 0.13 + smoothedEnergy.mid) * 0.018 * motionScale
+  const anchorY = isDjPreset ? DJ_LYRIC_ANCHOR_Y : -0.02
+  const anchorZ = isDjPreset ? DJ_LYRIC_ANCHOR_Z : -0.52
+  const verticalScale = isDjPreset ? 0.58 : 0.88
+  const distanceScaleWorld = isDjPreset ? 0.26 : 0.38
+  const musicZScale = isDjPreset ? 0.48 : 1
+
+  lyricStageGroup.position.set(
+    0,
+    anchorY + verticalWorld * verticalScale + lift * (isDjPreset ? 0.68 : 1) + driftY,
+    anchorZ + distanceWorld * distanceScaleWorld + breath * 0.035 * motionScale * musicZScale,
+  )
+  lyricStageGroup.rotation.set(degreesToRadians((lyric.tilt - 0.5) * 2.6), 0, 0)
+
+  const previousTargetY = mainHeight * 0.56 + previousHeight * 0.36 + 0.08
+  const previousTargetZ = -0.18
+  const nextTargetY = -mainHeight * 0.58 - nextHeight * 0.36 - 0.1
+  const nextTargetZ = -0.16
+
+  if (transitionProgress < 1) {
+    const currentStartWidth = clamp(sideWidth, 3.25, mainWidth)
+    const currentStartHeight = planeHeightForWidth(lyricCurrentPlane, currentStartWidth)
+    const previousStartWidth = mainWidth
+    const previousStartHeight = planeHeightForWidth(lyricPreviousPlane, previousStartWidth)
+    const currentWidth = mixNumber(currentStartWidth, mainWidth, transitionProgress)
+    const currentHeight = mixNumber(currentStartHeight, mainHeight, transitionProgress)
+    const previousWidth = mixNumber(previousStartWidth, sideWidth, transitionProgress)
+    const previousLineHeight = mixNumber(previousStartHeight, previousHeight, transitionProgress)
+
+    lyricCurrentPlane.mesh.position.set(
+      0,
+      mixNumber(nextTargetY, 0, transitionProgress),
+      mixNumber(nextTargetZ, 0, transitionProgress),
+    )
+    lyricCurrentPlane.mesh.scale.set(currentWidth, currentHeight, 1)
+    lyricPreviousPlane.mesh.position.set(
+      0,
+      mixNumber(0, previousTargetY, transitionProgress),
+      mixNumber(0, previousTargetZ, transitionProgress),
+    )
+    lyricPreviousPlane.mesh.scale.set(previousWidth, previousLineHeight, 1)
+    lyricNextPlane.mesh.position.set(0, nextTargetY, nextTargetZ)
+  } else {
+    lyricCurrentPlane.mesh.position.set(0, 0, 0)
+    lyricPreviousPlane.mesh.position.set(0, previousTargetY, previousTargetZ)
+    lyricNextPlane.mesh.position.set(0, nextTargetY, nextTargetZ)
+  }
+
+  const currentOpacity = lyricStageOpacity * (lyricReady ? 0.98 + glow * 0.08 : 0.78 + glow * 0.06)
+  setLyricPlaneOpacity(lyricCurrentPlane, currentOpacity, false)
+  const readableSideOpacity = lyricStageOpacity * clamp(
+    (lyricReady ? 0.56 : 0.5) + sideOpacity * 0.32 + glow * 0.08,
+    lyricReady ? 0.54 : 0.44,
+    lyricReady ? 0.9 : 0.76,
+  )
+  setLyricPlaneOpacity(
+    lyricPreviousPlane,
+    lyric.previous.trim() ? readableSideOpacity : 0,
+    false,
+  )
+  setLyricPlaneOpacity(
+    lyricNextPlane,
+    lyric.next.trim()
+      ? readableSideOpacity * (transitionProgress < 1 ? clamp01((transitionProgress - 0.18) / 0.82) : 1)
+      : 0,
+    false,
+  )
+
+  lyricGlowMaterial.color.set(palette.mid)
+  lyricGlowMaterial.opacity = lyricStageOpacity * clamp(0.1 + glow * 0.22 + breath * 0.1, 0.06, 0.56)
+  lyricGlowMesh.scale.set(mainWidth * (1.16 + glow * 0.24), mainHeight * (2.0 + breath * 0.38), 1)
+  lyricGlowMesh.position.set(0, -0.03, -0.64)
+
+  lyricDepthVeilMaterial.color.set(palette.line)
+  lyricDepthVeilMaterial.opacity = lyricStageOpacity * clamp(
+    0.035 + glow * 0.072 + breath * 0.05 + phrase * 0.028,
+    0.018,
+    0.2,
+  )
+  lyricDepthVeilMesh.scale.set(mainWidth * (1.22 + breath * 0.08), mainHeight * (1.78 + glow * 0.18), 1)
+  lyricDepthVeilMesh.position.set(
+    Math.sin(time * 0.09) * 0.045 * motionScale,
+    -0.02 + Math.cos(time * 0.08) * 0.028 * motionScale,
+    0.52,
+  )
+}
+
+function setLyricPlaneOpacity(plane: WebglLyricTextPlane, opacity: number, depthWrite: boolean) {
+  plane.material.opacity = clamp(opacity, 0, 1)
+  plane.material.depthWrite = depthWrite
+  plane.mesh.visible = plane.material.opacity > 0.008
+}
+
+function syncLyricPlaneSize(plane: WebglLyricTextPlane, worldWidth: number) {
+  const aspect = plane.canvas.height / Math.max(1, plane.canvas.width)
+  const worldHeight = worldWidth * aspect
+  plane.worldWidth = worldWidth
+  plane.worldHeight = worldHeight
+  plane.mesh.scale.set(worldWidth, worldHeight, 1)
+  return worldHeight
+}
+
+function updateLyricLineTransition(
+  time: number,
+  active: boolean,
+  lyricReady: boolean,
+  currentKey: string,
+  currentText: string,
+  previousText: string,
+) {
+  const canAnimate =
+    active &&
+    lyricReady &&
+    !props.reducedMotion &&
+    currentKey.length > 0 &&
+    currentText.trim().length > 0 &&
+    previousText.trim().length > 0
+
+  if (!canAnimate) {
+    lastLyricCurrentKey = currentKey
+    lyricLineTransitionStartedAt = -999
+    return 1
+  }
+
+  if (lastLyricCurrentKey && currentKey !== lastLyricCurrentKey) {
+    lyricLineTransitionStartedAt = time
+  }
+  lastLyricCurrentKey = currentKey
+
+  if (lyricLineTransitionStartedAt < 0) {
+    return 1
+  }
+
+  const rawProgress = (time - lyricLineTransitionStartedAt) / LYRIC_LINE_TRANSITION_SECONDS
+  if (rawProgress >= 1) {
+    lyricLineTransitionStartedAt = -999
+    return 1
+  }
+
+  return easeLyricLineTransition(rawProgress)
+}
+
+function planeHeightForWidth(plane: WebglLyricTextPlane, width: number) {
+  const aspect = plane.canvas.height / Math.max(1, plane.canvas.width)
+  return width * aspect
+}
+
+function mixNumber(from: number, to: number, amount: number) {
+  const progress = clamp01(amount)
+  return from + (to - from) * progress
+}
+
+function easeLyricLineTransition(progress: number) {
+  const nextProgress = clamp01(progress)
+  return 1 - Math.pow(1 - nextProgress, 3)
+}
+
+interface DrawLyricTextureOptions {
+  text: string
+  textKey: string
+  progress: number
+  fontScale: number
+  lineCount: number
+  palette: VisualPalette
+  role: WebglLyricPlaneRole
+  textMode: WebglLyricTextMode
+}
+
+function drawLyricTextureIfNeeded(plane: WebglLyricTextPlane, options: DrawLyricTextureOptions) {
+  const progressBucket = options.role === 'current' ? Math.round(clamp01(options.progress) * 240) : 0
+  const signature = [
+    options.role,
+    options.textMode,
+    options.textKey,
+    options.text,
+    progressBucket,
+    Math.round(options.fontScale * 100),
+    options.lineCount,
+    options.palette.high,
+    options.palette.mid,
+    options.palette.shadow,
+  ].join('|')
+
+  if (plane.signature === signature) {
+    return
+  }
+
+  plane.signature = signature
+  drawLyricTexture(plane.canvas, options)
+  plane.texture.needsUpdate = true
+}
+
+function drawLyricTexture(canvasElement: HTMLCanvasElement, options: DrawLyricTextureOptions) {
+  const role = options.role
+  const isCurrent = role === 'current'
+  const isLyricCurrent = isCurrent && options.textMode === 'lyric'
+  const fontSize = isCurrent
+    ? Math.round(clamp((isLyricCurrent ? 84 : 72) * options.fontScale, 44, isLyricCurrent ? 116 : 96))
+    : Math.round(clamp(42 * options.fontScale, 26, 58))
+  const width = isCurrent ? 1536 : 1280
+  const maxTextWidth = isCurrent ? 1310 : 1080
+  const lineHeight = fontSize * (isCurrent ? (options.lineCount >= 3 ? 1.14 : 1.08) : 1.24)
+  const paddingX = isCurrent ? 112 : 92
+  const paddingY = isCurrent ? 48 : 28
+  const underlineSpace = isLyricCurrent ? 34 : 0
+  const fontWeight = isCurrent ? (isLyricCurrent ? 900 : 860) : 760
+  const font = `${fontWeight} ${fontSize}px Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", Arial, sans-serif`
+
+  canvasElement.width = width
+  const context = canvasElement.getContext('2d')
+  if (!context) {
+    return
+  }
+
+  context.font = font
+  const lines = wrapLyricCanvasLines(context, options.text, maxTextWidth, options.lineCount)
+  const textHeight = Math.max(lineHeight, lines.length * lineHeight)
+  const height = Math.ceil(paddingY * 2 + textHeight + underlineSpace)
+  canvasElement.height = clamp(height, isCurrent ? 184 : 96, isCurrent ? 584 : 228)
+
+  context.clearRect(0, 0, canvasElement.width, canvasElement.height)
+  context.font = font
+  context.textAlign = 'center'
+  context.textBaseline = 'middle'
+  context.lineJoin = 'round'
+  context.miterLimit = 2
+
+  const centerX = canvasElement.width / 2
+  const blockHeight = (lines.length - 1) * lineHeight
+  const firstY = canvasElement.height / 2 - underlineSpace * 0.42 - blockHeight / 2
+  const primary = isCurrent
+    ? colorWithAlpha(options.palette.high, isLyricCurrent ? 1 : 0.9)
+    : colorWithAlpha(options.palette.high, 0.9)
+  const muted = isCurrent ? options.palette.mid : colorWithAlpha(options.palette.mid, 0.78)
+  const hot = options.palette.halo
+  const outline = colorWithAlpha(options.palette.shadow, isCurrent ? 0.88 : 0.78)
+  const glow = colorWithAlpha(options.palette.mid, isCurrent ? 0.58 : 0.46)
+  const progress = clamp01(options.progress)
+
+  context.save()
+  context.shadowColor = glow
+  context.shadowBlur = isCurrent ? 30 : 16
+  context.lineWidth = isCurrent ? Math.max(4, fontSize * 0.105) : Math.max(2, fontSize * 0.08)
+  context.strokeStyle = outline
+  context.fillStyle = primary
+  drawLyricCanvasLines(context, lines, centerX, firstY, lineHeight, true)
+  context.restore()
+
+  if (isLyricCurrent) {
+    const gradient = context.createLinearGradient(paddingX, 0, canvasElement.width - paddingX, 0)
+    gradient.addColorStop(0, hot)
+    gradient.addColorStop(Math.max(0.12, progress - 0.08), hot)
+    gradient.addColorStop(Math.min(0.96, progress + 0.02), muted)
+    gradient.addColorStop(1, primary)
+    context.save()
+    context.beginPath()
+    context.rect(0, 0, canvasElement.width * progress, canvasElement.height)
+    context.clip()
+    context.shadowColor = colorWithAlpha(options.palette.halo, 0.34)
+    context.shadowBlur = 18
+    context.fillStyle = gradient
+    drawLyricCanvasLines(context, lines, centerX, firstY, lineHeight, false)
+    context.restore()
+
+    const underlineWidth = Math.max(0, (canvasElement.width - paddingX * 2) * progress)
+    if (underlineWidth > 1) {
+      const underlineY = firstY + blockHeight / 2 + fontSize * 0.72
+      const underline = context.createLinearGradient(paddingX, 0, paddingX + underlineWidth, 0)
+      underline.addColorStop(0, colorWithAlpha(options.palette.mid, 0))
+      underline.addColorStop(0.58, colorWithAlpha(options.palette.mid, 0.72))
+      underline.addColorStop(1, colorWithAlpha(options.palette.halo, 0.92))
+      context.save()
+      context.globalAlpha = 0.78
+      context.strokeStyle = underline
+      context.lineWidth = Math.max(2, fontSize * 0.035)
+      context.lineCap = 'round'
+      context.shadowColor = colorWithAlpha(options.palette.halo, 0.42)
+      context.shadowBlur = 14
+      context.beginPath()
+      context.moveTo(paddingX, underlineY)
+      context.lineTo(paddingX + underlineWidth, underlineY)
+      context.stroke()
+      context.restore()
+    }
+  }
+}
+
+function drawLyricCanvasLines(
+  context: CanvasRenderingContext2D,
+  lines: string[],
+  x: number,
+  firstY: number,
+  lineHeight: number,
+  includeStroke: boolean,
+) {
+  lines.forEach((line, index) => {
+    const y = firstY + index * lineHeight
+    if (includeStroke) {
+      context.strokeText(line, x, y)
+    }
+    context.fillText(line, x, y)
+  })
+}
+
+function wrapLyricCanvasLines(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxLines: number,
+) {
+  const normalized = text.trim()
+  if (!normalized) {
+    return ['']
+  }
+
+  const rawLines: string[] = []
+  let current = ''
+  for (const char of Array.from(normalized)) {
+    if (char === '\n') {
+      rawLines.push(current.trim())
+      current = ''
+      continue
+    }
+
+    const next = current + char
+    if (current && context.measureText(next).width > maxWidth) {
+      rawLines.push(current.trim())
+      current = char.trimStart()
+    } else {
+      current = next
+    }
+  }
+
+  if (current.trim() || rawLines.length === 0) {
+    rawLines.push(current.trim())
+  }
+
+  const limited = rawLines.slice(0, maxLines)
+  if (rawLines.length > maxLines && limited.length > 0) {
+    limited[limited.length - 1] = trimCanvasLineToWidth(context, `${limited[limited.length - 1]}...`, maxWidth)
+  }
+  return limited
+}
+
+function trimCanvasLineToWidth(context: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  let next = text
+  while (next.length > 1 && context.measureText(next).width > maxWidth) {
+    next = `${next.slice(0, -4).trimEnd()}...`
+  }
+  return next
 }
 
 function updateRhythmClock(deltaSeconds: number) {
@@ -1363,6 +2033,84 @@ function createDotTexture(three: ThreeModule) {
   texture.colorSpace = three.SRGBColorSpace
   texture.minFilter = three.LinearFilter
   texture.magFilter = three.LinearFilter
+  return texture
+}
+
+function createLyricMistTexture(three: ThreeModule) {
+  const textureCanvas = document.createElement('canvas')
+  textureCanvas.width = 768
+  textureCanvas.height = 384
+  const context = textureCanvas.getContext('2d')
+
+  if (context) {
+    context.clearRect(0, 0, textureCanvas.width, textureCanvas.height)
+
+    const centerGlow = context.createRadialGradient(384, 190, 18, 384, 190, 260)
+    centerGlow.addColorStop(0, 'rgba(255,255,255,0.34)')
+    centerGlow.addColorStop(0.28, 'rgba(255,255,255,0.18)')
+    centerGlow.addColorStop(0.62, 'rgba(255,255,255,0.06)')
+    centerGlow.addColorStop(1, 'rgba(255,255,255,0)')
+    context.fillStyle = centerGlow
+    context.fillRect(0, 0, textureCanvas.width, textureCanvas.height)
+
+    const leftMist = context.createRadialGradient(210, 210, 12, 210, 210, 230)
+    leftMist.addColorStop(0, 'rgba(255,255,255,0.16)')
+    leftMist.addColorStop(0.44, 'rgba(255,255,255,0.08)')
+    leftMist.addColorStop(1, 'rgba(255,255,255,0)')
+    context.fillStyle = leftMist
+    context.fillRect(0, 0, textureCanvas.width, textureCanvas.height)
+
+    const rightMist = context.createRadialGradient(570, 160, 18, 570, 160, 250)
+    rightMist.addColorStop(0, 'rgba(255,255,255,0.13)')
+    rightMist.addColorStop(0.5, 'rgba(255,255,255,0.06)')
+    rightMist.addColorStop(1, 'rgba(255,255,255,0)')
+    context.fillStyle = rightMist
+    context.fillRect(0, 0, textureCanvas.width, textureCanvas.height)
+
+    context.save()
+    context.globalAlpha = 0.45
+    context.filter = 'blur(13px)'
+    context.lineCap = 'round'
+    context.lineWidth = 30
+    context.strokeStyle = 'rgba(255,255,255,0.15)'
+    context.beginPath()
+    context.moveTo(76, 230)
+    context.bezierCurveTo(236, 126, 358, 288, 688, 128)
+    context.stroke()
+    context.lineWidth = 18
+    context.strokeStyle = 'rgba(255,255,255,0.11)'
+    context.beginPath()
+    context.moveTo(120, 130)
+    context.bezierCurveTo(300, 228, 464, 76, 712, 214)
+    context.stroke()
+    context.restore()
+
+    const edgeFade = context.createLinearGradient(0, 0, textureCanvas.width, 0)
+    edgeFade.addColorStop(0, 'rgba(0,0,0,0)')
+    edgeFade.addColorStop(0.16, 'rgba(0,0,0,0.82)')
+    edgeFade.addColorStop(0.5, 'rgba(0,0,0,1)')
+    edgeFade.addColorStop(0.84, 'rgba(0,0,0,0.82)')
+    edgeFade.addColorStop(1, 'rgba(0,0,0,0)')
+    context.globalCompositeOperation = 'destination-in'
+    context.fillStyle = edgeFade
+    context.fillRect(0, 0, textureCanvas.width, textureCanvas.height)
+
+    const verticalFade = context.createLinearGradient(0, 0, 0, textureCanvas.height)
+    verticalFade.addColorStop(0, 'rgba(0,0,0,0)')
+    verticalFade.addColorStop(0.22, 'rgba(0,0,0,0.86)')
+    verticalFade.addColorStop(0.52, 'rgba(0,0,0,1)')
+    verticalFade.addColorStop(0.82, 'rgba(0,0,0,0.72)')
+    verticalFade.addColorStop(1, 'rgba(0,0,0,0)')
+    context.fillStyle = verticalFade
+    context.fillRect(0, 0, textureCanvas.width, textureCanvas.height)
+    context.globalCompositeOperation = 'source-over'
+  }
+
+  const texture = new three.CanvasTexture(textureCanvas)
+  texture.colorSpace = three.SRGBColorSpace
+  texture.minFilter = three.LinearFilter
+  texture.magFilter = three.LinearFilter
+  texture.generateMipmaps = false
   return texture
 }
 
@@ -2401,6 +3149,42 @@ function rippleStyleCode(style: MusicRippleStyle) {
 function stageTuningValue(key: MusicStageTuningKey, min: number, max: number) {
   const rawValue = props.stageTuning?.[key] ?? DEFAULT_MUSIC_STAGE_TUNING[key]
   return clamp(rawValue, min, max)
+}
+
+function lyricTextWeight(text: string) {
+  const normalized = text.trim()
+  if (!normalized) {
+    return 0
+  }
+
+  return Array.from(normalized).reduce((total, char) => {
+    if (/\s/.test(char)) {
+      return total + 0.35
+    }
+
+    return total + (/[\u0000-\u007f]/.test(char) ? 0.58 : 1)
+  }, 0)
+}
+
+function colorWithAlpha(color: string, alpha: number) {
+  const normalizedAlpha = clamp(alpha, 0, 1)
+  if (!color.startsWith('#')) {
+    return color
+  }
+
+  const raw = color.slice(1)
+  const expanded = raw.length === 3
+    ? raw.split('').map((part) => `${part}${part}`).join('')
+    : raw
+  const value = Number.parseInt(expanded, 16)
+  if (!Number.isFinite(value)) {
+    return `rgba(255,255,255,${normalizedAlpha})`
+  }
+
+  const red = (value >> 16) & 255
+  const green = (value >> 8) & 255
+  const blue = value & 255
+  return `rgba(${red},${green},${blue},${normalizedAlpha})`
 }
 
 function createSilentSmoothedEnergy(): SmoothedMusicEnergy {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { emit, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import Pet from '../components/Pet.vue'
 import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import type {
@@ -25,12 +26,47 @@ type CodexBubbleState =
   | 'completed'
   | 'failed'
 type PetBubbleKind = 'bubble'
+type PetBubbleChannel = 'codex' | 'translation'
+
+interface PetBubbleWindowItem {
+  id: PetBubbleChannel
+  channel: PetBubbleChannel
+  kind: PetBubbleKind
+  state: CodexBubbleState
+  message: string
+  sequence: number
+  expanded: boolean
+}
 
 interface PetBubbleWindowPayload {
   kind: PetBubbleKind
   state: CodexBubbleState
   message: string
   theme: DrawerTheme
+  items: PetBubbleWindowItem[]
+}
+
+interface PetBubbleActionPayload {
+  channel?: PetBubbleChannel
+}
+
+interface PetBubbleHoverPayload {
+  channel?: PetBubbleChannel
+  hovered?: boolean
+}
+
+interface TranslationReply {
+  sourceText: string
+  translatedText: string
+  provider: string
+  model: string
+}
+
+interface SelectionTranslationDetail {
+  sourceText: string
+  translatedText: string
+  provider: string
+  model: string
 }
 
 interface PetActionBindings {
@@ -59,6 +95,13 @@ const petHovered = ref(false)
 const codexBubbleText = ref('')
 const codexBubbleState = ref<CodexBubbleState>('connected')
 const codexBubbleVisible = ref(false)
+const codexBubbleSequence = ref(0)
+const translationBubbleText = ref('')
+const translationBubbleState = ref<CodexBubbleState>('connected')
+const translationBubbleVisible = ref(false)
+const translationBubbleSequence = ref(0)
+const translationBubbleExpanded = ref(false)
+const latestSelectionTranslation = ref<SelectionTranslationDetail | null>(null)
 const codexCompletionHoldActive = ref(false)
 const codexCompletionCount = ref(0)
 const codexActivityPetState = ref<PetAnimationKey | null>(null)
@@ -67,11 +110,15 @@ const petActionBindings = ref<PetActionBindings>(defaultPetActionBindings())
 const CLICK_ANIMATION_MS = 1200
 const SINGLE_CLICK_DELAY_MS = 260
 const DRAG_DIRECTION_THRESHOLD_PX = 2
+const TRANSLATE_SELECTION_COPY_DELAY_MS = 90
 let stateTimer: number | null = null
 let dragWatchTimer: number | null = null
 let codexBubbleTimer: number | null = null
+let translationBubbleTimer: number | null = null
 let pendingClickTimer: number | null = null
+let translateSelectionTimer: number | null = null
 let codexStatusRequestId = 0
+let petBubbleSequence = 0
 let codexBubbleFromHover = false
 let suppressNextCodexAckStatus = false
 let lastDragPosition: { x: number; y: number } | null = null
@@ -80,6 +127,10 @@ let unlistenPetAnimationState: (() => void) | null = null
 let unlistenCodexStatus: (() => void) | null = null
 let unlistenThemeChanged: (() => void) | null = null
 let unlistenPetActionBindingsChanged: (() => void) | null = null
+let unlistenPetBubbleAction: (() => void) | null = null
+let unlistenPetBubbleHover: (() => void) | null = null
+let registeredTranslateSelectionShortcut: string | null = null
+let selectionTranslationRunning = false
 let preloadedPetMedia: Array<HTMLImageElement | HTMLVideoElement> = []
 
 const appWindow = getCurrentWindow()
@@ -131,6 +182,12 @@ onMounted(async () => {
       syncPetActionBindings(event.payload)
     },
   )
+  unlistenPetBubbleAction = await listen<PetBubbleActionPayload>('pet-bubble-item-clicked', (event) => {
+    handlePetBubbleItemClicked(event.payload)
+  })
+  unlistenPetBubbleHover = await listen<PetBubbleHoverPayload>('pet-bubble-item-hover-changed', (event) => {
+    handlePetBubbleItemHoverChanged(event.payload)
+  })
 })
 
 onBeforeUnmount(() => {
@@ -139,6 +196,8 @@ onBeforeUnmount(() => {
   unlistenCodexStatus?.()
   unlistenThemeChanged?.()
   unlistenPetActionBindingsChanged?.()
+  unlistenPetBubbleAction?.()
+  unlistenPetBubbleHover?.()
   if (stateTimer !== null) {
     window.clearTimeout(stateTimer)
   }
@@ -148,9 +207,14 @@ onBeforeUnmount(() => {
   if (codexBubbleTimer !== null) {
     window.clearTimeout(codexBubbleTimer)
   }
+  if (translationBubbleTimer !== null) {
+    window.clearTimeout(translationBubbleTimer)
+  }
   if (pendingClickTimer !== null) {
     window.clearTimeout(pendingClickTimer)
   }
+  clearTranslateSelectionTimer()
+  void unregisterTranslateSelectionShortcut()
   void hidePetBubbleWindow()
   clearPreloadedPetMedia()
 })
@@ -165,9 +229,11 @@ async function loadTheme() {
     const config = await invoke<PetDrawerConfig>('get_config')
     drawerTheme.value = normalizeDrawerTheme(config.drawer.theme)
     syncPetActionBindings(config.shortcut)
+    void syncTranslateSelectionShortcut(config.shortcut?.translateSelection)
   } catch {
     drawerTheme.value = 'light'
     petActionBindings.value = defaultPetActionBindings()
+    void syncTranslateSelectionShortcut()
   }
 }
 
@@ -189,6 +255,132 @@ function syncPetActionBindings(shortcut?: PetDrawerConfig['shortcut'] | null) {
     petDoubleClick: normalizePetActionBinding(shortcut?.petDoubleClick, 'toggleDrawer'),
     petRightClick: normalizePetActionBinding(shortcut?.petRightClick, 'petMenu'),
   }
+  void syncTranslateSelectionShortcut(shortcut?.translateSelection)
+}
+
+async function syncTranslateSelectionShortcut(value?: string | null) {
+  const shortcut = normalizeGlobalShortcut(value || 'Ctrl+Alt+T')
+  if (!shortcut) {
+    await unregisterTranslateSelectionShortcut()
+    return
+  }
+
+  if (registeredTranslateSelectionShortcut === shortcut) {
+    return
+  }
+
+  await unregisterTranslateSelectionShortcut()
+
+  try {
+    await register(shortcut, (event) => {
+      if (event.state === 'Released') {
+        scheduleTranslateCurrentSelection()
+      }
+    })
+    registeredTranslateSelectionShortcut = shortcut
+  } catch (err) {
+    console.error('注册划选翻译快捷键失败', err)
+    showTranslationBubble(`翻译快捷键注册失败：${String(err)}`, 'failed', 5200)
+  }
+}
+
+async function unregisterTranslateSelectionShortcut() {
+  clearTranslateSelectionTimer()
+  if (!registeredTranslateSelectionShortcut) {
+    return
+  }
+
+  const shortcut = registeredTranslateSelectionShortcut
+  registeredTranslateSelectionShortcut = null
+  try {
+    await unregister(shortcut)
+  } catch (err) {
+    console.error('取消划选翻译快捷键失败', err)
+  }
+}
+
+function normalizeGlobalShortcut(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed || /^(none|disabled|off)$/i.test(trimmed)) {
+    return ''
+  }
+
+  return trimmed
+    .split('+')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const lower = part.toLowerCase()
+      if (lower === 'ctrl' || lower === 'control' || lower === 'cmdorctrl' || lower === 'commandorcontrol') {
+        return 'CommandOrControl'
+      }
+      if (lower === 'cmd' || lower === 'command' || lower === 'meta') {
+        return 'Command'
+      }
+      if (lower === 'alt' || lower === 'option') {
+        return 'Alt'
+      }
+      if (lower === 'shift') {
+        return 'Shift'
+      }
+      if (lower === 'win' || lower === 'super') {
+        return 'Super'
+      }
+      return part.length === 1 ? part.toUpperCase() : part
+    })
+    .join('+')
+}
+
+function scheduleTranslateCurrentSelection() {
+  clearTranslateSelectionTimer()
+  translateSelectionTimer = window.setTimeout(() => {
+    translateSelectionTimer = null
+    void translateCurrentSelection()
+  }, TRANSLATE_SELECTION_COPY_DELAY_MS)
+}
+
+function clearTranslateSelectionTimer() {
+  if (translateSelectionTimer !== null) {
+    window.clearTimeout(translateSelectionTimer)
+    translateSelectionTimer = null
+  }
+}
+
+async function translateCurrentSelection() {
+  if (selectionTranslationRunning) {
+    return
+  }
+
+  selectionTranslationRunning = true
+  latestSelectionTranslation.value = null
+  showTranslationBubble('正在翻译选中文本...', 'running', 0)
+  try {
+    const reply = await invoke<TranslationReply>('translate_selected_text')
+    latestSelectionTranslation.value = {
+      sourceText: reply.sourceText,
+      translatedText: reply.translatedText,
+      provider: reply.provider,
+      model: reply.model,
+    }
+    showTranslationBubble(compactTranslationBubble(reply.translatedText), 'completed', 9000)
+  } catch (err) {
+    showTranslationBubble(`翻译失败：${compactBubbleMessage(String(err), 72)}`, 'failed', 8000)
+  } finally {
+    selectionTranslationRunning = false
+  }
+}
+
+function compactTranslationBubble(value: string) {
+  const text = compactBubbleMessage(value, 112)
+  return text ? `译文：${text}` : '没有可显示的译文。'
+}
+
+function compactBubbleMessage(value: string, maxLength: number) {
+  const compact = value.replace(/\s+/g, ' ').trim()
+  if (compact.length <= maxLength) {
+    return compact
+  }
+  return `${compact.slice(0, maxLength - 1)}…`
 }
 
 function normalizePetActionBinding(
@@ -312,6 +504,9 @@ function showCodexBubble(
     return
   }
 
+  if (!codexBubbleVisible.value) {
+    codexBubbleSequence.value = nextPetBubbleSequence()
+  }
   codexBubbleText.value = message
   codexBubbleState.value = state
   codexBubbleVisible.value = true
@@ -335,6 +530,28 @@ function dismissCodexBubble() {
   void syncPetBubbleWindow()
 }
 
+function showTranslationBubble(message: string, state: CodexBubbleState = 'connected', durationMs = 7000) {
+  const text = message.trim()
+  if (!text) {
+    return
+  }
+
+  clearTranslationBubbleTimer()
+  translationBubbleExpanded.value = false
+
+  if (!translationBubbleVisible.value) {
+    translationBubbleSequence.value = nextPetBubbleSequence()
+  }
+  translationBubbleText.value = text
+  translationBubbleState.value = state
+  translationBubbleVisible.value = true
+  void syncPetBubbleWindow()
+
+  if (durationMs > 0) {
+    scheduleTranslationBubbleHide(durationMs)
+  }
+}
+
 function hideCodexBubbleOnly() {
   if (codexBubbleTimer !== null) {
     window.clearTimeout(codexBubbleTimer)
@@ -342,6 +559,114 @@ function hideCodexBubbleOnly() {
   }
   codexBubbleVisible.value = false
   codexBubbleFromHover = false
+}
+
+function hideTranslationBubbleOnly() {
+  clearTranslationBubbleTimer()
+  translationBubbleVisible.value = false
+  translationBubbleExpanded.value = false
+}
+
+function clearTranslationBubbleTimer() {
+  if (translationBubbleTimer !== null) {
+    window.clearTimeout(translationBubbleTimer)
+    translationBubbleTimer = null
+  }
+}
+
+function scheduleTranslationBubbleHide(durationMs: number) {
+  clearTranslationBubbleTimer()
+  if (durationMs <= 0) {
+    return
+  }
+
+  translationBubbleTimer = window.setTimeout(() => {
+    translationBubbleTimer = null
+    hideTranslationBubbleOnly()
+    void syncPetBubbleWindow()
+  }, durationMs)
+}
+
+function nextPetBubbleSequence() {
+  petBubbleSequence += 1
+  return petBubbleSequence
+}
+
+function handlePetBubbleItemClicked(payload: PetBubbleActionPayload) {
+  if (payload.channel === 'translation') {
+    void showFullSelectionTranslation()
+    return
+  }
+
+  if (payload.channel === 'codex') {
+    hideCodexBubbleOnly()
+    void syncPetBubbleWindow()
+  }
+}
+
+function handlePetBubbleItemHoverChanged(payload: PetBubbleHoverPayload) {
+  if (payload.channel !== 'translation') {
+    return
+  }
+
+  const canExpand =
+    Boolean(payload.hovered) &&
+    translationBubbleVisible.value &&
+    Boolean(latestSelectionTranslation.value?.translatedText.trim())
+  if (translationBubbleExpanded.value === canExpand) {
+    return
+  }
+
+  translationBubbleExpanded.value = canExpand
+  if (canExpand) {
+    clearTranslationBubbleTimer()
+  } else if (translationBubbleVisible.value) {
+    scheduleTranslationBubbleHide(4200)
+  }
+  void syncPetBubbleWindow()
+}
+
+async function showFullSelectionTranslation() {
+  const detail = latestSelectionTranslation.value
+  if (!detail?.translatedText.trim()) {
+    hideTranslationBubbleOnly()
+    void syncPetBubbleWindow()
+    return
+  }
+
+  try {
+    await invoke('show_translator')
+    await emit('translator-prefill', {
+      sourceText: detail.sourceText,
+      translatedText: detail.translatedText,
+      provider: detail.provider,
+      model: detail.model,
+      sourceLanguage: 'auto',
+      targetLanguage: 'zh',
+      mode: 'plain',
+      statusMessage: `${providerLabel(detail.provider)} / ${detail.model || '当前模型'}`,
+    })
+  } catch (err) {
+    showTranslationBubble(`打开完整译文失败：${compactBubbleMessage(String(err), 72)}`, 'failed', 7000)
+  }
+}
+
+function expandedTranslationBubbleMessage() {
+  const translatedText = latestSelectionTranslation.value?.translatedText.trim()
+  return translatedText ? `译文：${translatedText}` : translationBubbleText.value
+}
+
+function providerLabel(provider: string) {
+  const labels: Record<string, string> = {
+    openai: 'OpenAI 兼容',
+    deepseek: 'DeepSeek',
+    anthropic: 'Anthropic',
+    gemini: 'Gemini',
+    ollama: 'Ollama',
+    custom: '自定义',
+  }
+
+  return (labels[provider] ?? provider) || 'AI 接口'
 }
 
 function updateCodexCompletionReminder(status: CodexAppServerStatus) {
@@ -484,12 +809,42 @@ async function showCurrentCodexBubbleOnHover() {
 }
 
 function currentPetBubblePayload(): PetBubbleWindowPayload | null {
+  const items: PetBubbleWindowItem[] = []
+
   if (codexBubbleVisible.value && codexBubbleText.value.trim()) {
-    return {
+    items.push({
+      id: 'codex',
+      channel: 'codex',
       kind: 'bubble',
       state: codexBubbleState.value,
       message: codexBubbleText.value,
+      sequence: codexBubbleSequence.value,
+      expanded: false,
+    })
+  }
+
+  if (translationBubbleVisible.value && translationBubbleText.value.trim()) {
+    const expanded = translationBubbleExpanded.value && Boolean(latestSelectionTranslation.value?.translatedText.trim())
+    items.push({
+      id: 'translation',
+      channel: 'translation',
+      kind: 'bubble',
+      state: translationBubbleState.value,
+      message: expanded ? expandedTranslationBubbleMessage() : translationBubbleText.value,
+      sequence: translationBubbleSequence.value,
+      expanded,
+    })
+  }
+
+  const orderedItems = items.sort((left, right) => left.sequence - right.sequence)
+  const firstItem = orderedItems[0]
+  if (firstItem) {
+    return {
+      kind: 'bubble',
+      state: firstItem.state,
+      message: firstItem.message,
       theme: drawerTheme.value,
+      items: orderedItems,
     }
   }
 
@@ -519,7 +874,7 @@ async function hidePetBubbleWindow() {
 }
 
 async function repositionPetBubbleWindow() {
-  if (!codexBubbleVisible.value) {
+  if (!codexBubbleVisible.value && !translationBubbleVisible.value) {
     return
   }
 

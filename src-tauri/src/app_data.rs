@@ -155,6 +155,8 @@ pub struct DrawerSettings {
 pub struct ShortcutSettings {
     #[serde(default = "default_toggle_drawer_shortcut")]
     pub toggle_drawer: String,
+    #[serde(default = "default_translate_selection_shortcut")]
+    pub translate_selection: String,
     #[serde(default = "default_pet_single_click_action")]
     pub pet_single_click: String,
     #[serde(default = "default_pet_double_click_action")]
@@ -445,6 +447,7 @@ impl Default for ShortcutSettings {
     fn default() -> Self {
         Self {
             toggle_drawer: default_toggle_drawer_shortcut(),
+            translate_selection: default_translate_selection_shortcut(),
             pet_single_click: default_pet_single_click_action(),
             pet_double_click: default_pet_double_click_action(),
             pet_right_click: default_pet_right_click_action(),
@@ -535,6 +538,10 @@ fn default_music_immersive_theme() -> String {
 
 fn default_toggle_drawer_shortcut() -> String {
     "Ctrl+Space".to_string()
+}
+
+fn default_translate_selection_shortcut() -> String {
+    "Ctrl+Alt+T".to_string()
 }
 
 fn default_pet_single_click_action() -> String {

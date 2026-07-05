@@ -27,7 +27,7 @@ onBeforeUnmount(() => {
   unlistenThemeChanged?.()
 })
 
-async function runAction(action: 'chat' | 'story' | 'drawer' | 'music' | 'hidePet' | 'quit') {
+async function runAction(action: 'chat' | 'story' | 'translator' | 'drawer' | 'music' | 'hidePet' | 'quit') {
   await invoke('hide_pet_menu')
 
   if (action === 'chat') {
@@ -37,6 +37,11 @@ async function runAction(action: 'chat' | 'story' | 'drawer' | 'music' | 'hidePe
 
   if (action === 'story') {
     await invoke('show_story')
+    return
+  }
+
+  if (action === 'translator') {
+    await invoke('show_translator')
     return
   }
 
@@ -67,6 +72,7 @@ async function hideMenu() {
   <main class="pet-menu-window" :class="[themeClass, windowOpenAnimationClass]" @mouseleave="hideMenu">
     <button type="button" @click="runAction('chat')">对话</button>
     <button type="button" @click="runAction('story')">故事模式</button>
+    <button type="button" @click="runAction('translator')">翻译</button>
     <button type="button" @click="runAction('drawer')">打开抽屉</button>
     <button type="button" @click="runAction('music')">音乐播放</button>
     <button type="button" @click="runAction('hidePet')">隐藏宠物</button>

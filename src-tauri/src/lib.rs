@@ -21,6 +21,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(codex_app_server::CodexAppServerState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_apps,
@@ -77,6 +78,8 @@ pub fn run() {
             commands::hide_pet_chat,
             commands::show_story,
             commands::hide_story,
+            commands::show_translator,
+            commands::hide_translator,
             commands::show_music_player,
             commands::hide_music_player,
             commands::list_music_files_in_directory,
@@ -115,6 +118,8 @@ pub fn run() {
             commands::advance_story,
             commands::delete_story_save,
             commands::rename_story_save,
+            commands::translate_text,
+            commands::translate_selected_text,
             commands::test_ai_connection,
             commands::test_wechat_clawbot,
             commands::simulate_wechat_clawbot_message,

@@ -14,7 +14,7 @@ use tauri::AppHandle;
 use crate::{
     ai_chat::{
         self, AiConnectionTestResult, MusicChatActionContext, MusicIntentContext, MusicIntentReply,
-        PetChatMessageDraft, PetChatReply,
+        PetChatMessageDraft, PetChatReply, TranslationReply, TranslationRequest,
     },
     ai_memory::{self, PetMemory, PetMemoryDraft, PetMemoryMessage},
     app_data::{
@@ -69,6 +69,8 @@ pub struct DrawerPreferencesDraft {
 pub struct ShortcutSettingsDraft {
     #[serde(default = "default_toggle_drawer_shortcut")]
     pub toggle_drawer: String,
+    #[serde(default = "default_translate_selection_shortcut")]
+    pub translate_selection: String,
     #[serde(default = "default_pet_single_click_action")]
     pub pet_single_click: String,
     #[serde(default = "default_pet_double_click_action")]
@@ -81,6 +83,7 @@ impl Default for ShortcutSettingsDraft {
     fn default() -> Self {
         Self {
             toggle_drawer: default_toggle_drawer_shortcut(),
+            translate_selection: default_translate_selection_shortcut(),
             pet_single_click: default_pet_single_click_action(),
             pet_double_click: default_pet_double_click_action(),
             pet_right_click: default_pet_right_click_action(),
@@ -599,6 +602,10 @@ fn default_toggle_drawer_shortcut() -> String {
     "Ctrl+Space".to_string()
 }
 
+fn default_translate_selection_shortcut() -> String {
+    "Ctrl+Alt+T".to_string()
+}
+
 fn default_pet_single_click_action() -> String {
     "smartCodexOrDrawer".to_string()
 }
@@ -687,6 +694,14 @@ fn normalize_shortcut_settings(settings: ShortcutSettingsDraft) -> ShortcutSetti
                 default_toggle_drawer_shortcut()
             } else {
                 value.to_string()
+            }
+        },
+        translate_selection: {
+            let value = settings.translate_selection.trim();
+            if value.is_empty() {
+                default_translate_selection_shortcut()
+            } else {
+                value.chars().take(64).collect()
             }
         },
         pet_single_click: normalize_pet_action(
@@ -1045,6 +1060,16 @@ pub fn show_story(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn hide_story(app: AppHandle) -> Result<(), String> {
     windowing::hide_story(&app)
+}
+
+#[tauri::command]
+pub fn show_translator(app: AppHandle) -> Result<(), String> {
+    windowing::show_translator(&app)
+}
+
+#[tauri::command]
+pub fn hide_translator(app: AppHandle) -> Result<(), String> {
+    windowing::hide_translator(&app)
 }
 
 #[tauri::command]
@@ -1759,6 +1784,23 @@ pub async fn test_ai_connection(
     })
     .await
     .map_err(|err| format!("AI 连接测试任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn translate_text(
+    app: AppHandle,
+    request: TranslationRequest,
+) -> Result<TranslationReply, String> {
+    tauri::async_runtime::spawn_blocking(move || ai_chat::translate_text(&app, request))
+        .await
+        .map_err(|err| format!("翻译任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub async fn translate_selected_text(app: AppHandle) -> Result<TranslationReply, String> {
+    tauri::async_runtime::spawn_blocking(move || ai_chat::translate_selected_text(&app))
+        .await
+        .map_err(|err| format!("划选翻译任务失败：{err}"))?
 }
 
 #[tauri::command]

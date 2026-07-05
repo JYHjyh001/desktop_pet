@@ -104,9 +104,32 @@ interface MusicLyricStageDefaults {
   width: number
   sideOpacity: number
   progressGlow: number
-  beatGlow: boolean
   particles: boolean
   cameraLock: boolean
+}
+interface WebglLyricStageState {
+  active: boolean
+  textMode: 'lyric' | 'loading' | 'empty' | 'error' | 'placeholder'
+  statusText: string
+  current: string
+  currentKey: string
+  previous: string
+  previousKey: string
+  next: string
+  nextKey: string
+  progress: number
+  status: string
+  synced: boolean
+  interlude: boolean
+  fontScale: number
+  tilt: number
+  glow: number
+  verticalOffsetPx: number
+  distanceOffsetPx: number
+  distanceScale: number
+  sideOpacity: number
+  currentLines: number
+  sideLines: number
 }
 type MusicActionType =
   | 'play_music'
@@ -609,7 +632,6 @@ const LYRIC_STAGE_PRESET_DEFAULTS: Record<MusicLyricStagePreset, MusicLyricStage
     width: 0.52,
     sideOpacity: 0.43,
     progressGlow: 0.54,
-    beatGlow: true,
     particles: false,
     cameraLock: false,
   },
@@ -622,7 +644,6 @@ const LYRIC_STAGE_PRESET_DEFAULTS: Record<MusicLyricStagePreset, MusicLyricStage
     width: 0.5,
     sideOpacity: 0.87,
     progressGlow: 0.8,
-    beatGlow: true,
     particles: false,
     cameraLock: false,
   },
@@ -635,7 +656,6 @@ const LYRIC_STAGE_PRESET_DEFAULTS: Record<MusicLyricStagePreset, MusicLyricStage
     width: 0.55,
     sideOpacity: 0.72,
     progressGlow: 0.72,
-    beatGlow: true,
     particles: true,
     cameraLock: true,
   },
@@ -902,7 +922,6 @@ const lyricStageFontScale = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.fontScale
 const lyricStageVertical = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.vertical)
 const lyricStageDistance = ref(LYRIC_STAGE_DISTANCE_DEFAULT)
 const lyricStageSideOpacity = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.sideOpacity)
-const lyricStageBeatGlow = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.beatGlow)
 const webglStarfieldUnavailable = ref(false)
 const immersiveStageDragging = ref(false)
 const immersiveStageYaw = ref(0)
@@ -1920,10 +1939,6 @@ const immersiveLyricsStatusLabel = computed(() => {
   }
 
   if (lyricsStatus.value === 'ready') {
-    if (immersiveLyrics.value.interlude) {
-      return '间奏'
-    }
-
     if (immersiveLyrics.value.karaoke) {
       return '逐字同步'
     }
@@ -1954,6 +1969,94 @@ const immersiveLyricsStageStyle = computed(() => ({
   ...immersiveLyricsLayoutStyle.value,
   ...resolveImmersiveLyricStageStyle(),
 }))
+const webglLyricStage = computed<WebglLyricStageState>(() => {
+  const lyric = immersiveLyrics.value
+  const nextLine = lyricsStatus.value === 'error' ? lyricsError.value : lyric.next
+  const fontScale = lyricFontScaleValue()
+  const lineCapacityScale = clamp(1 / fontScale, 0.72, 1.38)
+  const active =
+    webglStarfieldActive.value &&
+    Boolean(currentTrack.value)
+  const fallbackArtist = currentTrack.value?.artist.trim() || ''
+  const currentLyricText = lyric.current.trim()
+  const readyLyric = lyricsStatus.value === 'ready' && currentLyricText.length > 0
+  const textMode: WebglLyricStageState['textMode'] =
+    !currentTrack.value ? 'placeholder'
+      : lyricsStatus.value === 'loading' ? 'loading'
+        : lyricsStatus.value === 'error' ? 'error'
+          : lyricsStatus.value === 'empty' ? 'empty'
+            : readyLyric ? 'lyric'
+              : 'placeholder'
+  const statusText = immersiveLyricsStatusLabel.value
+  const currentText =
+    textMode === 'lyric'
+      ? currentLyricText
+      : textMode === 'loading'
+        ? ''
+        : textMode === 'error'
+          ? '歌词不可用'
+          : textMode === 'empty'
+            ? '未找到歌词'
+            : ''
+  const previousText =
+    textMode === 'lyric'
+      ? lyric.previous
+      : ''
+  const nextText =
+    textMode === 'error'
+      ? lyricsError.value || fallbackArtist
+      : textMode === 'empty'
+        ? fallbackArtist || '可继续播放'
+        : textMode === 'loading'
+          ? ''
+          : textMode === 'lyric'
+            ? nextLine
+            : ''
+  const currentLines = estimateImmersiveLyricLineCount(
+    currentText,
+    Math.max(9, Math.round(14 * lineCapacityScale)),
+    IMMERSIVE_LYRIC_MAIN_MAX_LINES,
+  )
+  const sideLines = Math.max(
+    estimateImmersiveLyricLineCount(
+      previousText,
+      Math.max(16, Math.round(24 * lineCapacityScale)),
+      IMMERSIVE_LYRIC_SIDE_MAX_LINES,
+    ),
+    estimateImmersiveLyricLineCount(
+      nextText,
+      Math.max(16, Math.round(24 * lineCapacityScale)),
+      IMMERSIVE_LYRIC_SIDE_MAX_LINES,
+    ),
+  )
+  const trackKey = currentTrack.value?.id ?? 'no-track'
+  const stageLyricKeyPrefix = `${trackKey}:${textMode}:${lyricsStatus.value}`
+
+  return {
+    active,
+    textMode,
+    statusText: textMode === 'empty' || textMode === 'error' ? statusText : '',
+    current: active ? currentText : '',
+    currentKey: active ? `${stageLyricKeyPrefix}:current:${lyric.currentKey}:${currentText}` : 'inactive-current',
+    previous: active ? previousText : '',
+    previousKey: active ? `${stageLyricKeyPrefix}:previous:${lyric.previousKey}:${previousText}` : 'inactive-previous',
+    next: active ? nextText : '',
+    nextKey: active ? `${stageLyricKeyPrefix}:next:${lyric.nextKey}:${nextText}` : 'inactive-next',
+    progress: clamp(lyric.progress, 0, 1),
+    status: lyricsStatus.value,
+    synced: lyric.synced,
+    interlude: lyric.interlude,
+    fontScale,
+    tilt: clamp(lyricStageTilt.value, 0, 1),
+    glow: clamp(lyricStageGlow.value, 0, 1),
+    verticalOffsetPx: lyricVerticalOffsetPx(),
+    distanceOffsetPx: lyricDistanceOffsetPx(),
+    distanceScale: lyricDistanceScaleValue(),
+    sideOpacity: lyricSideOpacityValue(),
+    currentLines,
+    sideLines,
+  }
+})
 const lyricOffsetLabel = computed(() => {
   const value = Math.round(lyricOffsetMs.value)
   if (value === 0) {
@@ -2197,7 +2300,6 @@ watch(
     lyricStageVertical,
     lyricStageDistance,
     lyricStageSideOpacity,
-    lyricStageBeatGlow,
     lyricOffsetMs,
   ],
   saveSettings,
@@ -2375,7 +2477,6 @@ function restoreSettings() {
       lyricStageVertical?: number
       lyricStageDistance?: number
       lyricStageSideOpacity?: number
-      lyricStageBeatGlow?: boolean
       lyricOffsetMs?: number
     }
 
@@ -2429,8 +2530,6 @@ function restoreSettings() {
     lyricStageVertical.value = normalizeUnitSetting(saved.lyricStageVertical, lyricDefaults.vertical)
     lyricStageDistance.value = normalizeUnitSetting(saved.lyricStageDistance, LYRIC_STAGE_DISTANCE_DEFAULT)
     lyricStageSideOpacity.value = normalizeUnitSetting(saved.lyricStageSideOpacity, lyricDefaults.sideOpacity)
-    lyricStageBeatGlow.value =
-      typeof saved.lyricStageBeatGlow === 'boolean' ? saved.lyricStageBeatGlow : lyricDefaults.beatGlow
     if (typeof saved.lyricOffsetMs === 'number') {
       lyricOffsetMs.value = clamp(Math.round(saved.lyricOffsetMs), -2000, 2000)
     }
@@ -2582,7 +2681,6 @@ function saveSettings() {
         lyricStageSideOpacity.value,
         LYRIC_STAGE_PRESET_DEFAULTS.projection.sideOpacity,
       ),
-      lyricStageBeatGlow: lyricStageBeatGlow.value,
       lyricOffsetMs: clamp(Math.round(lyricOffsetMs.value), -2000, 2000),
     }),
   )
@@ -5256,7 +5354,6 @@ function resetLyricStageParameters() {
   lyricStageVertical.value = defaults.vertical
   lyricStageDistance.value = LYRIC_STAGE_DISTANCE_DEFAULT
   lyricStageSideOpacity.value = defaults.sideOpacity
-  lyricStageBeatGlow.value = defaults.beatGlow
 }
 
 function lyricFontScaleValue() {
@@ -6967,9 +7064,7 @@ function handleLoadedMetadata() {
 function handleTimeUpdate() {
   const time = audio.value?.currentTime ?? 0
   currentTime.value = time
-  if (!immersiveMode.value || !playing.value) {
-    visualPlaybackTime.value = time
-  }
+  visualPlaybackTime.value = time
   if (
     currentTrackOnline.value &&
     onlineStallStartedAt > 0 &&
@@ -7472,13 +7567,9 @@ function updateLyricMusicEnvelope(timestamp: number) {
   const lyric = immersiveLyrics.value
   const progress = clamp(lyric.progress, 0, 1)
   const lyricActive = lyric.status === 'ready' && !lyric.interlude
-  const intro = lyricActive ? 1 - smoothUnitRange(progress, 0.02, 0.26) : 0
   const vocalArc = lyricActive ? Math.sin(Math.PI * progress) : 0
-  const phraseTarget = clamp(intro * 0.62 + vocalArc * 0.34, 0, 1)
-  const rawPulse = lyricStageBeatGlow.value
-    ? Math.pow(clamp(energy.beat * 0.74 + energy.bass * 0.48, 0, 1), 1.45)
-    : 0
-  const pulseTarget = clamp(rawPulse * 0.72 + intro * 0.22, 0, 1)
+  const phraseTarget = clamp(vocalArc * 0.42, 0, 1)
+  const pulseTarget = 0
   const breathTarget = clamp(energy.volume * 0.54 + energy.mid * 0.28 + vocalArc * 0.18, 0, 1)
   const airTarget = clamp(energy.treble * 0.48 + energy.mid * 0.28 + vocalArc * 0.14, 0, 1)
   const focusTarget = clamp(0.22 + phraseTarget * 0.44 + pulseTarget * 0.18 + breathTarget * 0.16, 0, 1)
@@ -8547,7 +8638,7 @@ function finishImmersiveStageDrag(event: PointerEvent) {
   immersiveStageDragging.value = false
   immersiveStagePointerId = null
 
-  if (visualReducedMotion.value) {
+  if (visualReducedMotion.value || visualStagePreset.value === 'galaxy') {
     immersiveStageVelocityYaw.value = 0
     immersiveStageVelocityPitch.value = 0
     return
@@ -9654,9 +9745,9 @@ function resolveImmersiveLyricsLayoutStyle(current: string, previous: string, ne
   const mainFontSize = Math.round(baseMainFontSize * fontScale)
   const mainLineHeight = currentLines >= 3 ? 1.16 : 1.1
   const sideFontSize = Math.round((sideLines > 1 ? 20 : 24) * fontScale)
-  const mainMinHeight = Math.ceil(currentLines * mainFontSize * mainLineHeight + 42 * fontScale)
+  const mainMinHeight = Math.ceil(currentLines * mainFontSize * mainLineHeight + 58 * fontScale)
   const sideMinHeight = Math.max(34, Math.ceil(sideLines * sideFontSize * 1.34))
-  const stackGap = Math.round((currentLines >= 3 ? 22 : currentLines === 2 ? 16 : 12) * (0.9 + fontScale * 0.1))
+  const stackGap = Math.round((currentLines >= 3 ? 26 : currentLines === 2 ? 20 : 16) * (0.9 + fontScale * 0.1))
 
   return {
     '--immersive-current-line-count': String(currentLines),
@@ -9683,18 +9774,19 @@ function resolveImmersiveLyricStageStyle() {
   const sideOpacity = lyricSideOpacityValue()
   const progressStrength = 0.55 + defaults.progressGlow * 0.55
   const energy = visualEnergyFrame.value
+  const lyric = immersiveLyrics.value
   const envelope = lyricMusicEnvelope.value
   const motionScale = visualReducedMotion.value ? 0 : 1
-  const stageOnlyBoost = immersiveStageOnlyMode.value ? 1 : 0
   const time = visualTimeValue.value
   const activeMusic = playing.value && Boolean(currentTrack.value)
+  const lyricActive = lyric.status === 'ready' && !lyric.interlude
+  const lyricArc = lyricActive ? Math.sin(Math.PI * clamp(lyric.progress, 0, 1)) : 0
   const musicPulse = activeMusic && !visualReducedMotion.value ? envelope.pulse : 0
   const musicBreath = activeMusic && !visualReducedMotion.value ? envelope.breath : 0
   const musicPhrase = activeMusic && !visualReducedMotion.value ? envelope.phrase : 0
   const musicAir = activeMusic && !visualReducedMotion.value ? envelope.air : 0
   const musicDrift = activeMusic && !visualReducedMotion.value ? envelope.drift : 0
   const musicFocus = activeMusic && !visualReducedMotion.value ? envelope.focus : 0
-  const beatGlow = lyricStageBeatGlow.value ? musicPulse : musicPhrase * 0.24
   const musicDrive = activeMusic
     ? clamp(musicBreath * 0.56 + musicPhrase * 0.18 + musicAir * 0.14 + energy.volume * 0.12, 0, 1)
     : 0
@@ -9710,14 +9802,25 @@ function resolveImmersiveLyricStageStyle() {
     : 0
   const musicZLift = activeMusic && !visualReducedMotion.value
     ? onDjFloat
-      ? musicDrive * 8 + musicFocus * 7 + beatGlow * 4
-      : musicDrive * 12 + musicFocus * 8 + beatGlow * 5
+      ? musicDrive * 8 + musicFocus * 7
+      : musicDrive * 12 + musicFocus * 8
     : 0
   const roll = activeMusic && !visualReducedMotion.value
     ? (Math.sin(time * 0.16) * 0.26 + musicDrift * 0.18 + (musicAir - musicPulse) * 0.08) * (onDjFloat ? 0.58 : 1)
     : 0
-  const audioGlow = clamp(0.1 + glow * 0.34 + musicBreath * 0.24 + musicFocus * 0.18 + beatGlow * 0.26, 0, 1.12)
+  const audioGlow = clamp(0.1 + glow * 0.34 + musicBreath * 0.24 + musicFocus * 0.18, 0, 1.12)
   const stageAir = activeMusic && !visualReducedMotion.value ? clamp(musicAir * 0.72 + musicPhrase * 0.16, 0, 1) : 0
+  const lyricSolar = activeMusic && !visualReducedMotion.value
+    ? clamp(
+      musicBreath * 0.24 +
+      musicAir * 0.24 +
+      musicFocus * 0.2 +
+      lyricArc * 0.16,
+      0,
+      1,
+    )
+    : glow * 0.12
+  const lyricReadability = clamp(0.62 + glow * 0.18 + musicFocus * 0.14 + lyricArc * 0.08, 0.58, 0.96)
   const lineLift = activeMusic && !visualReducedMotion.value ? -Math.round(bassLift * (onDjFloat ? 0.4 : 0.5)) : 0
   const presetYOffset = onDjFloat ? DJ_FLOAT_LYRIC_Y_OFFSET : 6
   const presetZOffset = onDjFloat ? DJ_FLOAT_LYRIC_Z_OFFSET : 22
@@ -9728,12 +9831,11 @@ function resolveImmersiveLyricStageStyle() {
   const tiltY = onDjFloat
     ? (2.4 - immersiveStageYaw.value * 0.11) * (0.7 + tilt * 0.45)
     : (2.2 - immersiveStageYaw.value * 0.16) * tilt
-  const z = 62 + depth * 132 + presetZOffset + distanceOffset + stageOnlyBoost * (onDjFloat ? 14 : 18) + musicZLift
+  const z = 62 + depth * 132 + presetZOffset + distanceOffset + musicZLift
   const scale =
     distanceScale *
     (onDjFloat ? DJ_FLOAT_LYRIC_SCALE : 1) *
     (1 +
-      beatGlow * 0.026 * motionScale +
       musicDrive * 0.012 * motionScale)
 
   return {
@@ -9751,11 +9853,12 @@ function resolveImmersiveLyricStageStyle() {
     '--lyric-stage-tilt-y': `${tiltY.toFixed(2)}deg`,
     '--lyric-stage-roll': `${roll.toFixed(2)}deg`,
     '--lyric-stage-glow-strength': (0.16 + glow * 0.72).toFixed(3),
-    '--lyric-stage-beat-glow': beatGlow.toFixed(3),
     '--lyric-stage-audio-glow': audioGlow.toFixed(3),
     '--lyric-stage-air': stageAir.toFixed(3),
+    '--lyric-stage-solar': lyricSolar.toFixed(3),
+    '--lyric-stage-readability': lyricReadability.toFixed(3),
     '--lyric-stage-line-lift': `${lineLift}px`,
-    '--lyric-music-pulse': beatGlow.toFixed(3),
+    '--lyric-music-pulse': musicPulse.toFixed(3),
     '--lyric-music-breath': musicBreath.toFixed(3),
     '--lyric-music-phrase': musicPhrase.toFixed(3),
     '--lyric-music-drift': musicDrift.toFixed(3),
@@ -9766,7 +9869,6 @@ function resolveImmersiveLyricStageStyle() {
     '--lyric-stage-floor-width': (onDjFloat
       ? 1.12 + musicDrive * 0.1
       : 0.88 + widthScale * 0.18 + musicDrive * 0.08).toFixed(3),
-    '--lyric-stage-particle-opacity': '0.000',
     '--lyric-appearance-width-px': `${Math.round(940 * widthScale)}px`,
     '--lyric-appearance-width-vw': `${(66 * widthScale).toFixed(1)}vw`,
     '--lyric-side-opacity': sideOpacity.toFixed(3),
@@ -9854,16 +9956,6 @@ function stringHashRatio(value: string) {
   }
 
   return (hash >>> 0) / 4294967295
-}
-
-function smoothUnitRange(value: number, start: number, end: number) {
-  const range = end - start
-  if (range <= 0) {
-    return value >= end ? 1 : 0
-  }
-
-  const t = clamp((value - start) / range, 0, 1)
-  return t * t * (3 - 2 * t)
 }
 
 function smoothEnvelopeValue(
@@ -9987,6 +10079,7 @@ function clamp(value: number, min: number, max: number) {
         'is-stage-dragging': immersiveStageDragging,
         'is-free-camera-active': immersiveFreeCameraActive,
         'is-free-camera-locked': immersiveFreeCameraLocked || immersiveFreeCameraResetting,
+        'is-stage-galaxy': visualStagePreset === 'galaxy',
         'is-stage-dj': visualStagePreset === 'dj',
       }"
     >
@@ -10034,11 +10127,13 @@ function clamp(value: number, min: number, max: number) {
             :stage-pitch="immersiveStagePitch"
             :stage-dragging="immersiveStageDragging"
             :free-camera="immersiveFreeCameraView"
+            :lyric-stage="webglLyricStage"
             @webgl-unavailable="handleWebglStarfieldUnavailable"
           />
           <div class="music-immersive-vignette" aria-hidden="true" />
 
           <section
+            v-if="!webglLyricStage.active"
             class="music-immersive-lyrics"
             :class="{
               'is-synced': immersiveLyrics.synced,
@@ -10049,6 +10144,7 @@ function clamp(value: number, min: number, max: number) {
               'is-reduced-motion': visualReducedMotion,
               'is-idle': !currentTrack,
               'is-stage-only': immersiveStageOnlyMode,
+              'is-galaxy-float': visualStagePreset === 'galaxy',
               'is-dj-float': visualStagePreset === 'dj',
             }"
             :style="immersiveLyricsStageStyle"
@@ -10069,7 +10165,6 @@ function clamp(value: number, min: number, max: number) {
               </div>
               <div class="music-immersive-lyrics-slot main">
                 <p
-                  :key="immersiveLyrics.currentKey"
                   class="music-immersive-lyrics-line current"
                   :style="{ '--lyric-progress': `${Math.round(immersiveLyrics.progress * 1000) / 10}%` }"
                 >
@@ -10146,6 +10241,44 @@ function clamp(value: number, min: number, max: number) {
           </button>
         </div>
       </header>
+
+      <div
+        v-if="!immersiveStageOnlyMode && (!immersivePlaylistVisible || !immersiveRhythmPanelVisible)"
+        class="music-immersive-reopen-actions"
+        @pointerdown.stop
+      >
+        <button
+          v-if="!immersivePlaylistVisible"
+          type="button"
+          class="music-immersive-panel-reopen playlist music-immersive-icon-button"
+          title="显示播放列表"
+          aria-label="显示播放列表"
+          @click="toggleImmersivePlaylistVisible"
+        >
+          <svg class="music-action-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M8 6h12" />
+            <path d="M8 12h12" />
+            <path d="M8 18h12" />
+            <path d="M4 6h.01" />
+            <path d="M4 12h.01" />
+            <path d="M4 18h.01" />
+          </svg>
+          <span class="music-icon-only-label">显示播放列表</span>
+        </button>
+        <button
+          v-if="!immersiveRhythmPanelVisible"
+          type="button"
+          class="music-immersive-panel-reopen panel music-immersive-icon-button"
+          title="显示舞台与主题面板"
+          aria-label="显示舞台与主题面板"
+          @click="toggleImmersiveRhythmPanelVisible"
+        >
+          <svg class="music-action-svg" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M3 12h3l2-6 4 12 3-8 2 2h4" />
+          </svg>
+          <span class="music-icon-only-label">显示舞台与主题面板</span>
+        </button>
+      </div>
 
       <aside
         v-if="!immersiveStageOnlyMode"
@@ -10578,12 +10711,6 @@ function clamp(value: number, min: number, max: number) {
                 aria-label="沉浸歌词上下句弱化"
               />
               <output>{{ lyricStageSideOpacityLabel }}</output>
-            </label>
-          </div>
-          <div class="music-lyric-stage-switches">
-            <label class="music-immersive-check music-lyric-stage-check">
-              <input v-model="lyricStageBeatGlow" type="checkbox" />
-              <span>鼓点溢光</span>
             </label>
           </div>
           <div class="music-stage-tuning-actions music-lyric-stage-actions">

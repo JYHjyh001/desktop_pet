@@ -14,6 +14,14 @@ const MEMORY_EXTRACTION_CONTEXT_MESSAGES: usize = 10;
 const MEMORY_EXTRACTION_MESSAGE_CHARS: usize = 240;
 const SHORT_MEMORY_SUMMARY_MESSAGE_CHARS: usize = 500;
 const STORY_OPENING_USER_PROMPT: &str = "请根据以上故事创建任务生成故事开局。";
+#[cfg(target_os = "windows")]
+const SELECTION_COPY_POLL_ATTEMPTS: usize = 24;
+#[cfg(target_os = "windows")]
+const SELECTION_COPY_POLL_INTERVAL_MS: u64 = 65;
+#[cfg(target_os = "windows")]
+const WINDOWS_CLIPBOARD_OPEN_RETRIES: usize = 12;
+#[cfg(target_os = "windows")]
+const WINDOWS_CLIPBOARD_OPEN_RETRY_MS: u64 = 18;
 const SUPPORTED_CHAT_EMOJIS: &[&str] = &[
     "😀", "😄", "😆", "😂", "😅", "😉", "😊", "😍", "🥰", "🤗", "🤔", "😎", "🥳", "😭", "😡", "😴",
     "👍", "👏", "🙏", "💪", "👀", "✨", "❤️", "❤", "🔥", "⭐", "🎉", "🎁", "🌟", "💖", "💬", "✅",
@@ -93,6 +101,30 @@ pub struct AiConnectionTestResult {
     pub provider: String,
     pub model: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationRequest {
+    #[serde(default)]
+    pub source_language: String,
+    #[serde(default)]
+    pub target_language: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub mode: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationReply {
+    pub source_text: String,
+    pub translated_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detected_language: Option<String>,
+    pub provider: String,
+    pub model: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -403,6 +435,63 @@ pub fn test_ai_connection(mut settings: AiSettings) -> Result<AiConnectionTestRe
     })
 }
 
+pub fn translate_text(
+    app: &AppHandle,
+    request: TranslationRequest,
+) -> Result<TranslationReply, String> {
+    let config = app_data::read_config(app)?;
+    let mut settings = config.ai;
+    if !settings.enabled {
+        return Err("请先在抽屉设置的“AI 接口”中启用翻译使用的 AI 接口。".to_string());
+    }
+    if settings.model.trim().is_empty() {
+        return Err("请先在“AI 接口”中填写模型名称。".to_string());
+    }
+
+    let text = normalize_translation_text(&request.text)?;
+    let source_language = normalize_translation_language(&request.source_language, true);
+    let target_language = normalize_translation_language(&request.target_language, false);
+    let mode = normalize_translation_mode(&request.mode);
+
+    settings.system_prompt = translation_system_prompt(&source_language, &target_language, &mode);
+    settings.temperature = settings.temperature.clamp(0.0, 0.2).min(0.1);
+    settings.max_tokens = settings.max_tokens.clamp(512, 4096);
+
+    let messages = vec![PetChatMessageDraft {
+        role: "user".to_string(),
+        content: translation_user_prompt(&source_language, &target_language, &mode, &text),
+        created_at: String::new(),
+        time_context: String::new(),
+    }];
+    let raw_reply = send_chat_request(&settings, &messages, false)?;
+    let translated_text = clean_translation_reply(&raw_reply)?;
+
+    Ok(TranslationReply {
+        source_text: text,
+        translated_text,
+        detected_language: if source_language == "自动识别" {
+            None
+        } else {
+            Some(source_language)
+        },
+        provider: settings.provider,
+        model: settings.model,
+    })
+}
+
+pub fn translate_selected_text(app: &AppHandle) -> Result<TranslationReply, String> {
+    let text = read_selected_text_from_clipboard()?;
+    translate_text(
+        app,
+        TranslationRequest {
+            source_language: "auto".to_string(),
+            target_language: "zh".to_string(),
+            text,
+            mode: "plain".to_string(),
+        },
+    )
+}
+
 pub fn classify_music_intent(
     app: &AppHandle,
     user_input: String,
@@ -439,6 +528,1035 @@ pub fn classify_music_intent(
     )?;
 
     parse_music_intent(&raw, &context)
+}
+
+fn normalize_translation_text(text: &str) -> Result<String, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("请输入需要翻译的文本。".to_string());
+    }
+
+    let text = trimmed.chars().take(6001).collect::<String>();
+    if text.chars().count() > 6000 {
+        return Err("单次翻译最多支持 6000 个字符，请拆分后再翻译。".to_string());
+    }
+
+    Ok(trimmed.to_string())
+}
+
+fn normalize_selected_translation_text(text: &str) -> Result<String, String> {
+    let normalized = normalize_translation_text(text)?;
+    if looks_like_non_translatable_selection(&normalized) {
+        return Err(non_translatable_selection_message(&normalized));
+    }
+
+    Ok(normalized)
+}
+
+fn looks_like_non_translatable_selection(value: &str) -> bool {
+    let trimmed = value.trim();
+    if looks_like_uuid(trimmed) || looks_like_path_or_url(trimmed) {
+        return true;
+    }
+
+    let has_whitespace = trimmed.chars().any(|character| character.is_whitespace());
+    let compact = trimmed
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    let compact_len = compact.chars().count();
+    let has_digit = compact.chars().any(|character| character.is_ascii_digit());
+    let alpha_count = compact
+        .chars()
+        .filter(|character| character.is_ascii_alphabetic())
+        .count();
+    let digit_count = compact
+        .chars()
+        .filter(|character| character.is_ascii_digit())
+        .count();
+
+    if !has_whitespace
+        && compact_len >= 16
+        && has_digit
+        && compact
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-' || character == '_')
+    {
+        return true;
+    }
+
+    !has_whitespace
+        && compact_len >= 24
+        && alpha_count >= 4
+        && digit_count >= 4
+        && compact.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+}
+
+fn non_translatable_selection_message(value: &str) -> String {
+    format!(
+        "读取到的内容像编号、路径或内部 ID（实际读取：{}），不是可翻译正文；请松开快捷键后重试，或改用 F3 这类单键快捷键。",
+        compact_selection_preview(value)
+    )
+}
+
+fn compact_selection_preview(value: &str) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let total = compact.chars().count();
+    let mut preview = compact.chars().take(24).collect::<String>();
+    if total > 24 {
+        preview.push('…');
+    }
+    preview
+}
+
+fn normalize_clipboard_extracted_text(value: &str) -> Option<String> {
+    let mut output = String::new();
+    let mut previous_was_space = false;
+    let mut previous_was_newline = false;
+
+    for ch in value.replace("\r\n", "\n").replace('\r', "\n").chars() {
+        if ch == '\n' {
+            if !previous_was_newline && !output.trim().is_empty() {
+                output.push('\n');
+            }
+            previous_was_space = false;
+            previous_was_newline = true;
+        } else if ch.is_whitespace() {
+            if !previous_was_space && !previous_was_newline {
+                output.push(' ');
+            }
+            previous_was_space = true;
+        } else {
+            output.push(ch);
+            previous_was_space = false;
+            previous_was_newline = false;
+        }
+    }
+
+    let normalized = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn html_clipboard_to_text(value: &str) -> Option<String> {
+    let fragment = html_clipboard_fragment(value).unwrap_or(value);
+    let text = html_fragment_to_text(fragment);
+    normalize_clipboard_extracted_text(&text)
+}
+
+fn html_clipboard_fragment(value: &str) -> Option<&str> {
+    if let (Some(start), Some(end)) = (
+        html_clipboard_offset(value, "StartFragment:"),
+        html_clipboard_offset(value, "EndFragment:"),
+    ) {
+        if start < end && end <= value.len() {
+            if let Some(fragment) = value.get(start..end) {
+                return Some(fragment);
+            }
+        }
+    }
+
+    html_clipboard_marker_fragment(value)
+}
+
+fn html_clipboard_marker_fragment(value: &str) -> Option<&str> {
+    let start_marker = "<!--StartFragment-->";
+    let end_marker = "<!--EndFragment-->";
+    let start = value.find(start_marker)? + start_marker.len();
+    let end = value[start..].find(end_marker)? + start;
+    if start >= end {
+        return None;
+    }
+
+    value.get(start..end)
+}
+
+fn html_clipboard_offset(value: &str, label: &str) -> Option<usize> {
+    let start = value.find(label)? + label.len();
+    let digits = value[start..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse::<usize>().ok()
+}
+
+fn html_fragment_to_text(value: &str) -> String {
+    let mut output = String::new();
+    let mut entity = String::new();
+    let mut tag = String::new();
+    let mut in_tag = false;
+    let mut in_entity = false;
+
+    for ch in value.chars() {
+        if in_tag {
+            if ch == '>' {
+                append_html_tag_text_boundary(&mut output, &tag);
+                tag.clear();
+                in_tag = false;
+            } else {
+                tag.push(ch);
+            }
+            continue;
+        }
+
+        if in_entity {
+            if ch == ';' {
+                output.push_str(&decode_html_entity(&entity));
+                entity.clear();
+                in_entity = false;
+            } else if entity.len() < 24 {
+                entity.push(ch);
+            } else {
+                output.push('&');
+                output.push_str(&entity);
+                output.push(ch);
+                entity.clear();
+                in_entity = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '<' => in_tag = true,
+            '&' => in_entity = true,
+            _ => output.push(ch),
+        }
+    }
+
+    if in_entity {
+        output.push('&');
+        output.push_str(&entity);
+    }
+
+    output
+}
+
+fn append_html_tag_text_boundary(output: &mut String, tag: &str) {
+    let name = tag
+        .trim_start_matches('/')
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .to_lowercase();
+
+    if matches!(
+        name.as_str(),
+        "br" | "p"
+            | "div"
+            | "li"
+            | "tr"
+            | "table"
+            | "section"
+            | "article"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+    ) {
+        output.push('\n');
+    }
+}
+
+fn decode_html_entity(entity: &str) -> String {
+    match entity {
+        "amp" => "&".to_string(),
+        "lt" => "<".to_string(),
+        "gt" => ">".to_string(),
+        "quot" => "\"".to_string(),
+        "apos" => "'".to_string(),
+        "nbsp" => " ".to_string(),
+        _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+            u32::from_str_radix(entity.trim_start_matches("#x").trim_start_matches("#X"), 16)
+                .ok()
+                .and_then(char::from_u32)
+                .map(|ch| ch.to_string())
+                .unwrap_or_else(|| format!("&{entity};"))
+        }
+        _ if entity.starts_with('#') => entity
+            .trim_start_matches('#')
+            .parse::<u32>()
+            .ok()
+            .and_then(char::from_u32)
+            .map(|ch| ch.to_string())
+            .unwrap_or_else(|| format!("&{entity};")),
+        _ => format!("&{entity};"),
+    }
+}
+
+fn rtf_to_text(value: &str) -> Option<String> {
+    let mut output = String::new();
+    let mut chars = value.chars().peekable();
+    let mut destinations = Vec::<bool>::new();
+    let mut skipping_destination = false;
+    let mut unicode_skip_count = 1usize;
+    let mut pending_unicode_skip = 0usize;
+
+    while let Some(ch) = chars.next() {
+        if pending_unicode_skip > 0 {
+            pending_unicode_skip -= 1;
+            continue;
+        }
+
+        match ch {
+            '{' => destinations.push(skipping_destination),
+            '}' => {
+                skipping_destination = destinations.pop().unwrap_or(false);
+            }
+            '\\' => {
+                let Some(next) = chars.next() else {
+                    continue;
+                };
+
+                match next {
+                    '\\' | '{' | '}' => {
+                        if !skipping_destination {
+                            output.push(next);
+                        }
+                    }
+                    '\'' => {
+                        let hex = chars.by_ref().take(2).collect::<String>();
+                        if !skipping_destination {
+                            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                                output.push(byte as char);
+                            }
+                        }
+                    }
+                    '*' => {
+                        skipping_destination = true;
+                    }
+                    ch if ch.is_ascii_alphabetic() => {
+                        let mut word = String::from(ch);
+                        while matches!(chars.peek(), Some(peek) if peek.is_ascii_alphabetic()) {
+                            if let Some(peek) = chars.next() {
+                                word.push(peek);
+                            }
+                        }
+
+                        let mut negative = false;
+                        if matches!(chars.peek(), Some('-')) {
+                            negative = true;
+                            chars.next();
+                        }
+                        let mut number = String::new();
+                        while matches!(chars.peek(), Some(peek) if peek.is_ascii_digit()) {
+                            if let Some(peek) = chars.next() {
+                                number.push(peek);
+                            }
+                        }
+                        if matches!(chars.peek(), Some(' ')) {
+                            chars.next();
+                        }
+
+                        if is_rtf_ignored_destination(&word) {
+                            skipping_destination = true;
+                        }
+                        if skipping_destination {
+                            continue;
+                        }
+
+                        match word.as_str() {
+                            "par" | "line" => output.push('\n'),
+                            "tab" => output.push('\t'),
+                            "uc" => {
+                                if let Ok(count) = number.parse::<usize>() {
+                                    unicode_skip_count = count.min(8);
+                                }
+                            }
+                            "u" => {
+                                if let Ok(mut code) = number.parse::<i32>() {
+                                    if negative {
+                                        code = -code;
+                                    }
+                                    if code < 0 {
+                                        code += 65536;
+                                    }
+                                    if let Some(ch) = char::from_u32(code as u32) {
+                                        output.push(ch);
+                                    }
+                                    pending_unicode_skip = unicode_skip_count;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    '\n' | '\r' => {}
+                    _ => {}
+                }
+            }
+            '\n' | '\r' => {}
+            _ if !skipping_destination => output.push(ch),
+            _ => {}
+        }
+    }
+
+    normalize_clipboard_extracted_text(&output)
+}
+
+fn is_rtf_ignored_destination(word: &str) -> bool {
+    matches!(
+        word,
+        "fonttbl"
+            | "colortbl"
+            | "stylesheet"
+            | "info"
+            | "pict"
+            | "object"
+            | "header"
+            | "footer"
+            | "datastore"
+            | "themedata"
+            | "generator"
+            | "listtable"
+            | "listoverridetable"
+    )
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    let parts = value.split('-').collect::<Vec<_>>();
+    if parts.len() != 5 {
+        return false;
+    }
+
+    let expected_lengths = [8, 4, 4, 4, 12];
+    parts
+        .iter()
+        .zip(expected_lengths)
+        .all(|(part, expected_len)| {
+            part.len() == expected_len
+                && part.chars().all(|character| character.is_ascii_hexdigit())
+        })
+}
+
+fn looks_like_path_or_url(value: &str) -> bool {
+    let lower = value.trim().to_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("file://")
+        || lower.starts_with("\\\\")
+        || lower.contains(":\\")
+        || lower.contains(":/")
+}
+
+fn normalize_translation_language(value: &str, allow_auto: bool) -> String {
+    let normalized = value.trim();
+    if allow_auto && (normalized.is_empty() || normalized == "auto" || normalized == "自动") {
+        return "自动识别".to_string();
+    }
+
+    match normalized.to_lowercase().as_str() {
+        "" => {
+            if allow_auto {
+                "自动识别".to_string()
+            } else {
+                "中文".to_string()
+            }
+        }
+        "zh" | "zh-cn" | "chinese" | "中文" | "简体中文" => "中文".to_string(),
+        "en" | "english" | "英文" | "英语" => "英文".to_string(),
+        "ja" | "jp" | "japanese" | "日文" | "日语" => "日文".to_string(),
+        "ko" | "korean" | "韩文" | "韩语" => "韩文".to_string(),
+        "fr" | "french" | "法文" | "法语" => "法文".to_string(),
+        "de" | "german" | "德文" | "德语" => "德文".to_string(),
+        "es" | "spanish" | "西班牙文" | "西班牙语" => "西班牙文".to_string(),
+        "ru" | "russian" | "俄文" | "俄语" => "俄文".to_string(),
+        "it" | "italian" | "意大利文" | "意大利语" => "意大利文".to_string(),
+        "pt" | "portuguese" | "葡萄牙文" | "葡萄牙语" => "葡萄牙文".to_string(),
+        _ => normalized.chars().take(40).collect(),
+    }
+}
+
+fn normalize_translation_mode(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "polish" | "polished" | "润色" | "润色翻译" => "polish".to_string(),
+        _ => "plain".to_string(),
+    }
+}
+
+fn translation_system_prompt(source_language: &str, target_language: &str, mode: &str) -> String {
+    let mode_instruction = if mode == "polish" {
+        "在忠实原意的基础上让译文自然顺畅，但不要增加解释。"
+    } else {
+        "忠实翻译，不润色扩写，不增加解释。"
+    };
+
+    format!(
+        "你是 PetDrawer 的独立翻译助手。只完成翻译任务，不闲聊，不输出 Markdown 包裹，不添加说明、前缀或后缀。保持原文段落、列表、换行、标点和代码块结构。源语言：{source_language}。目标语言：{target_language}。{mode_instruction}"
+    )
+}
+
+fn translation_user_prompt(
+    source_language: &str,
+    target_language: &str,
+    mode: &str,
+    text: &str,
+) -> String {
+    format!(
+        "源语言：{source_language}\n目标语言：{target_language}\n翻译模式：{mode}\n\n请翻译以下文本，只输出译文：\n{text}"
+    )
+}
+
+fn clean_translation_reply(reply: &str) -> Result<String, String> {
+    let trimmed = reply.trim();
+    if trimmed.is_empty() {
+        return Err("AI 没有返回译文。".to_string());
+    }
+
+    let without_fence = trimmed
+        .strip_prefix("```")
+        .and_then(|value| value.strip_suffix("```"))
+        .map(clean_fenced_translation)
+        .unwrap_or(trimmed)
+        .trim();
+
+    if without_fence.is_empty() {
+        Err("AI 没有返回可显示的译文。".to_string())
+    } else {
+        Ok(strip_internal_time_labels(without_fence))
+    }
+}
+
+fn clean_fenced_translation(value: &str) -> &str {
+    let trimmed = value.trim();
+    if let Some((first_line, rest)) = trimmed.split_once('\n') {
+        let language_hint = first_line.trim().to_lowercase();
+        if matches!(
+            language_hint.as_str(),
+            "text" | "txt" | "plain" | "plaintext" | "markdown" | "md" | "translation"
+        ) {
+            return rest.trim();
+        }
+    }
+
+    trimmed
+}
+
+#[cfg(target_os = "windows")]
+fn read_selected_text_from_clipboard() -> Result<String, String> {
+    let original_text = windows_clipboard_text()?;
+    let marker = format!(
+        "__PETDRAWER_SELECTION_TRANSLATION_MARKER_{}__",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    );
+
+    wait_for_windows_shortcut_modifiers_to_release()?;
+    windows_set_clipboard_text(Some(&marker))?;
+    send_windows_copy_shortcut()?;
+
+    let mut selected_text = None;
+    let mut last_clipboard_error = None;
+    for _ in 0..SELECTION_COPY_POLL_ATTEMPTS {
+        std::thread::sleep(std::time::Duration::from_millis(
+            SELECTION_COPY_POLL_INTERVAL_MS,
+        ));
+        match windows_clipboard_text() {
+            Ok(Some(text)) if text != marker && !text.trim().is_empty() => {
+                selected_text = Some(text);
+                break;
+            }
+            Ok(_) => {}
+            Err(err) => last_clipboard_error = Some(err),
+        }
+    }
+
+    let copied_format_names = if selected_text.is_none() {
+        windows_clipboard_format_names().ok()
+    } else {
+        None
+    };
+    let restore_result = windows_set_clipboard_text(original_text.as_deref());
+    if let Err(err) = restore_result {
+        return Err(format!("已读取选中文本，但恢复剪贴板失败：{err}"));
+    }
+
+    normalize_selected_translation_text(selected_text.as_deref().ok_or_else(|| {
+        foxit_selection_empty_message(
+            copied_format_names.as_deref(),
+            last_clipboard_error.as_deref(),
+        )
+    })?)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn read_selected_text_from_clipboard() -> Result<String, String> {
+    Err("划选翻译快捷键当前仅支持 Windows。".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn foxit_selection_empty_message(
+    format_names: Option<&[String]>,
+    last_clipboard_error: Option<&str>,
+) -> String {
+    let format_hint = format_names
+        .filter(|names| !names.is_empty())
+        .map(|names| {
+            let joined = names.iter().take(8).cloned().collect::<Vec<_>>().join("、");
+            format!("检测到剪贴板格式：{joined}。")
+        })
+        .unwrap_or_default();
+    let error_hint = last_clipboard_error
+        .filter(|err| !err.trim().is_empty())
+        .map(|err| format!("最近一次剪贴板读取错误：{err}。"))
+        .unwrap_or_default();
+
+    format!(
+        "没有读取到 PDF 选中文本。{format_hint}{error_hint}福昕阅读器中请确认使用文本选择工具，且该 PDF 没有禁止复制；扫描件或图片型 PDF 需要后续 OCR。"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_clipboard_with_retry() -> Result<ClipboardGuard, String> {
+    use windows_sys::Win32::System::DataExchange::OpenClipboard;
+
+    for _ in 0..WINDOWS_CLIPBOARD_OPEN_RETRIES {
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) != 0 {
+                return Ok(ClipboardGuard);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(
+            WINDOWS_CLIPBOARD_OPEN_RETRY_MS,
+        ));
+    }
+
+    Err("无法打开剪贴板，可能正被福昕阅读器或其他应用短暂占用。".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_clipboard_format_names() -> Result<Vec<String>, String> {
+    use windows_sys::Win32::System::DataExchange::{EnumClipboardFormats, GetClipboardFormatNameW};
+
+    let close_clipboard = open_windows_clipboard_with_retry()?;
+    let mut format = 0u32;
+    let mut names = Vec::new();
+
+    loop {
+        format = unsafe { EnumClipboardFormats(format) };
+        if format == 0 {
+            break;
+        }
+
+        let name = standard_clipboard_format_name(format)
+            .map(str::to_string)
+            .or_else(|| {
+                let mut buffer = [0u16; 128];
+                let len = unsafe {
+                    GetClipboardFormatNameW(format, buffer.as_mut_ptr(), buffer.len() as i32)
+                };
+                if len <= 0 {
+                    None
+                } else {
+                    Some(String::from_utf16_lossy(&buffer[..len as usize]))
+                }
+            })
+            .unwrap_or_else(|| format!("Format#{format}"));
+        names.push(name);
+
+        if names.len() >= 12 {
+            break;
+        }
+    }
+
+    drop(close_clipboard);
+    Ok(names)
+}
+
+#[cfg(target_os = "windows")]
+fn standard_clipboard_format_name(format: u32) -> Option<&'static str> {
+    match format {
+        1 => Some("CF_TEXT"),
+        2 => Some("CF_BITMAP"),
+        3 => Some("CF_METAFILEPICT"),
+        4 => Some("CF_SYLK"),
+        5 => Some("CF_DIF"),
+        6 => Some("CF_TIFF"),
+        7 => Some("CF_OEMTEXT"),
+        8 => Some("CF_DIB"),
+        9 => Some("CF_PALETTE"),
+        10 => Some("CF_PENDATA"),
+        11 => Some("CF_RIFF"),
+        12 => Some("CF_WAVE"),
+        13 => Some("CF_UNICODETEXT"),
+        14 => Some("CF_ENHMETAFILE"),
+        15 => Some("CF_HDROP"),
+        16 => Some("CF_LOCALE"),
+        17 => Some("CF_DIBV5"),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_clipboard_text() -> Result<Option<String>, String> {
+    use windows_sys::Win32::System::DataExchange::{
+        GetClipboardData, IsClipboardFormatAvailable, RegisterClipboardFormatW,
+    };
+    use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows_sys::Win32::System::Ole::{CF_OEMTEXT, CF_TEXT, CF_UNICODETEXT};
+
+    unsafe {
+        let close_clipboard = open_windows_clipboard_with_retry()?;
+        if IsClipboardFormatAvailable(CF_UNICODETEXT.into()) != 0 {
+            let handle = GetClipboardData(CF_UNICODETEXT.into());
+            if !handle.is_null() {
+                let ptr = GlobalLock(handle) as *const u16;
+                if ptr.is_null() {
+                    drop(close_clipboard);
+                    return Err("无法读取剪贴板文本。".to_string());
+                }
+
+                let size = GlobalSize(handle) / std::mem::size_of::<u16>();
+                let max_len = if size > 0 { size } else { 1_048_576 };
+                let mut len = 0usize;
+                while len < max_len && *ptr.add(len) != 0 {
+                    len += 1;
+                }
+                let slice = std::slice::from_raw_parts(ptr, len);
+                let text = String::from_utf16_lossy(slice);
+                GlobalUnlock(handle);
+                if let Some(text) = normalize_clipboard_extracted_text(&text) {
+                    drop(close_clipboard);
+                    return Ok(Some(text));
+                }
+            }
+        }
+
+        for format_name in ["HTML Format", "text/html"] {
+            let html_format = registered_clipboard_format(format_name, RegisterClipboardFormatW);
+            if let Some(raw_html) = windows_clipboard_format_bytes(
+                html_format,
+                IsClipboardFormatAvailable,
+                GetClipboardData,
+                GlobalLock,
+                GlobalUnlock,
+                GlobalSize,
+            )? {
+                let html = decode_clipboard_bytes(&raw_html);
+                if let Some(text) = html_clipboard_to_text(&html) {
+                    drop(close_clipboard);
+                    return Ok(Some(text));
+                }
+            }
+        }
+
+        for format_name in ["Rich Text Format", "Rich Text Format Without Objects"] {
+            let rtf_format = registered_clipboard_format(format_name, RegisterClipboardFormatW);
+            if let Some(raw_rtf) = windows_clipboard_format_bytes(
+                rtf_format,
+                IsClipboardFormatAvailable,
+                GetClipboardData,
+                GlobalLock,
+                GlobalUnlock,
+                GlobalSize,
+            )? {
+                let rtf = decode_clipboard_bytes(&raw_rtf);
+                if let Some(text) = rtf_to_text(&rtf) {
+                    drop(close_clipboard);
+                    return Ok(Some(text));
+                }
+            }
+        }
+
+        for standard_format in [CF_TEXT.into(), CF_OEMTEXT.into()] {
+            if let Some(raw_text) = windows_clipboard_format_bytes(
+                standard_format,
+                IsClipboardFormatAvailable,
+                GetClipboardData,
+                GlobalLock,
+                GlobalUnlock,
+                GlobalSize,
+            )? {
+                let text = decode_clipboard_bytes(&raw_text);
+                if let Some(text) = normalize_clipboard_extracted_text(&text) {
+                    drop(close_clipboard);
+                    return Ok(Some(text));
+                }
+            }
+        }
+
+        drop(close_clipboard);
+        return Ok(None);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn registered_clipboard_format(
+    name: &str,
+    register_clipboard_format: unsafe extern "system" fn(*const u16) -> u32,
+) -> u32 {
+    let wide = name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    unsafe { register_clipboard_format(wide.as_ptr()) }
+}
+
+fn trim_clipboard_nul_bytes(mut bytes: Vec<u8>) -> Vec<u8> {
+    while matches!(bytes.last(), Some(0)) {
+        bytes.pop();
+    }
+    bytes
+}
+
+fn decode_clipboard_bytes(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+
+    if bytes.starts_with(&[0xff, 0xfe]) {
+        return decode_utf16_bytes(&bytes[2..], true);
+    }
+    if bytes.starts_with(&[0xfe, 0xff]) {
+        return decode_utf16_bytes(&bytes[2..], false);
+    }
+    if looks_like_utf16le(bytes) {
+        return decode_utf16_bytes(bytes, true);
+    }
+    if looks_like_utf16be(bytes) {
+        return decode_utf16_bytes(bytes, false);
+    }
+
+    String::from_utf8_lossy(bytes).to_string()
+}
+
+fn looks_like_utf16le(bytes: &[u8]) -> bool {
+    let pairs = bytes.chunks_exact(2).take(64).collect::<Vec<_>>();
+    let sampled = pairs.len();
+    sampled >= 4 && pairs.iter().filter(|pair| pair[1] == 0).count() * 2 >= sampled
+}
+
+fn looks_like_utf16be(bytes: &[u8]) -> bool {
+    let pairs = bytes.chunks_exact(2).take(64).collect::<Vec<_>>();
+    let sampled = pairs.len();
+    sampled >= 4 && pairs.iter().filter(|pair| pair[0] == 0).count() * 2 >= sampled
+}
+
+fn decode_utf16_bytes(bytes: &[u8], little_endian: bool) -> String {
+    let mut units = bytes
+        .chunks_exact(2)
+        .map(|chunk| {
+            if little_endian {
+                u16::from_le_bytes([chunk[0], chunk[1]])
+            } else {
+                u16::from_be_bytes([chunk[0], chunk[1]])
+            }
+        })
+        .collect::<Vec<_>>();
+    while matches!(units.last(), Some(0)) {
+        units.pop();
+    }
+
+    String::from_utf16_lossy(&units)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_clipboard_format_bytes(
+    format: u32,
+    is_clipboard_format_available: unsafe extern "system" fn(u32) -> i32,
+    get_clipboard_data: unsafe extern "system" fn(u32) -> *mut std::ffi::c_void,
+    global_lock: unsafe extern "system" fn(*mut std::ffi::c_void) -> *mut std::ffi::c_void,
+    global_unlock: unsafe extern "system" fn(*mut std::ffi::c_void) -> i32,
+    global_size: unsafe extern "system" fn(*mut std::ffi::c_void) -> usize,
+) -> Result<Option<Vec<u8>>, String> {
+    if format == 0 {
+        return Ok(None);
+    }
+
+    unsafe {
+        if is_clipboard_format_available(format) == 0 {
+            return Ok(None);
+        }
+
+        let handle = get_clipboard_data(format);
+        if handle.is_null() {
+            return Ok(None);
+        }
+
+        let ptr = global_lock(handle) as *const u8;
+        if ptr.is_null() {
+            return Err("无法读取剪贴板富文本。".to_string());
+        }
+
+        let size = global_size(handle);
+        let bytes = if size > 0 {
+            let slice = std::slice::from_raw_parts(ptr, size);
+            trim_clipboard_nul_bytes(slice.to_vec())
+        } else {
+            let mut len = 0usize;
+            while len < 1_048_576 && *ptr.add(len) != 0 {
+                len += 1;
+            }
+            std::slice::from_raw_parts(ptr, len).to_vec()
+        };
+        global_unlock(handle);
+
+        if bytes.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(bytes))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_set_clipboard_text(text: Option<&str>) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{EmptyClipboard, SetClipboardData};
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    };
+    use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+
+    unsafe {
+        let close_clipboard = open_windows_clipboard_with_retry()?;
+        if EmptyClipboard() == 0 {
+            drop(close_clipboard);
+            return Err("无法清空剪贴板文本。".to_string());
+        }
+
+        let Some(text) = text else {
+            drop(close_clipboard);
+            return Ok(());
+        };
+
+        let wide = text
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let byte_len = wide.len() * std::mem::size_of::<u16>();
+        let handle = GlobalAlloc(GMEM_MOVEABLE, byte_len);
+        if handle.is_null() {
+            drop(close_clipboard);
+            return Err("无法分配剪贴板内存。".to_string());
+        }
+
+        let ptr = GlobalLock(handle) as *mut u16;
+        if ptr.is_null() {
+            GlobalFree(handle);
+            drop(close_clipboard);
+            return Err("无法写入剪贴板内存。".to_string());
+        }
+
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+        GlobalUnlock(handle);
+
+        if SetClipboardData(CF_UNICODETEXT.into(), handle).is_null() {
+            GlobalFree(handle);
+            drop(close_clipboard);
+            return Err("无法写入剪贴板文本。".to_string());
+        }
+
+        drop(close_clipboard);
+        return Ok(());
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct ClipboardGuard;
+
+#[cfg(target_os = "windows")]
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        unsafe {
+            windows_sys::Win32::System::DataExchange::CloseClipboard();
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn send_windows_copy_shortcut() -> Result<(), String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL,
+    };
+
+    const KEY_C: u16 = 0x43;
+
+    fn key_input(vk: u16, flags: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    let mut inputs = [
+        key_input(VK_CONTROL, 0),
+        key_input(KEY_C, 0),
+        key_input(KEY_C, KEYEVENTF_KEYUP),
+        key_input(VK_CONTROL, KEYEVENTF_KEYUP),
+    ];
+
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
+
+    if sent != inputs.len() as u32 {
+        return Err("无法模拟复制快捷键。".to_string());
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn wait_for_windows_shortcut_modifiers_to_release() -> Result<(), String> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+        VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    };
+
+    const RELEASE_CHECKS: usize = 40;
+    const RELEASE_CHECK_INTERVAL_MS: u64 = 25;
+    let modifiers = [
+        VK_CONTROL,
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_MENU,
+        VK_LMENU,
+        VK_RMENU,
+        VK_SHIFT,
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_LWIN,
+        VK_RWIN,
+    ];
+
+    for _ in 0..RELEASE_CHECKS {
+        let has_pressed_modifier = modifiers
+            .iter()
+            .any(|key| unsafe { (GetAsyncKeyState((*key).into()) as u16 & 0x8000) != 0 });
+        if !has_pressed_modifier {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(RELEASE_CHECK_INTERVAL_MS));
+    }
+
+    Err("请先松开翻译快捷键，再等待桌宠读取选中文本。".to_string())
 }
 
 pub fn send_story_text_request(
@@ -2728,6 +3846,107 @@ mod tests {
 
         assert!(!drafts.is_empty());
         assert_eq!(drafts[0].memory_type, "other");
+    }
+
+    #[test]
+    fn fenced_translation_removes_known_language_hint() {
+        assert_eq!(clean_fenced_translation("text\nHello"), "Hello");
+        assert_eq!(clean_fenced_translation("Hello\nWorld"), "Hello\nWorld");
+    }
+
+    #[test]
+    fn selected_translation_rejects_identifier_like_values() {
+        let err = normalize_selected_translation_text("019f2ab6-6618-74e2-b01f-31896e78f929")
+            .unwrap_err();
+        assert!(err.contains("编号"));
+
+        assert!(normalize_selected_translation_text("288d47676cbbfc56").is_err());
+        assert!(normalize_selected_translation_text("Hello world").is_ok());
+        assert!(normalize_selected_translation_text(
+            "This English paragraph has version 2 and Windows 11 support."
+        )
+        .is_ok());
+        assert!(normalize_selected_translation_text("这是一段中文").is_ok());
+    }
+
+    #[test]
+    fn html_clipboard_format_extracts_fragment_text() {
+        let fragment = "<p>Hello&nbsp;<b>world</b></p><p>Line &amp; two</p>";
+        let html_prefix = "<html><body><!--StartFragment-->";
+        let html_suffix = "<!--EndFragment--></body></html>";
+        let header_template = concat!(
+            "Version:0.9\r\n",
+            "StartHTML:0000000000\r\n",
+            "EndHTML:0000000000\r\n",
+            "StartFragment:0000000000\r\n",
+            "EndFragment:0000000000\r\n"
+        );
+        let start_html = header_template.len();
+        let start_fragment = start_html + html_prefix.len();
+        let end_fragment = start_fragment + fragment.len();
+        let end_html = start_html + html_prefix.len() + fragment.len() + html_suffix.len();
+        let clipboard_html = format!(
+            concat!(
+                "Version:0.9\r\n",
+                "StartHTML:{0:010}\r\n",
+                "EndHTML:{1:010}\r\n",
+                "StartFragment:{2:010}\r\n",
+                "EndFragment:{3:010}\r\n",
+                "{4}{5}{6}"
+            ),
+            start_html, end_html, start_fragment, end_fragment, html_prefix, fragment, html_suffix
+        );
+
+        assert_eq!(
+            html_clipboard_to_text(&clipboard_html).as_deref(),
+            Some("Hello world\nLine & two")
+        );
+    }
+
+    #[test]
+    fn html_clipboard_marker_extracts_fragment_without_offsets() {
+        let html = concat!(
+            "Version:0.9\r\n",
+            "<html><body>ignored<!--StartFragment-->",
+            "<p>Hello&nbsp;<b>Foxit</b></p>",
+            "<!--EndFragment-->ignored</body></html>"
+        );
+
+        assert_eq!(html_clipboard_to_text(html).as_deref(), Some("Hello Foxit"));
+    }
+
+    #[test]
+    fn utf16_clipboard_bytes_decode_to_html_text() {
+        let html = concat!(
+            "Version:0.9\r\n",
+            "<html><body><!--StartFragment-->",
+            "<p>Hello&nbsp;PDF</p>",
+            "<!--EndFragment--></body></html>"
+        );
+        let bytes = html
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let decoded = decode_clipboard_bytes(&bytes);
+
+        assert_eq!(
+            html_clipboard_to_text(&decoded).as_deref(),
+            Some("Hello PDF")
+        );
+    }
+
+    #[test]
+    fn rtf_clipboard_text_extracts_unicode_and_lines() {
+        let rtf = r"{\rtf1\ansi{\fonttbl{\f0 Arial;}}\f0 Hello\u19990? \par Line\tab two}";
+
+        assert_eq!(rtf_to_text(rtf).as_deref(), Some("Hello世\nLine two"));
+    }
+
+    #[test]
+    fn rtf_clipboard_respects_unicode_fallback_skip_count() {
+        let rtf = r"{\rtf1\ansi\uc0 Hello \u19990  world}";
+
+        assert_eq!(rtf_to_text(rtf).as_deref(), Some("Hello 世 world"));
     }
 
     #[test]
