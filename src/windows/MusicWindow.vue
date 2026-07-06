@@ -457,10 +457,16 @@ interface KugouQualityAvailability {
 }
 
 type ImmersivePlaylistSource = 'local' | 'netease' | 'kugou'
+type ImmersiveSearchPlatform = 'netease' | 'kugou'
+type ImmersiveSearchPlatformOptionValue = 'all' | ImmersiveSearchPlatform
 type MusicPlaybackContext =
   | { source: 'local'; trackIds: string[] }
   | { source: 'netease'; tracks: NeteasePlaylistTrack[] }
   | { source: 'kugou'; tracks: KugouSearchTrack[] }
+
+type ImmersiveSearchResultItem =
+  | { key: string; platform: 'netease'; track: NeteasePlaylistTrack; sourceIndex: number }
+  | { key: string; platform: 'kugou'; track: KugouSearchTrack; sourceIndex: number }
 
 interface OnlinePlaybackCacheEntry<T> {
   playback: T
@@ -592,6 +598,7 @@ const ALL_ONLINE_PLAYBACK_QUALITY_OPTIONS = [
 ]
 const IMMERSIVE_CONTENT_PREP_DELAY_MS = 1400
 const PLATFORM_SEARCH_PAGE_SIZE = 50
+const IMMERSIVE_SEARCH_PAGE_SIZE = 18
 const MAX_PLATFORM_SEARCH_PAGE = 20
 const PLATFORM_PLAYLIST_PAGE_SIZE = 300
 const MAX_PLATFORM_PLAYLIST_PAGE = 200
@@ -693,6 +700,15 @@ const ONLINE_STALL_RECOVERY_PROGRESS_SECONDS = 0.8
 const MAX_ONLINE_STALL_RECOVERY_ATTEMPTS = 3
 const NETEASE_TRACK_ID_PREFIX = 'netease'
 const KUGOU_TRACK_ID_PREFIX = 'kugou'
+const IMMERSIVE_SEARCH_PLATFORMS: ImmersiveSearchPlatform[] = ['netease', 'kugou']
+const immersiveSearchPlatformOptions: Array<{
+  value: ImmersiveSearchPlatformOptionValue
+  label: string
+}> = [
+  { value: 'all', label: '全部' },
+  { value: 'netease', label: '网易云' },
+  { value: 'kugou', label: '酷狗' },
+]
 const panelViewOptions: Array<{ value: MusicPanelView; label: string }> = [
   { value: 'library', label: '本地音乐' },
   { value: 'netease', label: '网易云' },
@@ -868,6 +884,8 @@ const kugouPlaylistDetailSection = ref<HTMLElement | null>(null)
 const musicWindow = getCurrentWindow()
 const { windowOpenAnimationClass } = useWindowOpenAnimation('panel')
 const immersiveScene = ref<HTMLElement | null>(null)
+const immersiveSearchRoot = ref<HTMLElement | null>(null)
+const immersiveSearchInput = ref<HTMLInputElement | null>(null)
 const tracks = ref<MusicTrack[]>([])
 const playQueue = ref<string[]>([])
 const playbackContext = ref<MusicPlaybackContext>({ source: 'local', trackIds: [] })
@@ -906,6 +924,15 @@ const listFocusMode = ref(false)
 const immersivePlaylistVisible = ref(true)
 const immersiveRhythmPanelVisible = ref(true)
 const immersivePlaylistSource = ref<ImmersivePlaylistSource>('local')
+const immersiveSearchQuery = ref('')
+const immersiveSearchFocused = ref(false)
+const immersiveSearchLoading = ref(false)
+const immersiveSearchExecuted = ref(false)
+const immersiveSearchError = ref('')
+const immersiveSearchNotice = ref('')
+const immersiveSearchPlatforms = ref<ImmersiveSearchPlatform[]>([...IMMERSIVE_SEARCH_PLATFORMS])
+const immersiveNeteaseSearchResult = ref<NeteaseSearchResult | null>(null)
+const immersiveKugouSearchResult = ref<KugouSearchResult | null>(null)
 const visualStagePreset = ref<MusicVisualStagePreset>(defaultVisualStagePresetOption.value)
 const visualMode = ref<MusicVisualMode>(defaultVisualStagePresetOption.mode)
 const visualSpectrumStyle = ref<MusicSpectrumStyle>(defaultVisualStagePresetOption.spectrumStyle)
@@ -1689,6 +1716,80 @@ const kugouSearchStatusDetail = computed(() => {
 
   return '输入关键词搜索酷狗歌曲；搜索结果只作为临时播放列表，不写入本机曲库。'
 })
+const activeImmersiveSearchPlatforms = computed(() =>
+  IMMERSIVE_SEARCH_PLATFORMS.filter((platform) => immersiveSearchPlatforms.value.includes(platform)),
+)
+const immersiveSearchPlatformLabel = computed(() => {
+  const platforms = activeImmersiveSearchPlatforms.value
+  if (platforms.length === IMMERSIVE_SEARCH_PLATFORMS.length) {
+    return '全部平台'
+  }
+
+  return platforms.map(immersiveSearchPlatformName).join('、') || '未选择平台'
+})
+const immersiveSearchPlaceholder = computed(
+  () => `搜索${immersiveSearchPlatformLabel.value}歌曲或歌手`,
+)
+const immersiveNeteaseSearchTracks = computed(() => immersiveNeteaseSearchResult.value?.tracks ?? [])
+const immersiveKugouSearchTracks = computed(() => immersiveKugouSearchResult.value?.tracks ?? [])
+const immersiveSearchResults = computed<ImmersiveSearchResultItem[]>(() => {
+  const includeNetease = activeImmersiveSearchPlatforms.value.includes('netease')
+  const includeKugou = activeImmersiveSearchPlatforms.value.includes('kugou')
+  const neteaseTracks = includeNetease ? immersiveNeteaseSearchTracks.value : []
+  const kugouTracks = includeKugou ? immersiveKugouSearchTracks.value : []
+  const results: ImmersiveSearchResultItem[] = []
+  const maxLength = Math.max(neteaseTracks.length, kugouTracks.length)
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const neteaseTrack = neteaseTracks[index]
+    if (neteaseTrack) {
+      results.push({
+        key: `netease-${neteaseTrack.id}`,
+        platform: 'netease',
+        track: neteaseTrack,
+        sourceIndex: index,
+      })
+    }
+
+    const kugouTrack = kugouTracks[index]
+    if (kugouTrack) {
+      results.push({
+        key: `kugou-${kugouTrack.hash || kugouTrack.id}-${index}`,
+        platform: 'kugou',
+        track: kugouTrack,
+        sourceIndex: index,
+      })
+    }
+  }
+
+  return results
+})
+const immersiveSearchPanelVisible = computed(
+  () => immersiveSearchFocused.value || immersiveSearchLoading.value,
+)
+const immersiveSearchStatusLabel = computed(() => {
+  if (immersiveSearchError.value) {
+    return immersiveSearchError.value
+  }
+
+  if (immersiveSearchLoading.value) {
+    return `正在搜索${immersiveSearchPlatformLabel.value}...`
+  }
+
+  if (!immersiveSearchExecuted.value) {
+    return '输入关键词后搜索'
+  }
+
+  if (immersiveSearchResults.value.length === 0) {
+    return `没有搜索到“${immersiveSearchQuery.value.trim()}”。`
+  }
+
+  if (immersiveSearchNotice.value) {
+    return immersiveSearchNotice.value
+  }
+
+  return `已找到 ${immersiveSearchResults.value.length} 首歌曲`
+})
 const kugouDailyRecommendationStatusDetail = computed(() => {
   if (kugouDailyRecommendationError.value) {
     return kugouDailyRecommendationError.value
@@ -2219,6 +2320,7 @@ let miniEdgeWindowMoveSerial = 0
 let suppressMiniEdgeMoveUntil = 0
 let neteaseQrPollTimer: number | null = null
 let kugouQrPollTimer: number | null = null
+let immersiveSearchRequestSerial = 0
 
 onMounted(async () => {
   restoreSettings()
@@ -2231,6 +2333,7 @@ onMounted(async () => {
   window.addEventListener('keydown', handleImmersiveFreeCameraKeyDown, true)
   window.addEventListener('keyup', handleImmersiveFreeCameraKeyUp, true)
   window.addEventListener('mousemove', handleImmersiveFreeCameraMouseMove, true)
+  window.addEventListener('pointerdown', handleImmersiveSearchDocumentPointerDown, true)
   unlistenThemeChanged = await listen<string>('ui-theme-changed', (event) => {
     drawerTheme.value = normalizeDrawerTheme(event.payload)
   })
@@ -2257,6 +2360,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleImmersiveFreeCameraKeyDown, true)
   window.removeEventListener('keyup', handleImmersiveFreeCameraKeyUp, true)
   window.removeEventListener('mousemove', handleImmersiveFreeCameraMouseMove, true)
+  window.removeEventListener('pointerdown', handleImmersiveSearchDocumentPointerDown, true)
   clearMiniEdgeTimers()
   cancelMiniEdgeWindowMove()
   clearOnlinePlaybackPrefetchTimer()
@@ -3716,6 +3820,268 @@ function formatPlatformPlaylistNotice(
     ? `已加载《${playlistName}》${loadedCount} / ${total} 首${platformLabel}歌单歌曲`
     : `已加载《${playlistName}》${loadedCount} 首${platformLabel}歌单歌曲`
   return hasMore ? `${prefix}，可继续加载。` : `${prefix}。`
+}
+
+function immersiveSearchPlatformName(platform: ImmersiveSearchPlatform) {
+  return platform === 'netease' ? '网易云' : '酷狗'
+}
+
+function immersiveSearchPlatformSelected(value: ImmersiveSearchPlatformOptionValue) {
+  if (value === 'all') {
+    return activeImmersiveSearchPlatforms.value.length === IMMERSIVE_SEARCH_PLATFORMS.length
+  }
+
+  return immersiveSearchPlatforms.value.includes(value)
+}
+
+function toggleImmersiveSearchPlatform(value: ImmersiveSearchPlatformOptionValue) {
+  immersiveSearchFocused.value = true
+  let changed = false
+  if (value === 'all') {
+    changed =
+      activeImmersiveSearchPlatforms.value.length !== IMMERSIVE_SEARCH_PLATFORMS.length
+    immersiveSearchPlatforms.value = [...IMMERSIVE_SEARCH_PLATFORMS]
+  } else {
+    const current = activeImmersiveSearchPlatforms.value
+    if (current.includes(value)) {
+      if (current.length <= 1) {
+        return
+      }
+      immersiveSearchPlatforms.value = current.filter((platform) => platform !== value)
+      changed = true
+    } else {
+      immersiveSearchPlatforms.value = [...current, value]
+      changed = true
+    }
+  }
+
+  if (changed && immersiveSearchExecuted.value && immersiveSearchQuery.value.trim()) {
+    void searchImmersiveSongs()
+  }
+}
+
+function handleImmersiveSearchFocus() {
+  immersiveSearchFocused.value = true
+}
+
+function handleImmersiveSearchInput() {
+  immersiveSearchError.value = ''
+  immersiveSearchNotice.value = ''
+  if (immersiveSearchQuery.value.trim()) {
+    return
+  }
+
+  immersiveSearchExecuted.value = false
+  immersiveNeteaseSearchResult.value = null
+  immersiveKugouSearchResult.value = null
+}
+
+function handleImmersiveSearchDocumentPointerDown(event: PointerEvent) {
+  if (!immersiveMode.value || !immersiveSearchFocused.value) {
+    return
+  }
+
+  const target = event.target
+  if (target instanceof Node && immersiveSearchRoot.value?.contains(target)) {
+    return
+  }
+
+  const activeElement = document.activeElement
+  if (
+    activeElement instanceof HTMLElement &&
+    immersiveSearchRoot.value?.contains(activeElement)
+  ) {
+    activeElement.blur()
+  }
+  immersiveSearchInput.value?.blur()
+  immersiveSearchFocused.value = false
+}
+
+function syncImmersiveSearchResultToPlatformState(
+  keyword: string,
+  result: NeteaseSearchResult | KugouSearchResult,
+  platform: ImmersiveSearchPlatform,
+) {
+  if (platform === 'netease') {
+    const neteaseResult = result as NeteaseSearchResult
+    immersiveNeteaseSearchResult.value = neteaseResult
+    neteaseSearchQuery.value = keyword
+    neteaseSearchResult.value = neteaseResult
+    neteaseSearchPage.value = 1
+    neteaseSearchError.value = ''
+    neteaseSearchNotice.value = formatPlatformSearchNotice(
+      '网易云',
+      neteaseResult.keyword,
+      neteaseResult.tracks.length,
+      neteaseResult.total,
+    )
+    return
+  }
+
+  const kugouResult = result as KugouSearchResult
+  immersiveKugouSearchResult.value = kugouResult
+  kugouSearchQuery.value = keyword
+  kugouSearchResult.value = kugouResult
+  kugouSearchPage.value = 1
+  kugouSearchError.value = ''
+  kugouSearchNotice.value = formatPlatformSearchNotice(
+    '酷狗',
+    kugouResult.keyword,
+    kugouResult.tracks.length,
+    kugouResult.total,
+  )
+}
+
+async function searchImmersiveSongs() {
+  immersiveSearchFocused.value = true
+  const keyword = immersiveSearchQuery.value.trim()
+  if (!keyword) {
+    immersiveSearchError.value = '请输入搜索关键词。'
+    immersiveSearchExecuted.value = true
+    return
+  }
+
+  const platforms = activeImmersiveSearchPlatforms.value
+  if (platforms.length === 0) {
+    immersiveSearchError.value = '请至少选择一个音乐平台。'
+    immersiveSearchExecuted.value = true
+    return
+  }
+
+  const requestSerial = immersiveSearchRequestSerial + 1
+  immersiveSearchRequestSerial = requestSerial
+  immersiveSearchLoading.value = true
+  immersiveSearchExecuted.value = true
+  immersiveSearchError.value = ''
+  immersiveSearchNotice.value = `正在搜索${immersiveSearchPlatformLabel.value}...`
+
+  if (!platforms.includes('netease')) {
+    immersiveNeteaseSearchResult.value = null
+  } else {
+    neteaseSearchLoading.value = true
+    neteaseSearchError.value = ''
+  }
+
+  if (!platforms.includes('kugou')) {
+    immersiveKugouSearchResult.value = null
+  } else {
+    kugouSearchLoading.value = true
+    kugouSearchError.value = ''
+  }
+
+  const searchJobs = platforms.map(async (platform) => {
+    if (platform === 'netease') {
+      const result = await invoke<NeteaseSearchResult>('search_netease_songs', {
+        keyword,
+        page: 1,
+        limit: IMMERSIVE_SEARCH_PAGE_SIZE,
+      })
+      return { platform, result }
+    }
+
+    const result = await invoke<KugouSearchResult>('search_kugou_songs', {
+      keyword,
+      page: 1,
+      limit: IMMERSIVE_SEARCH_PAGE_SIZE,
+    })
+    return { platform, result }
+  })
+
+  const settledResults = await Promise.allSettled(searchJobs)
+  if (requestSerial !== immersiveSearchRequestSerial) {
+    return
+  }
+
+  const failures: string[] = []
+  for (const settled of settledResults) {
+    if (settled.status === 'fulfilled') {
+      syncImmersiveSearchResultToPlatformState(
+        keyword,
+        settled.value.result,
+        settled.value.platform,
+      )
+    } else {
+      failures.push(String(settled.reason))
+    }
+  }
+
+  const successCount = settledResults.length - failures.length
+  if (successCount === 0) {
+    immersiveSearchError.value = `沉浸搜索失败：${failures[0] ?? '平台没有返回结果。'}`
+    immersiveSearchNotice.value = ''
+  } else {
+    const resultCount = immersiveSearchResults.value.length
+    const suffix = failures.length > 0 ? `；${failures.length} 个平台失败` : ''
+    immersiveSearchNotice.value =
+      resultCount > 0
+        ? `已从${immersiveSearchPlatformLabel.value}找到 ${resultCount} 首歌曲${suffix}。`
+        : `没有搜索到“${keyword}”${suffix}。`
+  }
+
+  if (platforms.includes('netease')) {
+    neteaseSearchLoading.value = false
+  }
+  if (platforms.includes('kugou')) {
+    kugouSearchLoading.value = false
+  }
+  immersiveSearchLoading.value = false
+}
+
+function immersiveSearchResultPlatformLabel(item: ImmersiveSearchResultItem) {
+  return item.platform === 'netease' ? '网易云' : '酷狗'
+}
+
+function immersiveSearchResultTitle(item: ImmersiveSearchResultItem) {
+  return item.track.name
+}
+
+function immersiveSearchResultArtist(item: ImmersiveSearchResultItem) {
+  return item.platform === 'netease'
+    ? formatNeteaseTrackArtists(item.track)
+    : formatKugouTrackArtists(item.track)
+}
+
+function immersiveSearchResultAlbum(item: ImmersiveSearchResultItem) {
+  return normalizeTrackAlbum(item.track.album)
+}
+
+function immersiveSearchResultDurationLabel(item: ImmersiveSearchResultItem) {
+  return item.platform === 'netease'
+    ? immersiveNeteaseTrackDurationLabel(item.track)
+    : immersiveKugouTrackDurationLabel(item.track)
+}
+
+function immersiveSearchResultUnavailableReason(item: ImmersiveSearchResultItem) {
+  return item.platform === 'netease'
+    ? neteaseTrackUnavailableReason(item.track)
+    : kugouTrackUnavailableReason(item.track)
+}
+
+function immersiveSearchResultActive(item: ImmersiveSearchResultItem) {
+  if (item.platform === 'netease') {
+    return immersiveNeteaseTrackActive(item.track)
+  }
+
+  return immersiveKugouTrackActive(item.track)
+}
+
+function canPlayImmersiveSearchResult(item: ImmersiveSearchResultItem) {
+  if (item.platform === 'netease') {
+    return canPlayImmersiveNeteaseTrack(item.track)
+  }
+
+  return canPlayImmersiveKugouTrack(item.track)
+}
+
+async function playImmersiveSearchResult(item: ImmersiveSearchResultItem) {
+  if (item.platform === 'netease') {
+    immersivePlaylistSource.value = 'netease'
+    await playNeteaseTrack(item.track, immersiveNeteaseSearchTracks.value)
+    return
+  }
+
+  immersivePlaylistSource.value = 'kugou'
+  await playKugouTrack(item.track, immersiveKugouSearchTracks.value)
 }
 
 async function searchNeteaseSongs(loadMore = false) {
@@ -9178,6 +9544,8 @@ async function setImmersiveMode(nextImmersiveMode: boolean) {
     void prepareImmersiveVisualization()
     await applyMusicWindowDisplayMode('immersive')
   } else {
+    immersiveSearchInput.value?.blur()
+    immersiveSearchFocused.value = false
     immersiveStageOnlyMode.value = false
     clearImmersiveContentPrepTimer()
     clearImmersiveFreeCamera()
@@ -10241,6 +10609,120 @@ function clamp(value: number, min: number, max: number) {
           </button>
         </div>
       </header>
+
+      <form
+        v-if="!immersiveStageOnlyMode"
+        ref="immersiveSearchRoot"
+        class="music-immersive-search"
+        :class="{
+          'is-open': immersiveSearchPanelVisible,
+          'is-loading': immersiveSearchLoading,
+          'has-results': immersiveSearchResults.length > 0,
+        }"
+        role="search"
+        aria-label="沉浸模式音乐搜索"
+        @submit.prevent="searchImmersiveSongs"
+        @focusin="handleImmersiveSearchFocus"
+        @pointerenter="handleImmersiveSearchFocus"
+        @pointerdown.stop="handleImmersiveSearchFocus"
+      >
+        <label class="music-immersive-search-box">
+          <svg class="music-immersive-search-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-4.2-4.2" />
+          </svg>
+          <input
+            ref="immersiveSearchInput"
+            v-model="immersiveSearchQuery"
+            type="search"
+            autocomplete="off"
+            spellcheck="false"
+            :placeholder="immersiveSearchPlaceholder"
+            aria-label="搜索在线音乐"
+            @input="handleImmersiveSearchInput"
+          />
+          <button type="submit" :disabled="immersiveSearchLoading">
+            {{ immersiveSearchLoading ? '搜索中' : '搜索' }}
+          </button>
+        </label>
+
+        <div class="music-immersive-search-platforms" role="group" aria-label="搜索音乐平台">
+          <button
+            v-for="option in immersiveSearchPlatformOptions"
+            :key="option.value"
+            type="button"
+            :class="{ active: immersiveSearchPlatformSelected(option.value) }"
+            :aria-pressed="immersiveSearchPlatformSelected(option.value)"
+            @click="toggleImmersiveSearchPlatform(option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+
+        <div
+          v-if="immersiveSearchPanelVisible"
+          class="music-immersive-search-results"
+          :class="{ error: Boolean(immersiveSearchError) }"
+        >
+          <div class="music-immersive-search-status" role="status">
+            {{ immersiveSearchStatusLabel }}
+          </div>
+          <div
+            v-if="immersiveSearchResults.length > 0"
+            class="music-immersive-search-list"
+            role="list"
+            aria-label="沉浸模式搜索结果"
+          >
+            <button
+              v-for="item in immersiveSearchResults"
+              :key="item.key"
+              type="button"
+              class="music-immersive-search-row"
+              :class="{
+                active: immersiveSearchResultActive(item),
+                unavailable: Boolean(immersiveSearchResultUnavailableReason(item)),
+              }"
+              :disabled="!canPlayImmersiveSearchResult(item)"
+              :title="
+                immersiveSearchResultUnavailableReason(item)
+                  ? playbackFailureDetailTitle(immersiveSearchResultUnavailableReason(item))
+                  : `${immersiveSearchResultTitle(item)} - ${immersiveSearchResultArtist(item)}`
+              "
+              @click="playImmersiveSearchResult(item)"
+            >
+              <span class="music-immersive-search-source">
+                {{ immersiveSearchResultPlatformLabel(item) }}
+              </span>
+              <span class="music-immersive-search-copy">
+                <strong>{{ immersiveSearchResultTitle(item) }}</strong>
+                <small>
+                  {{
+                    immersiveSearchResultUnavailableReason(item)
+                      ? compactPlaybackFailureReason(immersiveSearchResultUnavailableReason(item))
+                      : immersiveSearchResultArtist(item)
+                  }}
+                </small>
+                <small v-if="immersiveSearchResultAlbum(item)">
+                  {{ immersiveSearchResultAlbum(item) }}
+                </small>
+              </span>
+              <span class="music-immersive-search-duration">
+                {{
+                  immersiveSearchResultUnavailableReason(item)
+                    ? '不可播'
+                    : immersiveSearchResultDurationLabel(item)
+                }}
+              </span>
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          class="music-immersive-search-handle"
+          aria-label="展开沉浸搜索"
+          @click="handleImmersiveSearchFocus"
+        />
+      </form>
 
       <div
         v-if="!immersiveStageOnlyMode && (!immersivePlaylistVisible || !immersiveRhythmPanelVisible)"

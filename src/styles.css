@@ -2560,6 +2560,289 @@ button:disabled {
   font-size: 18px;
 }
 
+.music-immersive-search {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 7;
+  display: grid;
+  width: min(640px, calc(100vw - 40px));
+  gap: 7px;
+  padding: 8px;
+  color: var(--immersive-text-strong);
+  pointer-events: auto;
+  transform: translate3d(-50%, calc(-100% + 14px), 0);
+  transition:
+    transform 210ms cubic-bezier(0.18, 0.82, 0.22, 1),
+    filter 160ms ease;
+}
+
+.music-immersive-search-handle {
+  position: absolute;
+  left: 50%;
+  bottom: -3px;
+  width: 108px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+
+.music-immersive-search-handle::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 86px;
+  height: 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--immersive-accent) 70%, rgba(255, 255, 255, 0.28));
+  box-shadow: 0 0 18px color-mix(in srgb, var(--immersive-accent) 36%, transparent);
+  transform: translateX(-50%);
+}
+
+.music-immersive-search-handle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--immersive-accent) 78%, white 10%);
+  outline-offset: 2px;
+}
+
+.music-immersive-search:hover,
+.music-immersive-search:focus-within,
+.music-immersive-search.is-open {
+  filter: drop-shadow(0 18px 34px rgba(0, 0, 0, 0.26));
+  transform: translate3d(-50%, 10px, 0);
+}
+
+.music-immersive-search-box,
+.music-immersive-search-platforms,
+.music-immersive-search-results {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.1), transparent 58%),
+    rgba(9, 17, 33, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 12px 30px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(22px) saturate(1.16);
+  transition:
+    opacity 160ms ease,
+    transform 160ms ease;
+}
+
+.music-immersive-search:not(:hover):not(:focus-within):not(.is-open) .music-immersive-search-box,
+.music-immersive-search:not(:hover):not(:focus-within):not(.is-open) .music-immersive-search-platforms,
+.music-immersive-search:not(:hover):not(:focus-within):not(.is-open) .music-immersive-search-results {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+.music-immersive-search-box {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 5px 6px 5px 12px;
+  border-radius: 999px;
+}
+
+.music-immersive-search-icon {
+  display: block;
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: var(--immersive-text-muted);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.music-immersive-search-box input {
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  outline: none;
+  color: var(--immersive-text-strong);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.music-immersive-search-box input::placeholder {
+  color: var(--immersive-text-subtle);
+}
+
+.music-immersive-search-box button,
+.music-immersive-search-platforms button {
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  color: var(--immersive-text-strong);
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.music-immersive-search-box button {
+  padding: 0 14px;
+}
+
+.music-immersive-search-box button:hover:not(:disabled),
+.music-immersive-search-platforms button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.music-immersive-search-box button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.music-immersive-search-platforms {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  border-radius: 16px;
+}
+
+.music-immersive-search-platforms button {
+  padding: 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-immersive-search-platforms button.active {
+  border-color: color-mix(in srgb, var(--immersive-accent) 72%, white 8%);
+  color: var(--immersive-accent-contrast);
+  background: var(--immersive-accent);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--immersive-accent) 24%, transparent);
+}
+
+.music-immersive-search-results {
+  display: grid;
+  gap: 8px;
+  max-height: min(46vh, 420px);
+  overflow-y: auto;
+  padding: 9px;
+  border-radius: 18px;
+  scrollbar-width: thin;
+}
+
+.music-immersive-search-status {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--immersive-text-muted);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-immersive-search-results.error .music-immersive-search-status {
+  color: var(--immersive-warning-color);
+}
+
+.music-immersive-search-list {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.music-immersive-search-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: var(--immersive-text-strong);
+  background: rgba(255, 255, 255, 0.08);
+  text-align: left;
+}
+
+.music-immersive-search-row:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.music-immersive-search-row.active {
+  border-color: color-mix(in srgb, var(--immersive-accent) 70%, white 8%);
+  background: color-mix(in srgb, var(--immersive-accent) 18%, rgba(255, 255, 255, 0.08));
+}
+
+.music-immersive-search-row.unavailable:not(.active) {
+  border-color: rgba(255, 205, 122, 0.28);
+  color: color-mix(in srgb, var(--immersive-text-strong) 78%, #f7b45e 22%);
+  background: rgba(255, 185, 96, 0.1);
+}
+
+.music-immersive-search-row:disabled {
+  cursor: default;
+  opacity: 0.66;
+}
+
+.music-immersive-search-source {
+  display: grid;
+  min-width: 0;
+  min-height: 26px;
+  place-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--immersive-accent-contrast);
+  background: var(--immersive-accent);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.music-immersive-search-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.music-immersive-search-copy strong,
+.music-immersive-search-copy small,
+.music-immersive-search-duration {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-immersive-search-copy strong {
+  color: inherit;
+  font-size: 13px;
+  font-weight: 950;
+  line-height: 1.14;
+}
+
+.music-immersive-search-copy small {
+  color: var(--immersive-text-subtle);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.18;
+}
+
+.music-immersive-search-duration {
+  color: var(--immersive-text-subtle);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+}
+
 .music-immersive-icon-button,
 .music-immersive-card-icon-button {
   position: relative;
@@ -4152,6 +4435,32 @@ button:disabled {
   .music-immersive-panel-reopen:hover,
   .music-immersive-panel-reopen:focus-visible {
     transform: scale(1.04);
+  }
+
+  .music-immersive-search {
+    width: calc(100vw - 24px);
+  }
+
+  .music-immersive-search-box {
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    min-height: 42px;
+    padding-left: 10px;
+  }
+
+  .music-immersive-search-box button {
+    padding: 0 10px;
+  }
+
+  .music-immersive-search-results {
+    max-height: min(48vh, 360px);
+  }
+
+  .music-immersive-search-row {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .music-immersive-search-duration {
+    display: none;
   }
 
   .music-immersive-lyrics {
@@ -11958,6 +12267,86 @@ button:disabled {
 
 .theme-animal-island .music-immersive-header p {
   color: var(--immersive-text-muted);
+}
+
+.theme-animal-island .music-immersive-search-handle::before {
+  background: #ffe7ad;
+  box-shadow:
+    0 2px 0 rgba(86, 61, 31, 0.18),
+    0 0 16px rgba(255, 231, 173, 0.28);
+}
+
+.theme-animal-island .music-immersive-search-box,
+.theme-animal-island .music-immersive-search-platforms,
+.theme-animal-island .music-immersive-search-results {
+  border: 2px solid rgba(255, 231, 173, 0.62);
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255, 231, 173, 0.2), transparent 42%),
+    rgba(255, 248, 233, 0.26);
+  box-shadow:
+    0 5px 0 rgba(89, 60, 31, 0.2),
+    inset 0 1px 0 rgba(255, 248, 233, 0.18);
+}
+
+.theme-animal-island .music-immersive-search-icon {
+  stroke: var(--immersive-text-muted);
+}
+
+.theme-animal-island .music-immersive-search-box input {
+  color: var(--immersive-text-strong);
+}
+
+.theme-animal-island .music-immersive-search-box button,
+.theme-animal-island .music-immersive-search-platforms button {
+  border: 1px solid rgba(239, 207, 136, 0.74);
+  color: var(--island-ink);
+  background: #ffe7ad;
+  box-shadow: 0 3px 0 rgba(86, 61, 31, 0.22);
+}
+
+.theme-animal-island .music-immersive-search-box button:hover:not(:disabled),
+.theme-animal-island .music-immersive-search-platforms button:hover:not(:disabled) {
+  background: #ffda86;
+  transform: translateY(-1px);
+}
+
+.theme-animal-island .music-immersive-search-platforms button.active,
+.theme-animal-island .music-immersive-search-row.active .music-immersive-search-source {
+  color: #ffffff;
+  background: var(--island-mint);
+  box-shadow: 0 3px 0 var(--island-mint-dark);
+}
+
+.theme-animal-island .music-immersive-search-status,
+.theme-animal-island .music-immersive-search-copy small,
+.theme-animal-island .music-immersive-search-duration {
+  color: var(--immersive-text-muted);
+}
+
+.theme-animal-island .music-immersive-search-row {
+  border: 1px solid rgba(239, 207, 136, 0.58);
+  background: rgba(255, 231, 173, 0.16);
+}
+
+.theme-animal-island .music-immersive-search-row:hover:not(:disabled) {
+  border-color: #efcf88;
+  background: rgba(255, 218, 134, 0.28);
+}
+
+.theme-animal-island .music-immersive-search-row.active {
+  border-color: var(--island-mint);
+  background: rgba(91, 184, 150, 0.28);
+}
+
+.theme-animal-island .music-immersive-search-row.unavailable:not(.active) {
+  border-color: rgba(230, 157, 78, 0.76);
+  background: rgba(255, 214, 147, 0.24);
+}
+
+.theme-animal-island .music-immersive-search-source {
+  color: var(--island-ink);
+  background: #ffe7ad;
+  box-shadow: 0 2px 0 rgba(86, 61, 31, 0.18);
 }
 
 .theme-animal-island .music-immersive-playlist,
