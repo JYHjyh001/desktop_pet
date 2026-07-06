@@ -459,6 +459,8 @@ interface KugouQualityAvailability {
 type ImmersivePlaylistSource = 'local' | 'netease' | 'kugou'
 type ImmersiveSearchPlatform = 'netease' | 'kugou'
 type ImmersiveSearchPlatformOptionValue = 'all' | ImmersiveSearchPlatform
+type ImmersiveWallpaperMediaType = 'image' | 'video'
+type ImmersiveWallpaperPerformanceMode = 'normal' | 'light'
 type MusicPlaybackContext =
   | { source: 'local'; trackIds: string[] }
   | { source: 'netease'; tracks: NeteasePlaylistTrack[] }
@@ -701,6 +703,13 @@ const MAX_ONLINE_STALL_RECOVERY_ATTEMPTS = 3
 const NETEASE_TRACK_ID_PREFIX = 'netease'
 const KUGOU_TRACK_ID_PREFIX = 'kugou'
 const IMMERSIVE_SEARCH_PLATFORMS: ImmersiveSearchPlatform[] = ['netease', 'kugou']
+const IMMERSIVE_WALLPAPER_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'bmp']
+const IMMERSIVE_WALLPAPER_VIDEO_EXTENSIONS = ['mp4', 'm4v', 'webm', 'mov', 'ogv', 'ogg']
+const IMMERSIVE_WALLPAPER_QUALITY_SAMPLE_MS = 2500
+const IMMERSIVE_WALLPAPER_DROP_SAMPLE_MIN_FRAMES = 24
+const IMMERSIVE_WALLPAPER_DROP_RATIO_LIGHT = 0.08
+const IMMERSIVE_WALLPAPER_DROP_RATIO_RECOVER = 0.025
+const IMMERSIVE_WALLPAPER_RECOVER_SAMPLE_COUNT = 3
 const immersiveSearchPlatformOptions: Array<{
   value: ImmersiveSearchPlatformOptionValue
   label: string
@@ -949,6 +958,16 @@ const lyricStageFontScale = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.fontScale
 const lyricStageVertical = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.vertical)
 const lyricStageDistance = ref(LYRIC_STAGE_DISTANCE_DEFAULT)
 const lyricStageSideOpacity = ref(LYRIC_STAGE_PRESET_DEFAULTS.projection.sideOpacity)
+const immersiveWallpaperPath = ref('')
+const immersiveWallpaperMediaType = ref<ImmersiveWallpaperMediaType>('image')
+const immersiveWallpaperEnabled = ref(false)
+const immersiveWallpaperOpacity = ref(0.34)
+const immersiveWallpaperBlur = ref(0.12)
+const immersiveWallpaperNotice = ref('')
+const immersiveWallpaperError = ref('')
+const immersiveWallpaperVideoRef = ref<HTMLVideoElement | null>(null)
+const immersiveWallpaperPerformanceMode = ref<ImmersiveWallpaperPerformanceMode>('normal')
+const immersiveWallpaperDropRatio = ref(0)
 const webglStarfieldUnavailable = ref(false)
 const immersiveStageDragging = ref(false)
 const immersiveStageYaw = ref(0)
@@ -2239,6 +2258,90 @@ const immersiveStageStyle = computed(() => {
     '--immersive-stage-glow': glow.toFixed(3),
   }
 })
+const hasImmersiveWallpaper = computed(() => Boolean(normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value)))
+const immersiveWallpaperVisible = computed(() => hasImmersiveWallpaper.value && immersiveWallpaperEnabled.value)
+const immersiveWallpaperIsVideo = computed(() => immersiveWallpaperMediaType.value === 'video')
+const immersiveWallpaperMediaTypeLabel = computed(() =>
+  immersiveWallpaperIsVideo.value ? '本机视频' : '本机图片',
+)
+const immersiveWallpaperFileName = computed(() => {
+  const path = normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value)
+  return path.split(/[\\/]/).pop() || '本机壁纸'
+})
+const immersiveWallpaperOpacityLabel = computed(
+  () => `${Math.round(normalizeUnitSetting(immersiveWallpaperOpacity.value, 0.34) * 100)}%`,
+)
+const immersiveWallpaperBlurAmount = computed(() => normalizeUnitSetting(immersiveWallpaperBlur.value, 0.12))
+const immersiveWallpaperBlurPx = computed(() =>
+  Math.round(immersiveWallpaperBlurAmount.value * 10),
+)
+const immersiveWallpaperBlurLabel = computed(() =>
+  immersiveWallpaperIsVideo.value
+    ? `${Math.round(immersiveWallpaperBlurAmount.value * 100)}%`
+    : immersiveWallpaperBlurPx.value > 0
+      ? `${immersiveWallpaperBlurPx.value}px`
+      : '清晰',
+)
+const immersiveWallpaperVideoOptimizationActive = computed(() =>
+  immersiveWallpaperIsVideo.value && immersiveWallpaperVisible.value,
+)
+const immersiveStableVideoWallpaperActive = computed(() => immersiveWallpaperVideoOptimizationActive.value)
+const immersiveWallpaperVideoLoadShedding = computed(() =>
+  immersiveWallpaperVideoOptimizationActive.value && immersiveWallpaperPerformanceMode.value === 'light',
+)
+const effectiveVisualIntensity = computed(() =>
+  clamp(visualIntensity.value * (immersiveWallpaperVideoLoadShedding.value ? 0.78 : 1), 0.2, 1),
+)
+const immersiveWallpaperStatusLabel = computed(() => {
+  if (immersiveWallpaperError.value) {
+    return immersiveWallpaperError.value
+  }
+
+  if (immersiveWallpaperVideoLoadShedding.value) {
+    return '视频原画播放中，已降低其他视觉负载'
+  }
+
+  if (immersiveWallpaperNotice.value) {
+    return immersiveWallpaperNotice.value
+  }
+
+  if (!hasImmersiveWallpaper.value) {
+    return '未导入壁纸'
+  }
+
+  const mediaLabel = immersiveWallpaperIsVideo.value ? '视频壁纸' : '图片壁纸'
+  return immersiveWallpaperEnabled.value ? `${mediaLabel}已融入舞台` : `${mediaLabel}已隐藏`
+})
+const immersiveWallpaperMediaSrc = computed(() => {
+  const path = normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value)
+  if (!path || !immersiveWallpaperEnabled.value) {
+    return ''
+  }
+
+  return safeConvertFileSrc(path)
+})
+const immersiveWallpaperStyle = computed(() => {
+  const path = normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value)
+  if (!path || !immersiveWallpaperEnabled.value) {
+    return {}
+  }
+
+  const blur = immersiveWallpaperBlurPx.value
+  const soften = immersiveWallpaperBlurAmount.value
+  const scale = immersiveWallpaperIsVideo.value ? 1.006 + soften * 0.018 : 1.018 + blur * 0.006
+  const style: Record<string, string> = {
+    '--immersive-wallpaper-opacity': normalizeUnitSetting(immersiveWallpaperOpacity.value, 0.34).toFixed(3),
+    '--immersive-wallpaper-blur': `${blur}px`,
+    '--immersive-wallpaper-scale': scale.toFixed(4),
+    '--immersive-wallpaper-video-soften': soften.toFixed(3),
+  }
+
+  if (!immersiveWallpaperIsVideo.value) {
+    style['--immersive-wallpaper-image'] = cssBackgroundImageUrl(safeConvertFileSrc(path))
+  }
+
+  return style
+})
 const immersiveFreeCameraView = computed<ImmersiveFreeCameraView>(() => ({
   active: immersiveFreeCameraActive.value,
   locked: immersiveFreeCameraLocked.value || immersiveFreeCameraResetting.value,
@@ -2321,6 +2424,9 @@ let suppressMiniEdgeMoveUntil = 0
 let neteaseQrPollTimer: number | null = null
 let kugouQrPollTimer: number | null = null
 let immersiveSearchRequestSerial = 0
+let immersiveWallpaperQualityTimer: number | null = null
+let immersiveWallpaperLastVideoQuality: { total: number; dropped: number } | null = null
+let immersiveWallpaperRecoverSamples = 0
 
 onMounted(async () => {
   restoreSettings()
@@ -2366,6 +2472,7 @@ onBeforeUnmount(() => {
   clearOnlinePlaybackPrefetchTimer()
   clearOnlineStallRecoveryTimer()
   clearImmersiveContentPrepTimer()
+  stopImmersiveWallpaperVideoQualityMonitor()
   clearImmersiveStageMomentum()
   clearImmersiveFreeCamera()
   stopVisualClock()
@@ -2380,6 +2487,30 @@ watch(volume, () => {
 
 watch(playerError, () => {
   playerErrorDetailOpen.value = false
+})
+
+watch(immersiveWallpaperVideoOptimizationActive, (active) => {
+  if (!active) {
+    stopImmersiveWallpaperVideoQualityMonitor()
+    resetImmersiveWallpaperVideoPerformanceState()
+    return
+  }
+
+  void nextTick(() => {
+    startImmersiveWallpaperVideoQualityMonitor()
+  })
+})
+
+watch(immersiveWallpaperMediaSrc, () => {
+  stopImmersiveWallpaperVideoQualityMonitor()
+  resetImmersiveWallpaperVideoPerformanceState()
+  if (!immersiveWallpaperVideoOptimizationActive.value) {
+    return
+  }
+
+  void nextTick(() => {
+    startImmersiveWallpaperVideoQualityMonitor()
+  })
 })
 
 watch(
@@ -2404,6 +2535,11 @@ watch(
     lyricStageVertical,
     lyricStageDistance,
     lyricStageSideOpacity,
+    immersiveWallpaperPath,
+    immersiveWallpaperMediaType,
+    immersiveWallpaperEnabled,
+    immersiveWallpaperOpacity,
+    immersiveWallpaperBlur,
     lyricOffsetMs,
   ],
   saveSettings,
@@ -2581,6 +2717,11 @@ function restoreSettings() {
       lyricStageVertical?: number
       lyricStageDistance?: number
       lyricStageSideOpacity?: number
+      immersiveWallpaperPath?: string
+      immersiveWallpaperMediaType?: string
+      immersiveWallpaperEnabled?: boolean
+      immersiveWallpaperOpacity?: number
+      immersiveWallpaperBlur?: number
       lyricOffsetMs?: number
     }
 
@@ -2634,6 +2775,11 @@ function restoreSettings() {
     lyricStageVertical.value = normalizeUnitSetting(saved.lyricStageVertical, lyricDefaults.vertical)
     lyricStageDistance.value = normalizeUnitSetting(saved.lyricStageDistance, LYRIC_STAGE_DISTANCE_DEFAULT)
     lyricStageSideOpacity.value = normalizeUnitSetting(saved.lyricStageSideOpacity, lyricDefaults.sideOpacity)
+    immersiveWallpaperPath.value = normalizeImmersiveWallpaperPath(saved.immersiveWallpaperPath)
+    immersiveWallpaperMediaType.value = normalizeImmersiveWallpaperMediaType(saved.immersiveWallpaperMediaType)
+    immersiveWallpaperEnabled.value = Boolean(saved.immersiveWallpaperEnabled && immersiveWallpaperPath.value)
+    immersiveWallpaperOpacity.value = normalizeUnitSetting(saved.immersiveWallpaperOpacity, 0.34)
+    immersiveWallpaperBlur.value = normalizeUnitSetting(saved.immersiveWallpaperBlur, 0.12)
     if (typeof saved.lyricOffsetMs === 'number') {
       lyricOffsetMs.value = clamp(Math.round(saved.lyricOffsetMs), -2000, 2000)
     }
@@ -2785,6 +2931,11 @@ function saveSettings() {
         lyricStageSideOpacity.value,
         LYRIC_STAGE_PRESET_DEFAULTS.projection.sideOpacity,
       ),
+      immersiveWallpaperPath: normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value),
+      immersiveWallpaperMediaType: normalizeImmersiveWallpaperMediaType(immersiveWallpaperMediaType.value),
+      immersiveWallpaperEnabled: immersiveWallpaperEnabled.value && Boolean(normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value)),
+      immersiveWallpaperOpacity: normalizeUnitSetting(immersiveWallpaperOpacity.value, 0.34),
+      immersiveWallpaperBlur: normalizeUnitSetting(immersiveWallpaperBlur.value, 0.12),
       lyricOffsetMs: clamp(Math.round(lyricOffsetMs.value), -2000, 2000),
     }),
   )
@@ -3394,6 +3545,110 @@ function safeConvertFileSrc(path: string) {
   }
 }
 
+function cssBackgroundImageUrl(value: string) {
+  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\n\r]/g, '')
+  return `url("${escaped}")`
+}
+
+function normalizeImmersiveWallpaperPath(value?: string | null) {
+  const path = value?.trim() ?? ''
+  if (!path || /^(https?|data|javascript|blob):/i.test(path)) {
+    return ''
+  }
+
+  return path
+}
+
+function normalizeImmersiveWallpaperMediaType(value?: string | null): ImmersiveWallpaperMediaType {
+  return value === 'video' ? 'video' : 'image'
+}
+
+function wallpaperFileNameFromPath(path: string) {
+  return path.split(/[\\/]/).pop() || '本机壁纸'
+}
+
+function preloadImmersiveWallpaper(path: string, mediaType: ImmersiveWallpaperMediaType) {
+  return mediaType === 'video'
+    ? preloadImmersiveVideoWallpaper(path)
+    : preloadImmersiveImageWallpaper(path)
+}
+
+function preloadImmersiveImageWallpaper(path: string) {
+  return new Promise<void>((resolve, reject) => {
+    const image = new Image()
+    let settled = false
+    const timer = window.setTimeout(() => {
+      if (settled) {
+        return
+      }
+      settled = true
+      reject(new Error('图片加载超时'))
+    }, 8000)
+
+    image.onload = () => {
+      if (settled) {
+        return
+      }
+      settled = true
+      window.clearTimeout(timer)
+      resolve()
+    }
+    image.onerror = () => {
+      if (settled) {
+        return
+      }
+      settled = true
+      window.clearTimeout(timer)
+      reject(new Error('无法读取所选图片'))
+    }
+    image.decoding = 'async'
+    image.src = safeConvertFileSrc(path)
+  })
+}
+
+function preloadImmersiveVideoWallpaper(path: string) {
+  return new Promise<void>((resolve, reject) => {
+    const video = document.createElement('video')
+    let settled = false
+    const timer = window.setTimeout(() => {
+      if (settled) {
+        return
+      }
+      settled = true
+      video.removeAttribute('src')
+      video.load()
+      reject(new Error('视频加载超时'))
+    }, 10000)
+
+    video.onloadedmetadata = () => {
+      if (settled) {
+        return
+      }
+      settled = true
+      window.clearTimeout(timer)
+      video.removeAttribute('src')
+      video.load()
+      resolve()
+    }
+    video.onerror = () => {
+      if (settled) {
+        return
+      }
+      settled = true
+      window.clearTimeout(timer)
+      video.removeAttribute('src')
+      video.load()
+      reject(new Error('无法读取所选视频'))
+    }
+    video.muted = true
+    video.loop = true
+    video.playsInline = true
+    video.preload = 'metadata'
+    video.src = safeConvertFileSrc(path)
+    video.load()
+  })
+}
+
 function normalizeCoverImgUrl(value?: string | null) {
   const url = value?.trim() ?? ''
   if (!url) {
@@ -3624,6 +3879,206 @@ async function chooseMusicStorageDirectory() {
 function clearMusicStorageDirectory() {
   musicStorageDir.value = ''
   playerStatus.value = '已改为使用歌曲原始位置。'
+  saveSettings()
+}
+
+async function chooseImmersiveWallpaperMedia(mediaType: ImmersiveWallpaperMediaType) {
+  immersiveWallpaperError.value = ''
+  immersiveWallpaperNotice.value = ''
+  const isVideo = mediaType === 'video'
+
+  try {
+    const selected = await open({
+      multiple: false,
+      title: isVideo ? '选择沉浸模式视频壁纸' : '选择沉浸模式图片壁纸',
+      filters: [
+        {
+          name: isVideo ? '视频文件' : '图片文件',
+          extensions: isVideo ? IMMERSIVE_WALLPAPER_VIDEO_EXTENSIONS : IMMERSIVE_WALLPAPER_IMAGE_EXTENSIONS,
+        },
+      ],
+    })
+    const [selectedPath] = normalizeSelectedPaths(selected)
+    const path = normalizeImmersiveWallpaperPath(selectedPath)
+    if (!path) {
+      return
+    }
+
+    immersiveWallpaperNotice.value = isVideo ? '正在载入视频壁纸...' : '正在载入图片壁纸...'
+    await preloadImmersiveWallpaper(path, mediaType)
+    stopImmersiveWallpaperVideoQualityMonitor()
+    resetImmersiveWallpaperVideoPerformanceState()
+    immersiveWallpaperPath.value = path
+    immersiveWallpaperMediaType.value = mediaType
+    immersiveWallpaperEnabled.value = true
+    immersiveWallpaperError.value = ''
+    immersiveWallpaperNotice.value = `已导入${isVideo ? '视频' : '图片'}：${wallpaperFileNameFromPath(path)}`
+    saveSettings()
+  } catch (err) {
+    immersiveWallpaperNotice.value = ''
+    immersiveWallpaperError.value = `壁纸导入失败：${String(err)}`
+  }
+}
+
+async function chooseImmersiveWallpaper() {
+  await chooseImmersiveWallpaperMedia('image')
+}
+
+async function chooseImmersiveVideoWallpaper() {
+  await chooseImmersiveWallpaperMedia('video')
+}
+
+function handleImmersiveWallpaperVideoReady() {
+  const video = immersiveWallpaperVideoRef.value
+  if (!video || !immersiveWallpaperVideoOptimizationActive.value) {
+    return
+  }
+
+  video.muted = true
+  video.loop = true
+  if (video.paused) {
+    void video.play().catch(() => {
+      // Autoplay is best-effort; the error handler will surface unsupported media cases.
+    })
+  }
+  startImmersiveWallpaperVideoQualityMonitor()
+}
+
+function handleImmersiveWallpaperVideoError() {
+  if (!immersiveWallpaperIsVideo.value || !immersiveWallpaperVisible.value) {
+    return
+  }
+
+  stopImmersiveWallpaperVideoQualityMonitor()
+  resetImmersiveWallpaperVideoPerformanceState()
+  immersiveWallpaperNotice.value = ''
+  immersiveWallpaperError.value = '视频壁纸播放失败，请更换为 WebView 支持的本机视频。'
+}
+
+function readImmersiveWallpaperVideoQuality(video: HTMLVideoElement) {
+  if (typeof video.getVideoPlaybackQuality === 'function') {
+    const quality = video.getVideoPlaybackQuality()
+    return {
+      total: Math.max(0, quality.totalVideoFrames),
+      dropped: Math.max(0, quality.droppedVideoFrames),
+    }
+  }
+
+  const legacyVideo = video as HTMLVideoElement & {
+    webkitDecodedFrameCount?: number
+    webkitDroppedFrameCount?: number
+  }
+  if (
+    typeof legacyVideo.webkitDecodedFrameCount === 'number' &&
+    typeof legacyVideo.webkitDroppedFrameCount === 'number'
+  ) {
+    return {
+      total: Math.max(0, legacyVideo.webkitDecodedFrameCount),
+      dropped: Math.max(0, legacyVideo.webkitDroppedFrameCount),
+    }
+  }
+
+  return null
+}
+
+function resetImmersiveWallpaperVideoPerformanceState() {
+  immersiveWallpaperPerformanceMode.value = 'normal'
+  immersiveWallpaperDropRatio.value = 0
+  immersiveWallpaperRecoverSamples = 0
+  immersiveWallpaperLastVideoQuality = null
+}
+
+function stopImmersiveWallpaperVideoQualityMonitor() {
+  if (immersiveWallpaperQualityTimer !== null) {
+    window.clearInterval(immersiveWallpaperQualityTimer)
+    immersiveWallpaperQualityTimer = null
+  }
+  immersiveWallpaperLastVideoQuality = null
+  immersiveWallpaperRecoverSamples = 0
+}
+
+function sampleImmersiveWallpaperVideoQuality() {
+  const video = immersiveWallpaperVideoRef.value
+  if (!video || !immersiveWallpaperVideoOptimizationActive.value || video.paused || video.readyState < 2) {
+    return
+  }
+
+  const quality = readImmersiveWallpaperVideoQuality(video)
+  if (!quality) {
+    return
+  }
+
+  const previous = immersiveWallpaperLastVideoQuality
+  immersiveWallpaperLastVideoQuality = quality
+  if (!previous) {
+    return
+  }
+
+  const totalDelta = quality.total - previous.total
+  const droppedDelta = quality.dropped - previous.dropped
+  if (totalDelta < IMMERSIVE_WALLPAPER_DROP_SAMPLE_MIN_FRAMES || droppedDelta < 0) {
+    return
+  }
+
+  const dropRatio = clamp(droppedDelta / totalDelta, 0, 1)
+  immersiveWallpaperDropRatio.value = dropRatio
+  if (dropRatio >= IMMERSIVE_WALLPAPER_DROP_RATIO_LIGHT) {
+    immersiveWallpaperPerformanceMode.value = 'light'
+    immersiveWallpaperRecoverSamples = 0
+    return
+  }
+
+  if (immersiveWallpaperPerformanceMode.value !== 'light') {
+    return
+  }
+
+  if (dropRatio <= IMMERSIVE_WALLPAPER_DROP_RATIO_RECOVER) {
+    immersiveWallpaperRecoverSamples += 1
+    if (immersiveWallpaperRecoverSamples >= IMMERSIVE_WALLPAPER_RECOVER_SAMPLE_COUNT) {
+      immersiveWallpaperPerformanceMode.value = 'normal'
+      immersiveWallpaperRecoverSamples = 0
+    }
+    return
+  }
+
+  immersiveWallpaperRecoverSamples = 0
+}
+
+function startImmersiveWallpaperVideoQualityMonitor() {
+  const video = immersiveWallpaperVideoRef.value
+  if (!video || !immersiveWallpaperVideoOptimizationActive.value) {
+    return
+  }
+
+  stopImmersiveWallpaperVideoQualityMonitor()
+  immersiveWallpaperLastVideoQuality = readImmersiveWallpaperVideoQuality(video)
+  immersiveWallpaperQualityTimer = window.setInterval(
+    sampleImmersiveWallpaperVideoQuality,
+    IMMERSIVE_WALLPAPER_QUALITY_SAMPLE_MS,
+  )
+}
+
+function setImmersiveWallpaperEnabled(nextEnabled: boolean) {
+  immersiveWallpaperError.value = ''
+  if (!hasImmersiveWallpaper.value) {
+    if (nextEnabled) {
+      void chooseImmersiveWallpaper()
+    }
+    return
+  }
+
+  immersiveWallpaperEnabled.value = nextEnabled
+  immersiveWallpaperNotice.value = nextEnabled ? '已显示壁纸' : '已隐藏壁纸'
+}
+
+function clearImmersiveWallpaper() {
+  stopImmersiveWallpaperVideoQualityMonitor()
+  resetImmersiveWallpaperVideoPerformanceState()
+  immersiveWallpaperPath.value = ''
+  immersiveWallpaperMediaType.value = 'image'
+  immersiveWallpaperEnabled.value = false
+  immersiveWallpaperError.value = ''
+  immersiveWallpaperNotice.value = '已移除壁纸'
   saveSettings()
 }
 
@@ -10462,9 +10917,31 @@ function clamp(value: number, min: number, max: number) {
         @wheel="handleImmersiveSceneWheel"
         @dblclick="resetImmersiveStageView"
       >
+        <div
+          v-if="immersiveStableVideoWallpaperActive"
+          class="music-immersive-wallpaper is-video is-stable-video"
+          :style="immersiveWallpaperStyle"
+          aria-hidden="true"
+        >
+          <video
+            ref="immersiveWallpaperVideoRef"
+            class="music-immersive-wallpaper-video"
+            :src="immersiveWallpaperMediaSrc"
+            autoplay
+            muted
+            loop
+            playsinline
+            preload="auto"
+            @loadeddata="handleImmersiveWallpaperVideoReady"
+            @playing="handleImmersiveWallpaperVideoReady"
+            @pause="stopImmersiveWallpaperVideoQualityMonitor"
+            @error="handleImmersiveWallpaperVideoError"
+          />
+        </div>
         <div class="music-immersive-stage" :style="immersiveStageStyle">
-          <div class="music-immersive-stage-backdrop" aria-hidden="true" />
+          <div v-if="!immersiveStableVideoWallpaperActive" class="music-immersive-stage-backdrop" aria-hidden="true" />
           <MusicVisualizerCanvas
+            v-if="!immersiveStableVideoWallpaperActive"
             :frequency-data="visualFrequencyData"
             :energy="visualEnergyFrame"
             :playing="playing"
@@ -10472,10 +10949,16 @@ function clamp(value: number, min: number, max: number) {
             :spectrum-style="canvasSpectrumStyle"
             :line-style="canvasLineStyle"
             :ripple-style="canvasRippleStyle"
-            :intensity="visualIntensity"
+            :intensity="effectiveVisualIntensity"
             :reduced-motion="visualReducedMotion"
             :theme="resolvedImmersiveTheme"
             :disable-foreground="canvasForegroundDisabled"
+          />
+          <div
+            v-if="immersiveWallpaperVisible && !immersiveWallpaperIsVideo"
+            class="music-immersive-wallpaper"
+            :style="immersiveWallpaperStyle"
+            aria-hidden="true"
           />
           <MusicWebglStarfield
             v-if="webglStarfieldActive"
@@ -10487,7 +10970,7 @@ function clamp(value: number, min: number, max: number) {
             :spectrum-style="visualSpectrumStyle"
             :line-style="visualLineStyle"
             :ripple-style="visualRippleStyle"
-            :intensity="visualIntensity"
+            :intensity="effectiveVisualIntensity"
             :reduced-motion="visualReducedMotion"
             :stage-tuning="visualStageTuning"
             :theme="resolvedImmersiveTheme"
@@ -11062,6 +11545,74 @@ function clamp(value: number, min: number, max: number) {
                 <small>{{ option.description }}</small>
               </span>
             </button>
+          </div>
+        </div>
+
+        <div
+          class="music-immersive-panel-section music-immersive-wallpaper-card"
+          :class="{ 'has-wallpaper': hasImmersiveWallpaper, error: Boolean(immersiveWallpaperError) }"
+        >
+          <div class="music-immersive-wallpaper-card-heading">
+            <span>壁纸</span>
+            <small>{{ immersiveWallpaperStatusLabel }}</small>
+          </div>
+          <div class="music-immersive-wallpaper-preview" aria-hidden="true">
+            <div
+              v-if="immersiveWallpaperVisible && !immersiveWallpaperIsVideo"
+              class="music-immersive-wallpaper-preview-image"
+              :style="immersiveWallpaperStyle"
+            />
+            <span v-else-if="immersiveWallpaperVisible && immersiveWallpaperIsVideo">视频循环</span>
+            <span v-else>{{ hasImmersiveWallpaper ? '已隐藏' : '未导入' }}</span>
+          </div>
+          <strong v-if="hasImmersiveWallpaper" class="music-immersive-wallpaper-name">
+            {{ immersiveWallpaperMediaTypeLabel }} · {{ immersiveWallpaperFileName }}
+          </strong>
+          <div class="music-immersive-wallpaper-actions">
+            <button type="button" @click="chooseImmersiveWallpaper">
+              {{ hasImmersiveWallpaper && !immersiveWallpaperIsVideo ? '换图片' : '导入图片' }}
+            </button>
+            <button type="button" @click="chooseImmersiveVideoWallpaper">
+              {{ hasImmersiveWallpaper && immersiveWallpaperIsVideo ? '换视频' : '导入视频' }}
+            </button>
+            <button
+              type="button"
+              :disabled="!hasImmersiveWallpaper"
+              @click="setImmersiveWallpaperEnabled(!immersiveWallpaperEnabled)"
+            >
+              {{ immersiveWallpaperEnabled ? '隐藏' : '显示' }}
+            </button>
+            <button type="button" :disabled="!hasImmersiveWallpaper" @click="clearImmersiveWallpaper">
+              移除
+            </button>
+          </div>
+          <div class="music-immersive-wallpaper-controls">
+            <label class="music-immersive-range music-wallpaper-range">
+              <span>强度</span>
+              <input
+                v-model.number="immersiveWallpaperOpacity"
+                type="range"
+                min="0.12"
+                max="0.72"
+                step="0.01"
+                :disabled="!hasImmersiveWallpaper"
+                aria-label="沉浸壁纸强度"
+              />
+              <output>{{ immersiveWallpaperOpacityLabel }}</output>
+            </label>
+            <label class="music-immersive-range music-wallpaper-range">
+              <span>柔化</span>
+              <input
+                v-model.number="immersiveWallpaperBlur"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                :disabled="!hasImmersiveWallpaper"
+                aria-label="沉浸壁纸柔化"
+              />
+              <output>{{ immersiveWallpaperBlurLabel }}</output>
+            </label>
           </div>
         </div>
 

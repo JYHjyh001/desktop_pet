@@ -1709,6 +1709,7 @@ button:disabled {
 .music-immersive-stage {
   position: absolute;
   inset: -7vh -6vw;
+  z-index: 1;
   overflow: hidden;
   transform:
     translate3d(0, 0, var(--immersive-stage-z))
@@ -1739,6 +1740,77 @@ button:disabled {
     linear-gradient(115deg, transparent, rgba(255, 255, 255, 0.035) 42%, transparent 68%);
   opacity: var(--immersive-stage-glow);
   mix-blend-mode: screen;
+}
+
+.music-immersive-wallpaper {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: paint;
+  opacity: var(--immersive-wallpaper-opacity, 0.34);
+  background-image: var(--immersive-wallpaper-image);
+  background-position: center;
+  background-size: cover;
+  filter:
+    blur(var(--immersive-wallpaper-blur, 0px))
+    saturate(1.08)
+    brightness(0.84)
+    contrast(1.04);
+  transform: translate3d(0, 0, -120px) scale(var(--immersive-wallpaper-scale, 1.02));
+  transform-origin: 50% 50%;
+  will-change: opacity, transform;
+}
+
+.music-immersive-wallpaper.is-video {
+  background-image: none;
+  background-color: rgba(3, 8, 19, 0.42);
+  filter: none;
+}
+
+.music-immersive-wallpaper.is-stable-video {
+  inset: 0;
+  z-index: 0;
+  transform: none;
+  transform-style: flat;
+  will-change: opacity;
+  contain: layout paint size;
+}
+
+.music-immersive-wallpaper-video {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  pointer-events: none;
+}
+
+.music-immersive-wallpaper-video::-webkit-media-controls,
+.music-immersive-wallpaper-video::-webkit-media-controls-enclosure,
+.music-immersive-wallpaper-video::-webkit-media-controls-panel {
+  display: none !important;
+}
+
+.music-immersive-wallpaper::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 48%, transparent 0 32%, rgba(3, 8, 19, 0.28) 72%),
+    linear-gradient(180deg, rgba(5, 11, 23, 0.52), rgba(5, 11, 23, 0.06) 42%, rgba(5, 11, 23, 0.58)),
+    linear-gradient(90deg, rgba(5, 11, 23, 0.46), transparent 42%, rgba(5, 11, 23, 0.42));
+}
+
+.music-immersive-wallpaper.is-video::after {
+  background:
+    radial-gradient(circle at 50% 48%, transparent 0 34%, rgba(3, 8, 19, 0.24) 72%),
+    linear-gradient(180deg, rgba(5, 11, 23, 0.5), rgba(5, 11, 23, 0.04) 42%, rgba(5, 11, 23, 0.58)),
+    linear-gradient(90deg, rgba(5, 11, 23, 0.42), transparent 42%, rgba(5, 11, 23, 0.4));
+  opacity: calc(0.78 + var(--immersive-wallpaper-video-soften, 0.12) * 0.2);
 }
 
 .music-visualizer-canvas,
@@ -3548,6 +3620,167 @@ button:disabled {
   width: 100%;
 }
 
+.music-immersive-wallpaper-card {
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid color-mix(in srgb, var(--immersive-accent) 20%, transparent);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.07), transparent 66%),
+    rgba(255, 255, 255, 0.045);
+}
+
+.music-immersive-wallpaper-card.error {
+  border-color: color-mix(in srgb, var(--immersive-warning-color) 40%, transparent);
+  background:
+    linear-gradient(135deg, rgba(255, 185, 96, 0.12), transparent 66%),
+    rgba(255, 185, 96, 0.06);
+}
+
+.music-immersive-wallpaper-card-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 42px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.music-immersive-wallpaper-card-heading span,
+.music-immersive-wallpaper-card-heading small,
+.music-immersive-wallpaper-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-immersive-wallpaper-card-heading span {
+  color: var(--immersive-text-muted);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.music-immersive-wallpaper-card-heading small {
+  color: var(--immersive-status-text);
+  font-size: 10px;
+  font-weight: 950;
+  text-align: right;
+}
+
+.music-immersive-wallpaper-card.error .music-immersive-wallpaper-card-heading small {
+  color: var(--immersive-warning-color);
+}
+
+.music-immersive-wallpaper-preview {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 62px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--immersive-accent) 22%, transparent);
+  border-radius: 10px;
+  color: var(--immersive-text-subtle);
+  background:
+    radial-gradient(circle at 30% 20%, color-mix(in srgb, var(--immersive-accent) 16%, transparent), transparent 42%),
+    rgba(255, 255, 255, 0.055);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.music-immersive-wallpaper-preview::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(115deg, rgba(255, 255, 255, 0.12), transparent 36%),
+    linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.18));
+  pointer-events: none;
+}
+
+.music-immersive-wallpaper-preview-image {
+  position: absolute;
+  inset: -8px;
+  background-image: var(--immersive-wallpaper-image);
+  background-position: center;
+  background-size: cover;
+  opacity: max(var(--immersive-wallpaper-opacity, 0.34), 0.24);
+  filter:
+    blur(calc(var(--immersive-wallpaper-blur, 0px) * 0.55))
+    saturate(1.08)
+    brightness(0.88);
+  transform: scale(1.04);
+}
+
+.music-immersive-wallpaper-name {
+  color: var(--immersive-text-strong);
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.music-immersive-wallpaper-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.music-immersive-wallpaper-actions button {
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 7px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 9px;
+  color: var(--immersive-text-strong);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-immersive-wallpaper-actions button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.music-immersive-wallpaper-actions button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.music-immersive-wallpaper-controls {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.music-wallpaper-range {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 46px;
+  gap: 8px;
+}
+
+.music-wallpaper-range span,
+.music-wallpaper-range output {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-wallpaper-range output {
+  color: var(--immersive-status-text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 950;
+  text-align: right;
+}
+
+.music-wallpaper-range input:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
 .music-immersive-theme-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4215,6 +4448,7 @@ button:disabled {
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-panel-heading span,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-panel-section > span,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-stage-parameter-card-heading span,
+:is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-wallpaper-card-heading span,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-range,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-check,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-options label,
@@ -4234,7 +4468,8 @@ button:disabled {
 }
 
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-stage-parameter-card,
-:is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-lyric-stage-panel {
+:is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-lyric-stage-panel,
+:is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-wallpaper-card {
   border-color: var(--immersive-panel-border);
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--immersive-accent) 10%, transparent), transparent 68%),
@@ -4253,6 +4488,7 @@ button:disabled {
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-visual-layer-grid button,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-theme-grid button,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-stage-tuning-actions button,
+:is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-wallpaper-actions button,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-main-controls button,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-quality-trigger,
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-quality-options button,
@@ -4336,7 +4572,8 @@ button:disabled {
 }
 
 .music-immersive.is-stage-galaxy .music-stage-parameter-card,
-.music-immersive.is-stage-galaxy .music-lyric-stage-panel {
+.music-immersive.is-stage-galaxy .music-lyric-stage-panel,
+.music-immersive.is-stage-galaxy .music-immersive-wallpaper-card {
   border-color: color-mix(in srgb, var(--immersive-accent) 24%, transparent);
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--immersive-accent) 10%, transparent), transparent 64%),
@@ -4367,7 +4604,9 @@ button:disabled {
 }
 
 :is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-stage-parameter-card-heading small,
-:is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-stage-tuning-range output {
+:is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-stage-tuning-range output,
+:is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-immersive-wallpaper-card-heading small,
+:is(.theme-cinema, .theme-galaxy, .theme-neon, .theme-sunset, .theme-midnight) .music-wallpaper-range output {
   color: var(--immersive-status-text);
 }
 
@@ -4513,6 +4752,14 @@ button:disabled {
 
   .music-lyric-stage-range {
     grid-template-columns: 34px minmax(0, 1fr) 52px;
+  }
+
+  .music-wallpaper-range {
+    grid-template-columns: 34px minmax(0, 1fr) 42px;
+  }
+
+  .music-immersive-wallpaper-preview {
+    min-height: 54px;
   }
 
   .music-immersive-panel {
@@ -12172,6 +12419,76 @@ button:disabled {
   box-shadow: inset 0 0 100px rgba(88, 59, 30, 0.38);
 }
 
+.theme-animal-island .music-immersive-wallpaper {
+  filter:
+    blur(var(--immersive-wallpaper-blur, 0px))
+    saturate(1.03)
+    brightness(0.9)
+    contrast(1.02);
+}
+
+.theme-animal-island .music-immersive-wallpaper.is-video {
+  filter: none;
+}
+
+.theme-animal-island .music-immersive-wallpaper::after {
+  background:
+    radial-gradient(circle at 50% 48%, transparent 0 34%, rgba(69, 48, 29, 0.22) 74%),
+    linear-gradient(180deg, rgba(69, 48, 29, 0.42), rgba(69, 48, 29, 0.04) 42%, rgba(69, 48, 29, 0.5)),
+    linear-gradient(90deg, rgba(69, 48, 29, 0.34), transparent 44%, rgba(69, 48, 29, 0.32));
+}
+
+.theme-animal-island .music-immersive-wallpaper.is-video::after {
+  opacity: calc(0.76 + var(--immersive-wallpaper-video-soften, 0.12) * 0.2);
+}
+
+.theme-animal-island .music-immersive-wallpaper-card {
+  border-color: rgba(226, 189, 126, 0.68);
+  background:
+    radial-gradient(circle at 16% 0%, rgba(255, 231, 173, 0.2), transparent 42%),
+    rgba(255, 248, 233, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 5px 0 rgba(97, 67, 37, 0.1);
+}
+
+.theme-animal-island .music-immersive-wallpaper-card.error {
+  border-color: rgba(221, 118, 76, 0.54);
+  background:
+    radial-gradient(circle at 16% 0%, rgba(255, 195, 139, 0.24), transparent 44%),
+    rgba(255, 232, 210, 0.18);
+}
+
+.theme-animal-island .music-immersive-wallpaper-card-heading span,
+.theme-animal-island .music-immersive-wallpaper-card-heading small,
+.theme-animal-island .music-immersive-wallpaper-name,
+.theme-animal-island .music-wallpaper-range output {
+  color: var(--immersive-text-strong);
+}
+
+.theme-animal-island .music-immersive-wallpaper-card.error .music-immersive-wallpaper-card-heading small {
+  color: #ffd0b5;
+}
+
+.theme-animal-island .music-immersive-wallpaper-preview {
+  border-color: rgba(226, 189, 126, 0.74);
+  color: var(--immersive-text-muted);
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 231, 173, 0.2), transparent 42%),
+    rgba(255, 248, 233, 0.18);
+}
+
+.theme-animal-island .music-immersive-wallpaper-actions button {
+  border-color: rgba(226, 189, 126, 0.58);
+  color: var(--immersive-text-strong);
+  background: rgba(255, 248, 233, 0.2);
+}
+
+.theme-animal-island .music-immersive-wallpaper-actions button:hover:not(:disabled) {
+  border-color: rgba(255, 231, 173, 0.86);
+  background: rgba(255, 248, 233, 0.32);
+}
+
 .theme-animal-island .music-immersive.is-stage-dj .music-immersive-vignette {
   background:
     linear-gradient(180deg, rgba(54, 45, 27, 0.28), rgba(54, 45, 27, 0.02) 34%, rgba(54, 45, 27, 0.34)),
@@ -12382,7 +12699,8 @@ button:disabled {
 }
 
 .theme-animal-island .music-immersive.is-stage-galaxy .music-stage-parameter-card,
-.theme-animal-island .music-immersive.is-stage-galaxy .music-lyric-stage-panel {
+.theme-animal-island .music-immersive.is-stage-galaxy .music-lyric-stage-panel,
+.theme-animal-island .music-immersive.is-stage-galaxy .music-immersive-wallpaper-card {
   border-color: rgba(239, 207, 136, 0.44);
   background:
     radial-gradient(circle at 12% 18%, rgba(255, 231, 173, 0.12), transparent 42%),
