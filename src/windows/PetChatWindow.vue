@@ -1255,22 +1255,6 @@ function defaultMusicIntentReply(action: MusicActionType) {
   return '好，我帮你放点合适的音乐。'
 }
 
-function musicChatIntent(
-  action: MusicActionType,
-  reply: string,
-  options: Pick<MusicActionRequest, 'tags' | 'query' | 'volumeDelta'> = {},
-): MusicChatIntent {
-  return {
-    action: {
-      type: 'music_action',
-      action,
-      source: 'pet_chat',
-      ...options,
-    },
-    reply,
-  }
-}
-
 async function executeMusicChatIntent(intent: MusicChatIntent) {
   try {
     await invoke('show_music_player')

@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
 import { emit as emitEvent, listen } from '@tauri-apps/api/event'
 import { currentMonitor, getCurrentWindow, primaryMonitor, type Monitor } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import MusicVisualizerCanvas from '../components/MusicVisualizerCanvas.vue'
-import MusicWebglStarfield from '../components/MusicWebglStarfield.vue'
 import {
   useMusicAudioAnalyzer,
   type MusicEnergyFrame,
@@ -26,6 +25,8 @@ import type {
   MusicVisualStagePreset,
   PetDrawerConfig,
 } from '../types/app'
+
+const MusicWebglStarfield = defineAsyncComponent(() => import('../components/MusicWebglStarfield.vue'))
 
 type RepeatMode = 'none' | 'one' | 'all'
 type MusicLibraryView = 'all' | 'favorites' | 'recent' | 'queue'
@@ -210,22 +211,6 @@ interface MusicPlaylist {
 interface MusicTagPresetGroup {
   id: string
   title: string
-  tags: string[]
-}
-
-interface ScenePlaylistOption {
-  id: string
-  title: string
-  description: string
-  source: MusicRecommendationSource
-  tags: string[]
-}
-
-interface AiRecommendationOption {
-  id: string
-  title: string
-  description: string
-  source: MusicRecommendationSource
   tags: string[]
 }
 
@@ -1292,7 +1277,6 @@ const clearButtonLabel = computed(() =>
 const clearButtonDisabled = computed(() =>
   activeLibraryView.value === 'queue' ? !hasQueue.value : !hasTracks.value,
 )
-const favoriteTrackCount = computed(() => tracks.value.filter((track) => track.favorite).length)
 const playlistTrackPickerTarget = computed(
   () =>
     customPlaylists.value.find((playlist) => playlist.id === playlistTrackPickerPlaylistId.value) ??
@@ -1356,87 +1340,6 @@ const leftKugouRecommendedPlaylistStatusLabel = computed(() => {
   return kugouRecommendedPlaylists.value.length > 0
     ? `${kugouRecommendedPlaylists.value.length} 个推荐`
     : '未读取推荐'
-})
-const taggedTrackCount = computed(
-  () => tracks.value.filter((track) => normalizeTrackTags(track.tags).length > 0).length,
-)
-const scenePlaylistOptions: ScenePlaylistOption[] = [
-  {
-    id: 'ai',
-    title: 'AI 推荐',
-    description: '根据喜欢、最近播放和标签挑一组歌',
-    source: 'smart',
-    tags: [],
-  },
-  {
-    id: 'quiet',
-    title: '安静陪伴',
-    description: '适合低打扰陪伴和聊天背景',
-    source: 'tags',
-    tags: ['安静', '治愈', '慢歌', '聊天'],
-  },
-  {
-    id: 'focus',
-    title: '学习专注',
-    description: '优先纯音乐、学习、工作和中速歌曲',
-    source: 'tags',
-    tags: ['学习', '工作', '纯音乐', '中速', '安静'],
-  },
-  {
-    id: 'sleep',
-    title: '睡前放松',
-    description: '适合睡前放松、安静和慢歌',
-    source: 'tags',
-    tags: ['睡觉', '安静', '治愈', '慢歌', '纯音乐'],
-  },
-  {
-    id: 'healing',
-    title: '心情治愈',
-    description: '难过、孤独或疲惫时的温和推荐',
-    source: 'tags',
-    tags: ['治愈', '难过', '孤独', '安静', '慢歌'],
-  },
-  {
-    id: 'energy',
-    title: '元气满满',
-    description: '开心、热血、运动和快节奏歌曲',
-    source: 'tags',
-    tags: ['开心', '热血', '运动', '快歌'],
-  },
-]
-const aiRecommendationOptions: AiRecommendationOption[] = [
-  {
-    id: 'tags',
-    title: '按标签推荐',
-    description: '优先使用情绪、场景和节奏标签',
-    source: 'tags',
-    tags: [],
-  },
-  {
-    id: 'favorites',
-    title: '按喜欢推荐',
-    description: '从已收藏歌曲里挑选',
-    source: 'favorites',
-    tags: [],
-  },
-  {
-    id: 'recent',
-    title: '按最近播放',
-    description: '延续最近听过的歌曲',
-    source: 'recent',
-    tags: [],
-  },
-]
-const aiRecommendationSummary = computed(() => {
-  if (taggedTrackCount.value > 0) {
-    return `已准备 ${taggedTrackCount.value} 首带标签歌曲，可直接按标签推荐。`
-  }
-
-  if (favoriteTrackCount.value > 0) {
-    return `已准备 ${favoriteTrackCount.value} 首喜欢的歌曲，可作为后续 AI 推荐基础。`
-  }
-
-  return '添加收藏或标签后，可作为后续 AI 推荐基础。'
 })
 const neteaseLoggedIn = computed(() => Boolean(neteaseLoginStatus.value?.loggedIn))
 const neteaseProfile = computed(() => neteaseLoginStatus.value?.profile ?? null)
@@ -1842,18 +1745,12 @@ const repeatModeIcon = computed(() => {
 
   return '→'
 })
-const visualModeLabel = computed(
-  () => visualModeOptions.find((option) => option.value === visualMode.value)?.label ?? '韵律',
-)
 const visualStagePresetOption = computed(
   () => stagePresetOptions.find((option) => option.value === visualStagePreset.value) ?? defaultVisualStagePresetOption,
 )
 const visualStagePresetLabel = computed(() => visualStagePresetOption.value.label)
 const visualStagePresetDetail = computed(
   () => `${visualStagePresetOption.value.kicker} · ${visualStagePresetOption.value.metrics.join(' · ')}`,
-)
-const visualSpectrumStyleLabel = computed(
-  () => spectrumStyleOptions.find((option) => option.value === visualSpectrumStyle.value)?.label ?? '竖条',
 )
 const webglStarfieldActive = computed(
   () => immersiveMode.value && !webglStarfieldUnavailable.value,
@@ -1868,12 +1765,6 @@ const canvasRippleStyle = computed<MusicRippleStyle>(() =>
   webglStarfieldActive.value ? 'none' : visualRippleStyle.value,
 )
 const canvasForegroundDisabled = computed(() => webglStarfieldActive.value)
-const visualLineStyleLabel = computed(
-  () => lineStyleOptions.find((option) => option.value === visualLineStyle.value)?.label ?? '柔波',
-)
-const visualRippleStyleLabel = computed(
-  () => rippleStyleOptions.find((option) => option.value === visualRippleStyle.value)?.label ?? '圆环',
-)
 const beatMapMatchesCurrentTrack = computed(
   () => Boolean(currentTrack.value && beatMap.value?.trackId === currentTrack.value.id),
 )
@@ -6397,7 +6288,7 @@ function syncPlaybackQueue() {
 
 function syncCustomPlaylists() {
   let changed = false
-  customPlaylists.value = customPlaylists.value.map((playlist) => {
+  const nextPlaylists = customPlaylists.value.map((playlist) => {
     const trackIds = normalizePlaylistTrackIds(playlist.trackIds)
     if (trackIds.join('\n') !== playlist.trackIds.join('\n')) {
       changed = true
@@ -6410,6 +6301,9 @@ function syncCustomPlaylists() {
 
     return playlist
   })
+  if (changed) {
+    customPlaylists.value = nextPlaylists
+  }
 
   if (
     activeCustomPlaylistId.value &&
@@ -6972,37 +6866,6 @@ function trackMatchesSearch(track: MusicTrack, query: string) {
     .split(/\s+/)
     .filter(Boolean)
     .every((keyword) => searchableText.includes(keyword))
-}
-
-function scenePlaylistTrackCount(option: ScenePlaylistOption) {
-  return recommendationTracks(option.source, option.tags).length
-}
-
-function scenePlaylistDescription(option: ScenePlaylistOption) {
-  const count = scenePlaylistTrackCount(option)
-  if (count > 0) {
-    const tagLabel = option.tags.length > 0 ? option.tags.join(' / ') : '喜欢 / 最近 / 标签'
-    return `${count} 首可播 · ${tagLabel}`
-  }
-
-  return option.tags.length > 0 ? `需要标签：${option.tags.join(' / ')}` : option.description
-}
-
-function aiRecommendationTrackCount(option: AiRecommendationOption) {
-  return recommendationTracks(option.source, option.tags).length
-}
-
-function aiRecommendationDescription(option: AiRecommendationOption) {
-  const count = aiRecommendationTrackCount(option)
-  return count > 0 ? `${option.description} · ${count} 首可选` : option.description
-}
-
-async function playScenePlaylist(option: ScenePlaylistOption) {
-  await playRecommendedTracks(recommendationTracks(option.source, option.tags), option.title)
-}
-
-async function playAiRecommendation(option: AiRecommendationOption) {
-  await playRecommendedTracks(recommendationTracks(option.source, option.tags), option.title)
 }
 
 async function playRecommendedTracks(trackList: MusicTrack[], label: string) {

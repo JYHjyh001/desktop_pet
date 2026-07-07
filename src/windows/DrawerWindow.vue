@@ -2493,19 +2493,6 @@ async function openIconSourceFile() {
   })
 }
 
-async function openImageFile() {
-  return open({
-    multiple: false,
-    directory: false,
-    filters: [
-      {
-        name: '图片',
-        extensions: imageFileExtensions,
-      },
-    ],
-  })
-}
-
 async function openPetAnimationFile() {
   return open({
     multiple: false,

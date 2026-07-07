@@ -1,450 +1,288 @@
-# PetDrawer 桌面宠物快捷入口抽屉
-
-PetDrawer 是一个基于 Tauri v2 + Vue 3 + TypeScript + Rust 的桌面宠物快捷入口启动器。
-
-## 已实现的第一版能力
-
-1. 启动后创建 `pet` 宠物窗口：透明、无边框、置顶、不显示在任务栏。
-2. 宠物支持点击、拖动和右键菜单；右键菜单使用独立 `pet-menu` 窗口，避免被宠物窗口裁剪。
-3. 点击宠物显示或隐藏 `drawer` 软件抽屉窗口。
-4. 右键菜单中可以选择“对话”，打开独立 `pet-chat` 窗口和宠物聊天。
-5. 抽屉窗口支持添加、编辑、删除、搜索，并按分类和入口类型组合筛选本地软件、文件夹、文件和网站。
-6. 支持规范化宠物形象库，每个宠物可包含待机、选中、点击、拖动等多状态动画。
-7. 支持为每个软件设置自定义图标；选择 exe 路径后会自动尝试提取软件图标，也可以手动选择图标。
-8. 文件夹和网站快捷入口有独立默认图标。
-9. 支持在每个软件卡片中单独勾选是否以管理员身份启动。
-10. 软件、文件夹、文件和网站快捷入口保存到 Tauri 应用数据目录的 `apps.json`。
-11. 宠物位置、自定义宠物形象、分类、快捷搜索、标签显示模式、界面主题、AI 接口、窗口置顶、开机自启和自动常用设置保存到应用数据目录的 `config.json`。
-12. 打开快捷入口时，前端只传 `app_id`，Rust 后端读取 `apps.json` 后按类型启动软件、打开文件夹或打开网站。
-13. 系统托盘提供显示宠物、隐藏宠物、打开抽屉和退出程序。
-14. 抽屉右上角可以直接切换缩略显示和详细显示。
-15. 抽屉设置按入口管理、系统、外观、伴侣、AI 接口、记忆、窗口、更新、诊断和关于分类组织；外观页支持在默认样式与内置“动物岛”暖色主题之间切换，关于页展示内置默认表情包的开源许可。
-16. AI 接口设置支持配置 OpenAI 兼容、DeepSeek、Anthropic、Gemini、Ollama 和自定义服务，支持连接测试，并可将多组连接保存为本机配置标签，通过下拉列表切换而不堆叠占用空间。
-17. “伴侣”设置支持创建和切换多个角色，每位伴侣单独保存人设、附加规则、可选模型覆盖、语音标识、关系状态、绑定形象、聊天记录与长期记忆；模型覆盖只替换模型名称，连接仍来自“AI 接口”。
-18. 宠物对话回复支持打字机式逐字展示；可在“外观”设置或对话窗口右上角“对话设置”中切换为立即完整显示，长回复在逐字模式下会自动加速完成；聊天窗口内置项目本地 Twemoji 默认表情包，用户消息和宠物回复都会用本地 SVG 渲染支持的表情，并可在“伴侣”设置中控制 AI 主动使用表情的频率；使用 DeepSeek 聊天时会通过 JSON Output 获取 `reply`、`emotion` 和 `emoji`，再由本地设置最终决定是否显示表情；如果 DeepSeek JSON Output 偶发返回空内容或无效结构，应用会自动降级为普通聊天请求重试；当前伴侣的本地记忆可在设置中查看、添加、编辑、删除、导入、导出或清理。
-19. 每位伴侣拥有独立好感度状态；好感度系统默认关闭，开启后会用“规则 + AI 评分”的混合方式根据对话更新好感度、关系阶段、心情、信任度和亲密度，并写入本机关系变化日志。
-20. 对话窗口中的 AI 回复会显示当前角色头像；右键头像可以查看当前状态、查看关系变化记录、手动设置好感度、重置好感度或开启/关闭好感度系统。
-21. 微信 ClawBot 通道代码保留，但当前版本暂时停用；默认不显示微信入口、不启动 Bridge，也不会向微信发送消息。
-22. 可以在设置中控制是否开机自启，以及是否启用自动加入“常用”。
-23. 启用自动加入“常用”后，最近 7 天内打开 2 次及以上的快捷入口会自动加入“常用”，自动加入的快捷入口超过 7 天未打开会自动移出。
+# PetDrawer
 
-## 普通用户下载和使用步骤
+<p align="center">
+  <strong>桌面宠物、快捷入口、AI 伴侣、翻译和音乐播放器的一体化 Windows 桌面工具。</strong>
+</p>
 
-普通用户只需要下载已经打包好的安装包或 exe 文件，不需要安装 Node.js、npm、Rust、Cargo 或 Microsoft C++ Build Tools。
+<p align="center">
+  <a href="#中文">中文</a> · <a href="#english">English</a>
+</p>
 
-### 下载程序
+<p align="center">
+  <img alt="Tauri" src="https://img.shields.io/badge/Tauri-v2-24C8DB?logo=tauri&logoColor=white">
+  <img alt="Vue" src="https://img.shields.io/badge/Vue-3-42b883?logo=vue.js&logoColor=white">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript&logoColor=white">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-2021-b7410e?logo=rust&logoColor=white">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-blue">
+</p>
 
-1. 从发布者提供的下载链接中下载最新版 PetDrawer。
-2. 优先下载安装包文件，文件名通常类似：
+---
 
-```txt
-PetDrawer_0.2.10_x64-setup.exe
-```
+## 中文
 
-3. 如果发布者提供的是免安装版本，文件名通常类似：
+PetDrawer 是一个基于 **Tauri v2 + Vue 3 + TypeScript + Rust** 的桌面宠物工具。它把桌宠、快捷入口抽屉、AI 伴侣、本机记忆、划选翻译、音乐播放器、在线音乐和 Codex 状态提醒整合到一个轻量桌面应用里。
 
-```txt
-pet_drawer.exe
-```
-
-4. 不要下载源码压缩包来直接运行。源码包通常包含 `src`、`src-tauri`、`package.json` 等文件，只适合开发者使用。
-
-### 安装版本使用步骤
-
-1. 双击 `PetDrawer_0.2.10_x64-setup.exe`。
-2. 如果 Windows 弹出安全提示，确认文件来自可信发布者后，选择“更多信息”，再选择“仍要运行”。
-3. 按安装向导完成安装。
-4. 安装完成后，从桌面快捷方式、开始菜单或安装目录启动 PetDrawer。
-5. 启动后，桌面上会出现一个宠物窗口。
-6. 点击宠物可以打开或隐藏快捷入口抽屉。
-7. 右键点击宠物可以打开宠物菜单，选择“对话”可以打开宠物聊天窗口。
-8. 通过系统托盘图标可以显示宠物、隐藏宠物、打开抽屉或退出程序。
+它的核心目标不是做一个单纯的启动器，而是做一个可以常驻桌面的个人工作与陪伴入口：点一下打开工具，右键呼出菜单，聊天时保留本机记忆，听歌时进入沉浸舞台，Codex 工作完成时由宠物给出低打扰提醒。
 
-### 免安装版本使用步骤
+### 亮点
 
-1. 将 `pet_drawer.exe` 放到一个固定目录，例如：
-
-```txt
-D:\Apps\PetDrawer\
-```
-
-2. 双击 `pet_drawer.exe` 启动程序。
-3. 不建议把 exe 放在临时目录、下载缓存目录或会被自动清理的目录中。
-4. 如果需要创建桌面快捷方式，右键 `pet_drawer.exe`，选择“发送到” -> “桌面快捷方式”。
-
-### 添加快捷入口
-
-1. 启动 PetDrawer 后，点击桌面宠物打开快捷入口抽屉。
-2. 点击“添加”，在弹窗顶部选择要添加的软件、文件夹或网站类型。
-3. 添加软件时选择本机已有的 `.exe` 程序；添加文件夹时选择本机文件夹；添加文件时选择本机文件；添加网站时填写网址。
-4. 填写名称、分类和标签；名称为空时会根据路径或网址自动生成。
-5. 保存后，快捷入口会显示在抽屉中。
-6. 点击文件入口会用系统默认程序打开文件；点击详细卡片里的“目录”会打开文件所在目录。
-7. 如果软件需要提权，在软件卡片中勾选“管理员启动”；后续启动时 Windows 会弹出 UAC 确认窗口。
-8. 后续点击卡片即可快速打开该软件、文件夹、文件或网站。
-
-### 接入微信 ClawBot（暂时停用）
-
-当前版本已暂时停用微信相关功能。程序会保留已有配置和代码，但不会显示微信设置入口、不会启动 ClawBot HTTP Bridge，也不会调用 OpenClaw 发送微信消息。下面步骤仅作为后续恢复功能时的参考。
-
-1. 先安装并配置 OpenClaw。
-2. 安装官方微信 ClawBot 插件：
-
-```txt
-npx -y @tencent-weixin/openclaw-weixin-cli install
-```
+- **桌宠即入口**：透明置顶宠物窗口，支持点击、拖动、右键菜单、托盘控制和多状态动画。
+- **快捷入口抽屉**：统一管理软件、文件夹、文件和网站，支持分类、标签、搜索、常用、管理员启动和高清 exe 图标提取。
+- **AI 伴侣系统**：支持多角色档案、人设、模型覆盖、本机长期记忆、短期摘要、好感度和打字机式回复。
+- **隐私优先**：AI Key、Base URL、聊天配置、快捷入口、本机路径、音乐库、宠物素材和平台凭据只保存到用户本机。
+- **独立翻译**：支持独立翻译窗口和划选翻译快捷键，选中文本和译文不写入聊天、记忆或历史记录。
+- **音乐播放器**：支持本机音乐导入、metadata、封面、歌词、标签、收藏、队列、迷你播放器和贴边自动隐藏。
+- **在线音乐接入**：支持网易云音乐和酷狗音乐的登录、歌单、搜索、歌词、临时在线播放、音质偏好和不可播放自动跳过。
+- **沉浸音乐舞台**：Canvas / WebGL 可视化、星河漫游、地面 DJ、WebGL 歌词、自由镜头、只看舞台、本机壁纸和多套沉浸主题。
+- **Codex 状态聚合**：聚合多个 Codex 任务状态，用宠物动作、角标和悬浮气泡显示等待、运行、完成或失败。
+- **双主题界面**：内置清爽默认主题和 `animal-island` 动物岛主题，主要窗口、弹窗、控件和状态提示均已适配。
 
-3. 按插件提示扫码登录微信。
-4. 打开 PetDrawer 设置 -> 微信，填写 OpenClaw 命令、ClawBot 通道、可选微信账号和目标会话。
-5. 点击“发送测试”确认 `openclaw message send` 可以把消息发到微信。
-6. 开启“同步用户消息”或“同步宠物回复”后，宠物聊天窗口会按设置把对应消息同步到微信。
-7. OpenClaw 命令、账号、目标会话和同步开关只保存在本机 `config.json`，不会提交到 GitHub 或 Release 附件。
-
-### 让微信 ClawBot 调用 PetDrawer AI（暂时停用）
+### 功能概览
 
-当前版本已暂时停用此功能。Bridge 代码保留，但应用启动时不会监听 HTTP 端口；前端本机模拟入口也不会显示。
+| 模块 | 能力 |
+| --- | --- |
+| 桌面宠物 | 透明窗口、置顶、拖动、右键菜单、托盘、动作绑定、多状态动画 |
+| 快捷入口 | 软件、文件夹、文件、网站、分类、标签、搜索、常用、管理员启动 |
+| 图标管理 | exe 自动提取、ico / lnk / exe 手动选择、默认文件夹/文件/网站图标 |
+| AI 伴侣 | 多角色、人设、全局规则、模型覆盖、表情、打字机回复、本机记忆 |
+| 好感度 | 可选启用、关系阶段、心情、信任度、亲密度、关系变化日志 |
+| 翻译 | 独立窗口、源/目标语言、直译/润色、划选翻译、PDF 剪贴板增强 |
+| 音乐 | 本机导入、metadata、封面、歌词、分类、标签、收藏、队列、迷你窗口 |
+| 在线音乐 | 网易云、酷狗、二维码登录、歌单、搜索、歌词、临时播放、音质切换 |
+| 沉浸模式 | WebGL 星河、地面 DJ、WebGL 歌词、自由镜头、舞台参数、壁纸 |
+| Codex | App Server 状态接入、多任务聚合、完成角标、低打扰悬浮提醒 |
 
-如果 OpenClaw / 微信 ClawBot 装在虚拟机或服务器上，而 PetDrawer 装在本机，可以启用 PetDrawer 的通用 HTTP Bridge，让 ClawBot 收到微信消息后调用本机 AI 接口。
+### 隐私与本机数据
 
-这个模式是当前项目实现类似 TheOne 微信聊天效果的推荐路线：微信负责收发消息，PetDrawer 负责当前伴侣的人设、记忆、好感度和 AI 回复。它不是把程序伪装成个人微信协议客户端，而是通过 OpenClaw / ClawBot 的消息通道把微信消息转进 PetDrawer。
-
-1. 打开 PetDrawer 设置 -> 微信。
-2. 在“通用 HTTP 接入”中开启“ClawBot HTTP Bridge”。
-3. 开启“微信陪伴模式”。开启后，Bridge 会把“这是微信好友单聊场景”的上下文传给 AI，让回复更短、更自然，更像微信里和熟人聊天。
-4. 推荐保持默认监听：
-
-```txt
-监听地址：127.0.0.1
-端口：18080
-路径：/clawbot/chat
-```
+PetDrawer 默认把个人数据当作本机运行时数据处理：
 
-5. 如果 OpenClaw 在远程服务器上，推荐从本机建立 SSH 反向隧道：
+- AI API Key、Base URL、模型配置和聊天规则只保存到本机 `config.json`。
+- 快捷入口、软件路径、文件夹路径、网站、打开历史和图标只保存到本机 `apps.json`、`icons/` 等目录。
+- 聊天记录、长期记忆、短期摘要和好感度记录保存在本机 `pet-memory.db`。
+- 本机音乐路径、分类、播放列表、导入资源、壁纸、宠物素材和平台凭据不写入源码或文档示例。
+- 在线音乐播放 URL、Cookie、token、设备标识和搜索结果只按功能需要在本机运行态或本机配置中处理。
+- 仓库不会提交 `.env*`、真实配置、密钥、token、证书、本机应用数据、打包缓存或用户导入资源。
 
-```powershell
-ssh -N -R 18080:127.0.0.1:18080 user@你的服务器IP
-```
+发布和修改前的隐私检查规则见 [docs/RELEASE_PRIVACY_CHECKLIST.md](docs/RELEASE_PRIVACY_CHECKLIST.md)。
 
-6. 此时服务器上的 ClawBot 可以调用：
+### 下载与安装
 
-```bash
-curl -X POST http://127.0.0.1:18080/clawbot/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message":"用户的微信消息","sender":"微信昵称","sessionId":"wechat-session"}'
-```
+普通用户建议直接下载 Release 中的安装包或 exe，不需要安装 Node.js、Rust 或开发工具链。
 
-7. PetDrawer 会返回：
+1. 打开项目的 [GitHub Releases](https://github.com/JYHjyh001/desktop_pet/releases)。
+2. 下载最新版本的安装包或免安装 exe。
+3. 双击运行 PetDrawer。
+4. 如果 Windows 弹出安全提示，请确认文件来源后选择继续运行。
+5. 启动后桌面会出现宠物窗口，点击宠物打开或隐藏快捷入口抽屉。
 
-```json
-{
-  "ok": true,
-  "reply": "当前伴侣的 AI 回复",
-  "message": "当前伴侣的 AI 回复",
-  "text": "当前伴侣的 AI 回复",
-  "source": "petdrawer-wechat-bridge",
-  "shouldReply": true,
-  "provider": "openai",
-  "model": "gpt-4o-mini"
-}
-```
+常见运行依赖：
 
-8. ClawBot 脚本收到返回值后，取 `reply`、`message` 或 `text` 任意一个字段，通过 OpenClaw 发回微信当前会话。
-9. 如果设置了 Bridge Token，请在请求中加入：
+- Windows 10 / Windows 11。
+- Microsoft Edge WebView2 Runtime。多数 Windows 10/11 环境已内置。
 
-```bash
--H "Authorization: Bearer 你的token"
-```
+### 快速使用
 
-10. 不建议把 Bridge 直接暴露到公网；跨机器调用优先使用 SSH 反向隧道、Tailscale、ZeroTier 或其他私有网络。
+1. 点击桌面宠物，打开快捷入口抽屉。
+2. 在抽屉中添加软件、文件夹、文件或网站。
+3. 在设置中配置主题、AI 接口、伴侣、记忆、窗口置顶和音乐偏好。
+4. 右键宠物可打开菜单，进入聊天、翻译、故事、音乐播放器等窗口。
+5. 在音乐窗口导入本机歌曲，或登录支持的平台读取歌单和歌词。
+6. 开启沉浸模式后，可使用 WebGL 舞台、歌词、壁纸和舞台参数。
 
-如果你暂时没有服务器运行 OpenClaw，也可以先把 PetDrawer 软件侧链路打通：
+### 开发运行
 
-1. 打开 PetDrawer 设置 -> 微信。
-2. 找到“通用 HTTP 接入”里的“本机模拟微信入站消息”。
-3. 填写模拟发送者、模拟会话 ID 和一条模拟微信消息。
-4. 点击“模拟入站并生成回复”。
-5. 如果看到“模拟回复”，说明 PetDrawer 已经能按微信陪伴模式调用当前伴侣并返回可发回微信的文本。
-6. 后续接入 OpenClaw / ClawBot 时，只需要把真实微信入站消息 POST 到同一个 Bridge 接口，再把返回的 `reply`、`message` 或 `text` 发回微信。
+开发环境建议使用 Windows。
 
-要让体验更像“朋友”，还需要在“伴侣”里把角色卡写得像真人聊天对象，而不是客服助手：
+准备：
 
-1. “人设”写清楚身份、关系和相处边界。
-2. “人格摘要”写成自然说话风格，例如短句、会接梗、少讲大道理。
-3. “对话场景”写明这是微信一对一聊天。
-4. “后置指令”加入：优先延续最近一轮，不要每次总结，不要频繁列清单。
-5. 开启“记忆”，让它记住称呼、偏好、重要事件和相处方式。
-6. 如果想让它更主动，可以在 ClawBot 或外部调度器里定时调用 Bridge，输入类似“现在是晚上十点，结合记忆生成一句自然晚安问候”，再把返回内容发到微信。
+- Node.js 和 npm。
+- Rust 工具链。
+- Microsoft C++ Build Tools。
+- Microsoft Edge WebView2 Runtime。
 
-### 更换宠物形象
-
-1. 打开快捷入口抽屉。
-2. 点击左上角“当前伴侣”区域中的“更换”。
-3. 选择已有宠物，或导入自己的宠物动画素材。
-4. 导入宠物时，至少需要选择一个待机动画素材。
-5. 支持的动画素材格式包括 `png`、`jpg`、`jpeg`、`webp`、`gif`、`ico`、`webm`、`mp4`；透明视频建议使用带 Alpha 通道的 `webm`。
-6. 本地导入的宠物可以在“更换宠物形象”窗口右侧点击“编辑动画”，替换名称或任一状态素材；可选动画也可移除并回退为待机动画。
-7. 本地导入的宠物可以点击“删除形象”删除。
-8. 内置默认凯蒂不能编辑或删除，避免覆盖程序内置资源或导致没有可用的默认宠物。
-
-### 数据保存位置
-
-PetDrawer 会把快捷入口列表、设置、图标和导入的宠物保存到系统应用数据目录中。卸载或移动程序前，如果需要保留数据，可以先备份 PetDrawer 的应用数据目录。
-
-保存的数据包括：
-
-```txt
-apps.json      软件、文件夹和网站快捷入口列表
-config.json    窗口位置、伴侣档案、当前伴侣、宠物形象、界面主题、开机自启和 AI 接口等设置
-pet-memory.db   按伴侣 ID 隔离的聊天记录、长期记忆、好感度状态和关系变化日志，使用 SQLite + FTS5
-pet-memory.json 旧版 JSON 记忆文件，首次升级后会自动迁移到 SQLite
-icons/         自定义软件图标
-pets/          导入的宠物形象
-```
-
-### 常见问题
-
-1. 如果双击后没有反应，先检查程序是否被杀毒软件拦截。
-2. 如果系统提示缺少 WebView2 Runtime，请安装 Microsoft Edge WebView2 Runtime 后再启动。Windows 10/11 通常已经自带。
-3. 如果 Windows 提示“已保护你的电脑”，确认文件来源可信后，点击“更多信息” -> “仍要运行”。
-4. 如果添加的软件无法启动，检查该软件路径是否仍然存在，或重新编辑软件路径。
-5. 如果文件夹无法打开，检查该文件夹是否仍然存在，并确认保存的路径指向文件夹而不是文件。
-6. 如果宠物或抽屉位置异常，可以退出程序后重新启动。
-7. 如果要彻底退出程序，请使用系统托盘菜单中的“退出”，不要只关闭抽屉窗口。
-
-## 开发运行步骤
-
-### 前置环境
-
-Windows 上运行 Tauri 需要先准备：
-
-1. Node.js 和 npm。
-2. Rust 工具链，安装后命令行中必须能执行 `cargo --version`。
-3. Microsoft C++ Build Tools，安装时选择“使用 C++ 的桌面开发”工作负载。
-4. Microsoft Edge WebView2 Runtime，Windows 10/11 通常已内置。
-
-如果运行 `npm run tauri:dev` 时出现：
-
-```txt
-failed to run 'cargo metadata' ... program not found
-```
-
-说明 Cargo 没有安装，或 `%USERPROFILE%\.cargo\bin` 没有加入 `PATH`。
-
-处理步骤：
-
-1. 打开 https://rustup.rs/ 下载并运行 `rustup-init.exe`。
-2. 安装选项选择默认配置，确保使用 MSVC toolchain。
-3. 安装完成后关闭当前 PowerShell，重新打开一个新的 PowerShell。
-4. 执行：
-
-```bash
-cargo --version
-rustc --version
-```
-
-5. 如果仍然找不到 `cargo`，把下面路径加入系统环境变量 `Path`：
-
-```txt
-%USERPROFILE%\.cargo\bin
-```
-
-### 启动项目
-
-1. 安装前端依赖：
+安装依赖：
 
 ```bash
 npm install
 ```
 
-2. 启动 Tauri 开发环境：
+启动 Tauri 开发环境：
 
 ```bash
 npm run tauri:dev
 ```
 
-项目会在启动前自动检查并创建 `src-tauri/icons/icon.ico`。脚本会优先使用 `../assets/icons/pet-drawer-icon.ico` 作为软件图标；如果该文件不存在，才会生成内置备用图标。如果你看到 `icons/icon.ico not found`，可以手动执行：
-
-```bash
-npm run create-icon
-npm run tauri:dev
-```
-
-3. 构建前端：
+前端构建：
 
 ```bash
 npm run build
 ```
 
-4. 打包桌面应用：
+打包桌面应用：
 
 ```bash
 npm run tauri:build
 ```
 
-检查更新功能会读取 GitHub Releases 最新正式版本：
+Windows 下完整重启桌宠 UI 时，请优先使用：
 
-```txt
-https://github.com/JYHjyh001/desktop_pet/releases/latest
+```bash
+npm run tauri:build
+src-tauri\target\release\pet_drawer.exe
 ```
 
-每次发布新版时，建议按下面步骤处理：
+不要把单独 `cargo build --release` 当作完整 UI 打包方式；它可能没有携带最新前端资源。
 
-1. 同步修改版本号：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`。
-2. 执行 `npm run tauri:build`。
-3. 在 GitHub 仓库创建新的 Release。
-4. Release tag 使用 `v版本号` 格式，例如 `v0.1.1`。
-5. 把打包生成的 `.exe` 文件上传到 Release 附件中。
-6. 发布正式 Release，不要勾选 prerelease。
+### 技术栈
 
-程序会请求 GitHub 最新正式 Release，比较本地版本和 Release tag，并优先选择 `.exe` 附件作为下载入口。
+- **Tauri v2**：桌面窗口、托盘、系统能力、Rust 后端命令。
+- **Vue 3**：前端窗口和交互界面。
+- **TypeScript**：前端类型和业务逻辑。
+- **Rust**：本机数据、窗口控制、启动器、音乐平台接入、AI 请求适配。
+- **SQLite + FTS5**：本机长期记忆和聊天记录检索。
+- **Three.js / WebGL**：沉浸音乐舞台和 3D 歌词。
 
-## 目录结构
+### 文档索引
 
-```txt
-src/
-  assets/pets/default/ 内置默认宠物动画
-  windows/
-    PetWindow.vue       宠物窗口
-    DrawerWindow.vue    快捷入口抽屉窗口
-    PetMenuWindow.vue   宠物右键菜单窗口
-    PetChatWindow.vue   宠物聊天窗口
-  components/           抽屉和宠物 UI 组件
-  stores/appStore.ts    快捷入口数据状态管理
-  types/app.ts          前端类型
-  utils/format.ts       文本格式化工具
-src-tauri/
-  src/app_data.rs       JSON 数据读写
-  src/ai_chat.rs        宠物聊天 AI 请求适配
-  src/ai_memory.rs      宠物本地记忆读写和检索
-  src/commands.rs       Tauri 命令
-  src/launcher.rs       软件、文件夹和网站打开逻辑
-  src/tray.rs           系统托盘
-  src/windowing.rs      宠物和抽屉窗口控制
+- 已完成能力：[docs/completed-features.md](docs/completed-features.md)
+- 未完成能力：[docs/unfinished-features.md](docs/unfinished-features.md)
+- 后续路线：[docs/next-development-plan.md](docs/next-development-plan.md)
+- 音乐需求：[docs/music-feature-requirements.md](docs/music-feature-requirements.md)
+- AI 宠物素材计划：[docs/ai-pet-material-generation-requirements.md](docs/ai-pet-material-generation-requirements.md)
+- Windows 图标提取说明：[docs/windows-executable-icon-extraction-method.md](docs/windows-executable-icon-extraction-method.md)
+- 版本记录：[docs/releases](docs/releases)
+
+### 项目状态
+
+当前项目仍在持续迭代。近期重点：
+
+- `hatch-pet` / Codex pet atlas 到 PetDrawer 的本机离线转换器。
+- Codex 状态聚合在真实连接模式下的回归验证。
+- 音乐播放状态与宠物动画联动。
+- 拆分超大的音乐窗口和后端音乐平台模块。
+
+---
+
+## English
+
+PetDrawer is a Windows desktop companion app built with **Tauri v2, Vue 3, TypeScript, and Rust**. It combines a desktop pet, an app launcher drawer, AI companions, local memory, selection translation, a music player, online music integrations, immersive WebGL stages, and Codex task status notifications.
+
+The goal is to make the desktop pet a useful everyday entry point: click it to open tools, right-click for actions, chat with local memory, listen to music in an immersive stage, and get low-interruption Codex completion cues from the pet.
+
+### Highlights
+
+- **Pet as the entry point**: transparent always-on-top pet window with dragging, right-click menu, tray control, action bindings, and multi-state animations.
+- **Launcher drawer**: manage apps, folders, files, and websites with categories, tags, search, favorites, admin launch, and high-resolution exe icon extraction.
+- **AI companion system**: multiple personas, prompts, model overrides, local long-term memory, short-term summaries, favorability, and typewriter replies.
+- **Privacy-first design**: API keys, base URLs, chat settings, launcher paths, local music, imported assets, and platform credentials are local user data.
+- **Translation tools**: standalone translator window plus global selection translation shortcut; selected text and translations are not saved into chat, memory, or history.
+- **Music player**: local import, metadata, covers, lyrics, tags, favorites, queue, mini player, and edge auto-hide.
+- **Online music**: NetEase Cloud Music and Kugou Music login, playlists, search, lyrics, temporary playback, quality preferences, and unavailable-track auto-skip.
+- **Immersive music stage**: Canvas/WebGL visualizers, galaxy stage, ground-DJ terrain, WebGL lyrics, free camera, stage-only mode, local wallpapers, and themes.
+- **Codex status aggregation**: aggregate multiple Codex task states and surface waiting/running/completed/failed states through pet actions, badges, and hover bubbles.
+- **Two built-in themes**: clean default theme and `animal-island`, both covering major windows, dialogs, controls, empty states, and status UI.
+
+### Feature Overview
+
+| Area | Features |
+| --- | --- |
+| Desktop pet | Transparent window, always-on-top mode, dragging, right-click menu, tray, action bindings, multi-state animations |
+| Launcher | Apps, folders, files, websites, categories, tags, search, favorites, admin launch |
+| Icons | exe extraction, ico / lnk / exe manual source, default icons for files/folders/websites |
+| AI companion | Personas, prompt rules, model override, emoji, typewriter reply, local memory |
+| Favorability | Optional relationship system with mood, trust, intimacy, and change logs |
+| Translation | Translator window, language selection, plain/polished mode, selection translation, PDF clipboard enhancement |
+| Music | Local import, metadata, covers, lyrics, categories, tags, favorites, queue, mini player |
+| Online music | NetEase, Kugou, QR login, playlists, search, lyrics, temporary playback, quality switching |
+| Immersive mode | WebGL galaxy, ground-DJ terrain, WebGL lyrics, free camera, stage tuning, wallpapers |
+| Codex | App Server status integration, multi-task aggregation, completion badge, hover notifications |
+
+### Privacy
+
+PetDrawer treats personal data as local runtime data:
+
+- AI API keys, base URLs, models, and chat rules are stored only in the local `config.json`.
+- Launcher entries, local paths, website entries, usage history, and icons are stored only in local app data.
+- Chat history, long-term memory, short-term summaries, and favorability logs are stored in local `pet-memory.db`.
+- Local music paths, imported assets, wallpapers, pet skins, playlists, and platform credentials are not written to source code or README examples.
+- Playback URLs, cookies, tokens, device identifiers, and search results are handled only as local runtime/config data when required.
+- The repository must not include `.env*`, real user config, secrets, tokens, certificates, app data, build cache, or imported user assets.
+
+See [docs/RELEASE_PRIVACY_CHECKLIST.md](docs/RELEASE_PRIVACY_CHECKLIST.md) for the release privacy checklist.
+
+### Download
+
+End users should download packaged builds from [GitHub Releases](https://github.com/JYHjyh001/desktop_pet/releases). Node.js, Rust, and build tools are only required for development.
+
+1. Download the latest installer or portable exe.
+2. Run PetDrawer.
+3. If Windows shows a security prompt, continue only after verifying the source.
+4. Click the desktop pet to open or hide the launcher drawer.
+
+Runtime requirement:
+
+- Windows 10 / Windows 11.
+- Microsoft Edge WebView2 Runtime, usually preinstalled on modern Windows.
+
+### Development
+
+Install dependencies:
+
+```bash
+npm install
 ```
 
-## 数据保存位置
+Run the Tauri dev app:
 
-程序会使用 Tauri 的应用数据目录，首次启动时自动创建：
-
-```txt
-PetDrawer/
-  apps.json
-  config.json
-  pet-memory.db
-  pet-memory.json
-  icons/
-  pets/
-    skins/
-      skin_xxx/
-        pet.json
-        idle.png
-        hover.webm
-        click.gif
-        dragging.png
+```bash
+npm run tauri:dev
 ```
 
-## 自定义宠物形象
+Build the frontend:
 
-项目内置默认宠物位于：
-
-```txt
-src/assets/pets/default/
-  pet.json
-  preview.svg    凯蒂展示图
-  idle.svg       待机：轻微呼吸并眨眼
-  hover.svg      选中：挥右手打招呼
-  click.svg      点击：开心微笑并冒爱心
-  dragging.svg   拖动：身体倾斜，裙摆、尾巴和小脚晃动
+```bash
+npm run build
 ```
 
-1. 更换宠物：打开快捷入口抽屉，左上角“当前伴侣”区域会显示当前角色和形象，点击“更换”。
-2. 搜索已有宠物：更换窗口会先读取应用数据目录下的 `pets/skins/`，并展示每个宠物的预览。
-3. 查看宠物信息：点击宠物卡片后，右侧会显示宠物名称、来源和待机/选中/点击/拖动动画配置。
-4. 选择宠物：点击预览卡片即可为当前伴侣切换形象，形象选择会写入本机配置和当前伴侣档案，重启后仍会保留。
-5. 导入宠物：在更换窗口下方“导入宠物”区域填写名称，并选择动画素材。
-6. 编辑宠物：选中本地导入的宠物后，点击右侧“编辑动画”；可以改名、替换任一动画，或移除选中/点击/拖动动画使该状态回退到待机动画。
-7. 删除宠物：选中本地导入的宠物后，点击右侧“删除形象”；如果删除的是当前正在使用的宠物，会自动切回内置默认凯蒂。
-8. 动画规范：`待机动画` 必填，`选中动画`、`点击动画`、`拖动动画` 可选；未设置的状态会自动使用待机动画。
-9. 支持格式：`png`、`jpg`、`jpeg`、`webp`、`gif`、`ico`、`webm`、`mp4`；透明视频建议使用带 Alpha 通道的 `webm`。
-10. 导入和编辑后的文件只会复制或更新到应用数据目录的 `pets/skins/<skin_id>/`，并保存到该目录的 `pet.json`。
-11. 上传 GitHub 时只需要提交项目内置的 `src/assets/pets/default/` 默认凯蒂；导入的其他宠物属于本机应用数据，不会随仓库上传。
+Package the desktop app:
 
-`pet.json` 示例：
-
-```json
-{
-  "id": "skin_1790000000000",
-  "name": "小猫助手",
-  "animations": {
-    "idle": "pets/skins/skin_1790000000000/idle.png",
-    "hover": "pets/skins/skin_1790000000000/hover.webm",
-    "click": "pets/skins/skin_1790000000000/click.gif",
-    "dragging": "pets/skins/skin_1790000000000/dragging.gif"
-  },
-  "createdAt": "1790000000"
-}
+```bash
+npm run tauri:build
 ```
 
-## 自定义软件图标
+For a full Windows UI rebuild and restart:
 
-1. 添加或编辑软件时，先在“软件路径”区域点击“选择”并选中 exe 文件。
-2. 程序会自动尝试从 exe 提取高清图标，并复制到应用数据目录。
-3. 如果自动提取失败，仍可在“软件图标”区域点击“选择图标”，手动选择图片、ico、exe 或 lnk。
-4. 选择后的图标资源会复制或提取到应用数据目录，后续不依赖原始文件路径。
+```bash
+npm run tauri:build
+src-tauri\target\release\pet_drawer.exe
+```
 
-## 抽屉设置
+Do not use a standalone `cargo build --release` as the full UI packaging flow; it may not include the latest frontend assets.
 
-1. 打开抽屉后，点击右上角“设置”。
-2. 抽屉右上角“设置”按钮旁边可以直接切换“缩略/详细”显示方式。
-3. 在“入口管理”中新增或删除分类；`全部`、`常用`、`其他` 为核心分类，会自动保留，文件夹和网站作为入口类型不再作为分类显示。
-4. 在“入口管理”中新增或删除快捷搜索按钮；这些按钮会显示在搜索框下方。
-5. 在“系统”中控制是否开机自启，以及是否根据最近打开频率自动加入“常用”。
-6. 在“外观”中切换“清爽默认”或“动物岛”主题，并设置聊天回复是逐字展示还是立即完整显示；保存后抽屉、聊天窗口和右键菜单统一应用，选择结果只写入本机 `config.json`。
-7. 在“伴侣”中添加角色档案，设置名称、人设、附加规则、可选模型覆盖、语音标识、关系状态和绑定形象，并可调整伴侣聊天的表情使用频率；通过“伴侣标签”列表选择角色即可切换，聊天、记忆和形象会一起更新。伴侣的模型覆盖仅覆盖模型名称，留空则沿用“AI 接口”的默认模型。
-8. 在“AI 接口”中配置服务商、Base URL、默认模型、API Key、所有伴侣共用的全局回复规则、温度和最大输出 Token，并点击“测试连接”确认接口可用；还可以把当前连接保存为配置标签，通过下拉列表选择活动连接，最多保留 20 个标签。若当前伴侣设置了模型覆盖，聊天仍使用这里的服务商、Base URL 和 API Key。活动连接与标签仅保存到本机 `config.json`，用于宠物聊天对话。
-9. 在“记忆”中控制是否从当前伴侣对话提取长期记忆，可调整最近原文轮数和短期记忆压缩触发轮数，查看、导入、导出、打开目录、删除或清空当前伴侣的长期记忆，并可单独清空其聊天记录。
-10. 在“窗口”中分别控制宠物窗口和抽屉窗口是否始终置顶。
-11. 在“更新”中查看当前版本，并检查发布者是否配置了新版下载入口。
-12. 在“诊断”中查看当前 exe 路径和本机数据目录。
-13. 在“关于”中查看内置默认表情包等开源许可。
+### Stack
 
-## 宠物对话
+- **Tauri v2** for desktop windows, tray, native capabilities, and Rust commands.
+- **Vue 3** for the frontend windows and interactions.
+- **TypeScript** for typed frontend logic.
+- **Rust** for local data, window control, launching, music integrations, and AI request adapters.
+- **SQLite + FTS5** for local memory and chat retrieval.
+- **Three.js / WebGL** for immersive music stages and 3D lyrics.
 
-1. 先打开抽屉设置，在“AI 接口”中启用宠物聊天 API。
-2. 选择服务商并填写 Base URL、模型和 API Key；Ollama 本地服务通常可以不填 API Key。
-3. 右键点击宠物，在弹出的菜单中选择“对话”。
-4. 在宠物聊天窗口中输入消息，按 Enter 或点击“发送”即可对话。
-5. 点击输入框旁的表情按钮，可以从项目内置 Twemoji 默认表情包插入常用表情；双方对话中支持的表情会使用本地 SVG 显示；AI 主动使用表情的频率可在“设置 > 伴侣”调整。DeepSeek 聊天会优先让模型返回 JSON 格式的 `reply`、`emotion` 和 `emoji`，应用本地再按表情频率设置保留、丢弃或补全表情；当 JSON Output 返回空 `content` 或无效 JSON 时，会自动去掉 JSON-only 约束并按普通聊天请求重试一次。
-6. 宠物回复默认以逐字打字机效果显示，长回复会自动加速直到完整展示；在“设置 > 外观”或对话窗口右上角“对话设置”关闭“逐字显示回复”后，后续回复会立即完整显示；开启旁白时，圆括号、【】和 *动作* 中的内容会以旁白样式显示。
-7. AI 回复左侧会显示当前角色头像；右键头像可以查看当前状态、关系变化记录，或手动开启/关闭好感度系统、设置好感度、重置为 0。
-8. 好感度系统默认关闭；开启后，每轮对话结束会先由本地规则处理短消息、重复表达、单次变化和每日正向上限，再调用当前 AI 连接做语义评分，最终更新当前伴侣独立的关系状态。
-9. 如果 AI 接口未启用或配置不完整，聊天窗口会提示先打开抽屉设置补全配置。
-10. 对话记录会保存在本机 `pet-memory.db` 并绑定到当前伴侣；切换角色后只加载该伴侣自己的历史，不会显示其他角色的对话。
-11. 如果启用了宠物记忆，对话时会尝试从自然交流中把值得长期记住的称呼、偏好、边界、习惯、目标、相处方式、共同经历和生活变化保存到当前伴侣的记忆范围。
-12. 如果旧版应用数据目录里存在 `pet-memory.json`，程序首次读取记忆时会自动迁移到默认伴侣的 SQLite 数据。
-13. 如果需要迁移或备份记忆，可以在抽屉设置的“记忆”页面导出 JSON；导入 JSON 只替换当前伴侣的长期记忆和聊天记录。
+### Documentation
 
-## 宠物记忆系统
+- Completed features: [docs/completed-features.md](docs/completed-features.md)
+- Unfinished features: [docs/unfinished-features.md](docs/unfinished-features.md)
+- Development plan: [docs/next-development-plan.md](docs/next-development-plan.md)
+- Music requirements: [docs/music-feature-requirements.md](docs/music-feature-requirements.md)
+- AI pet asset plan: [docs/ai-pet-material-generation-requirements.md](docs/ai-pet-material-generation-requirements.md)
+- Windows icon extraction: [docs/windows-executable-icon-extraction-method.md](docs/windows-executable-icon-extraction-method.md)
+- Release notes: [docs/releases](docs/releases)
 
-1. 打开抽屉设置，在“AI 接口”中配置并测试模型连接。
-2. 在“记忆”中启用宠物记忆。
-3. 用户对当前伴侣自然说出称呼、偏好、边界、习惯、目标、相处方式、共同经历或生活变化时，后端会把该伴侣最近对话作为理解上下文，调用当前模型提取结构化长期记忆；用户不需要固定说“记住”。
-4. 模型会重点判断最后一条用户消息中新增或强化的长期信息，最近对话仅用于理解指代、省略和延续话题，避免把普通寒暄或宠物自己的话误存为记忆。
-5. 如果模型没有返回有效记忆，程序会使用本地启发式规则兜底识别明确要求、称呼、偏好、陪伴边界、习惯、目标和重要生活变化等自然表达。
-6. 后续对话只会在当前伴侣的记忆范围内通过 SQLite FTS5 全文检索相关长期记忆，如果 FTS 查询没有结果，会回退到本地关键词打分。
-7. 检索结果会按重要度、更新时间和相关度排序，并把当前伴侣的人设、关系状态、相关长期记忆和最近对话拼接进系统提示词。回复规则要求模型保持当前角色，不混用其他伴侣的信息。
-8. 用户在对话中明确发送“清空长期记忆”“删除关于 xxx 的记忆”“忘掉这件事”等删除指令时，会从本机数据库物理删除对应长期记忆；普通询问或否定表达不会触发删除。
-9. “记忆”页面支持查看、手动添加、编辑、删除、清空、导入和导出当前伴侣的长期记忆；每条记忆包含类型、内容、重要度、标签、可信度和更新时间。
-10. 短期记忆压缩摘要默认开启，会保留最近 10 轮原文对话；更早的聊天内容达到触发轮数后会滚动压缩为一条特殊摘要记忆，与长期记忆和最近原文一起参与后续回复。
-11. 程序会跳过密码、Token、银行卡号、身份证号、精确住址和联系方式等敏感信息，避免把高敏感内容写入长期记忆。
-12. “打开目录”会直接打开系统应用数据目录，方便查看当前 `pet-memory.db` 所在位置。
-13. “导出记忆”会生成完整记忆 JSON，可能包含私人聊天、偏好、关系和事件信息，只适合用户自己备份或迁移。
-14. 伴侣档案、当前伴侣标识、模型覆盖、全局回复规则和 AI 连接配置只保存到系统应用数据目录的 `config.json`；按伴侣隔离的长期记忆、聊天记录、短期摘要、好感度状态和关系变化日志保存在 `pet-memory.db`，旧版 `pet-memory.json` 只用于首次迁移；`.gitignore` 已忽略这些本机配置、数据库与导出备份，避免本地数据被误传到仓库。
+### Roadmap
 
-## 自动常用规则
+Current focus:
 
-1. 快捷入口每次打开成功后，会记录一次打开时间。
-2. 可以在抽屉“设置” -> “系统”中启用或关闭自动加入“常用”。
-3. 启用后，最近 7 天内打开 2 次及以上的快捷入口，会自动进入“常用”分类。
-4. 自动进入“常用”的快捷入口，如果超过 7 天没有再次打开，会自动从“常用”分类移出。
-5. 手动勾选“设为常用”的快捷入口不会被自动移出。
+- Local converter from `hatch-pet` / Codex pet atlas outputs to PetDrawer pet skins.
+- Real-environment regression for Codex status aggregation.
+- Music playback state to pet animation linkage.
+- Splitting large music window and platform integration modules for maintainability.

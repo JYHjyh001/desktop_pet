@@ -31,5 +31,5 @@ Windows 下不要用 `cargo build`、`cargo build --release` 或 `src-tauri\targ
 原因：
 
 - `src-tauri\target\debug\pet_drawer.exe` 会打开黑色终端窗口。
-- 单独 `cargo build --release` 生成的 exe 可能仍访问 `127.0.0.1:1420` dev server，导致“拒绝连接”页面。
+- 单独 `cargo build --release` 生成的 exe 可能仍访问 `127.0.0.1:1421` dev server，导致“拒绝连接”页面。
 - `npm run tauri:build` 才会完整构建前端并由 Tauri 打包资源。

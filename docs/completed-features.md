@@ -1,91 +1,92 @@
 # 已完成功能记录
 
-本文档记录项目中已经完成并可作为后续维护参考的功能。用户本机路径、配置、密钥、导入资源和运行历史不得写入本文档。
+本文档按模块记录已经完成并可维护的能力。具体需求、阶段拆分和验收细节保留在对应 `*-requirements.md`、`docs/releases/` 和专项说明文档中。
 
-## 当前记录
+用户本机路径、AI API Key、Base URL、聊天配置、音乐文件、导入素材、平台凭据、Codex 会话内容和运行历史不得写入本文档。
 
-- [x] 桌面宠物与快捷入口抽屉基础功能。
-- [x] 软件、文件夹、文件和网站快捷入口管理。
-- [x] 本机应用数据目录保存快捷入口、配置、宠物素材和图标资源。
-- [x] 默认主题与 `animal-island` 主题基础适配。
-- [x] 音乐播放功能的阶段性实现记录见 `docs/music-feature-requirements.md`。
-- [x] 抽屉软件图标高清提取增强，支持 exe 自动提取和手动选择 exe、lnk、ico 图标来源。
-- [x] Windows exe 图标提取通用方法文档，见 `docs/windows-executable-icon-extraction-method.md`。
-- [x] 宠物 Codex 状态气泡独立窗口，支持宠物大小变化后的屏幕边界避让和主题适配，需求计划见 `docs/pet-bubble-window-requirements.md`。
-- [x] Codex 状态提醒改为悬浮触发：任务状态变化只保留宠物动作，不再主动弹出状态气泡、状态徽标或完成徽标，避免完成提醒与悬浮气泡重叠。
-- [x] Codex 全部任务完成后保持完成动画，直到用户将鼠标悬浮到宠物上；多任务完成时在宠物右下角显示轻量完成数量角标。
-- [x] Codex 多会话/多任务状态聚合，运行时维护脱敏任务表、聚合摘要、未读完成/失败/待处理计数、设置页最近任务列表和确认入口，需求计划见 `docs/codex-multi-session-completion-notification-requirements.md`。
-- [x] 宠物操作绑定可在设置中调整，支持单击、双击和右键分别绑定抽屉、Codex 完成优先、菜单、聊天、故事模式、音乐播放器或无操作，需求计划见 `docs/pet-action-bindings-requirements.md`。
-- [x] 独立翻译窗口：新增 `translator` 独立窗口、宠物右键菜单和抽屉入口，复用现有 AI 接口完成文本翻译，支持源/目标语言选择、直译/润色、交换语言、复制译文和双主题样式；翻译请求不走宠物聊天、记忆、好感度、故事或音乐链路，不保存翻译历史，需求计划见 `docs/translation-window-requirements.md`。
-- [x] 划选翻译快捷键：设置页新增可配置全局快捷键，默认 `Ctrl+Alt+T`，用户可改为 `F3` 等按键；桌宠窗口常驻注册快捷键，触发后在 Windows 上临时模拟复制当前选中文本，调用独立翻译链路，并用宠物气泡显示短译文或错误；选中文本和译文不写入聊天、记忆、好感度、故事、音乐或历史记录，需求计划见 `docs/translation-selection-shortcut-requirements.md`。
-- [x] 划选翻译完整译文查看：划选翻译气泡默认只显示短译文，鼠标悬停时在气泡内展开完整译文，长译文可在气泡内滚动；靠近屏幕边缘展开时会尽量保持当前鼠标点仍落在气泡内，避免因边界避让触发悬停/离开循环横跳；点击该气泡会打开独立翻译窗口并填入本次运行态的完整原文、完整译文和模型状态；不保存翻译历史，也不会打断 Codex 状态气泡。
-- [x] `animal-island` 主题对齐 `animal-island-ui` 最新 main 做渐进式增强，补齐主题 token、纸感卡片、胶囊控件、弹窗、音乐面板和宠物气泡样式，需求计划见 `docs/animal-island-theme-refresh-requirements.md`。
-- [x] 宠物动画状态模型扩展到多状态形象包，支持 `idle`、`hover`、`click`、`dragging`、左右拖动、打招呼、跳跃、等待、处理中、检查和失败状态的导入、编辑、预览与旧宠物包回退，后续计划见 `docs/next-development-plan.md`。
-- [x] 沉浸式音乐模式第一阶段：在现有音乐窗口中加入播放与分析分离的本机节奏图、Web Audio 旁路实时频谱、Canvas 沉浸可视化、本机同名歌词沉浸显示、视觉模式切换、强度和降低动态控制，并补齐默认主题与 `animal-island` 主题样式；后续计划见 `docs/music-immersive-mode-requirements.md`。
-- [x] 沉浸模式播放性能优化：参考 Mineradio 的播放阶段拆分方式，播放启动优先于歌词和辅助视觉准备；在线音源不再额外读取整首音频做离线节奏图，网易云和酷狗播放地址仅在运行态预取缓存以缩短切歌等待；在线音源出现长时间 `waiting/stalled` 时会受控刷新运行态播放链路并尝试从原进度继续。
-- [x] 沉浸歌词与在线播放稳定性优化：沉浸歌词根据当前句和上下句行数动态调整字号、间距和容器高度，避免三行以上歌词与上下句重叠；在线卡顿恢复改为只在播放进度未真实前进时刷新运行态链路，刷新后会验证播放进度是否真实推进，酷狗代理长时间无上游数据会主动报错并触发有限重试/自动跳过；切歌后旧恢复计时器不会影响新歌；沉浸左侧列表围绕当前歌曲展示上下最多 50 首，需求计划见 `docs/music-immersive-lyrics-playback-stability-requirements.md`。
-- [x] 沉浸模式独立主题与多主题样式：设置页新增沉浸模式主题偏好，支持跟随桌宠主题、清爽默认、动物岛、电影暗场、星河电台、霓虹频谱、暖色舞台和深夜睡眠；沉浸韵律面板可即时切换并保存偏好，普通音乐窗口继续跟随桌宠主题，进入沉浸模式后根节点、控制栏、歌词、播放列表、文字颜色/阴影/强调字重和 Canvas 可视化使用独立解析后的主题，需求计划见 `docs/music-immersive-theme-settings-requirements.md`。
-- [x] 沉浸模式实时可视化样式扩展：参考 Mineradio 的沉浸视觉方向，新增竖条、棱柱、星盘、星辰和丝带五种可切换 Canvas 实时频谱样式，并新增柔波、光束、扫描、星轨四种线条样式和圆环、水波、心跳、光晕四种波纹样式；星辰会呈现星云光晕、单点柔光、亮芯闪耀和节拍放射线，星轨会对节拍、低频和音量做更明显的亮度、大小、连线和外扩反馈；频谱、线条、波纹均可独立选择隐藏，样式与沉浸主题独立，切换主题时复用当前主题调色板，偏好只保存本机枚举值，需求计划见 `docs/music-immersive-spectrum-style-requirements.md`。
-- [x] 沉浸模式 WebGL 星辰可视化：星辰频谱优先按需加载 Three.js，并使用 `Points + ShaderMaterial` 绘制 GPU 粒子星带、闪烁星点和柔光层；WebGL 初始化失败或上下文丢失时自动回退原 Canvas 星辰，其他频谱、线条和波纹仍由现有 Canvas 层负责，需求计划见 `docs/music-webgl-starfield-visualizer-requirements.md`。
-- [x] 沉浸模式真 3D 可拖动舞台：沉浸模式禁用窗口拖动，背景和歌词区域拖动改为旋转沉浸舞台；WebGL 主视觉使用透视相机、3D 粒子星河、3D 频谱、3D 波纹、星轨和节拍光晕，拖动时相机轨道产生真实视差；歌词和主题背景保留轻量 3D 浮层，松手后带轻量惯性，双击可重置视角，控件层仍保持平面可点击，WebGL 不可用时回退 Canvas，需求计划见 `docs/music-immersive-3d-drag-stage-requirements.md`。
-- [x] 沉浸音乐自由镜头与歌词可读性优化：参考 Mineradio 新增运行态自由镜头，支持 `R` 开关/固定、鼠标转向、`W/A/S/D` 移动、`Shift` 加速、`Space/Ctrl` 升降、`Q/E` 侧滚、滚轮景深和 `K` 回正；歌词移除大面积矩形光效并增强默认主题与 `animal-island` 主题下的文字边缘清晰度，需求计划见 `docs/music-immersive-free-camera-lyrics-readability-requirements.md`。
-- [x] 沉浸歌词位置与视觉主题细化：参考 Mineradio 的舞台歌词视觉方向，沉浸歌词改为避开左右面板和底部控制栏的前景歌词带，新增边缘遮罩、唱词进度渐变、主题化光晕和空状态弱化；WebGL 3D 频谱、线条、波纹新增主题化线条色、波纹色和光晕色，默认主题、`animal-island` 主题和新增沉浸主题下视觉层更统一，需求计划见 `docs/music-immersive-lyrics-visual-theme-polish-requirements.md`。
-- [x] Mineradio 视觉控制参考下的主题与歌词呈现重设计：沉浸主题入口改为带色板、标题和说明的预设卡，歌词舞台新增主题化扫描线、柔光边界和更清晰的空/错/未播放状态；默认主题与 `animal-island` 主题均已检查，需求计划见 `docs/music-mineradio-visual-control-lyrics-theme-redesign-requirements.md`。
-- [x] Mineradio 式沉浸舞台视觉系统重做：沉浸面板从“频谱/线条/波纹”三组样式切换改为默认舞台、星河漫游、电影脉冲、长播 DJ 和纯歌词场五个整体舞台预设；WebGL 主视觉由舞台预设驱动，粒子层改为星尘、星云、舞台光带、节拍爆点和轨迹粒子，并保留旧设置兼容与 Canvas 回退映射，需求计划见 `docs/music-mineradio-stage-visual-system-rework-requirements.md`。
-- [x] 沉浸音乐舞台预设视觉身份区分：只保留“星河漫游”和“地面 DJ”两个舞台预设；星河漫游保留原高密星尘和星云粒子且不显示地面柱体，地面 DJ 使用自研 `InstancedMesh` 明亮柱体地形形成 EQ 柱阵；默认主题与 `animal-island` 主题均已检查，需求计划见 `docs/music-stage-preset-visual-identity-requirements.md`。
-- [x] 地面 DJ 圆形声音地形空间融合：参考 Sonic Topography 的连续地貌思路，地面 DJ 柱阵改为更密集且略微超出默认视野的圆形/环形声场布局，中心保留低矮柱体，默认相机和鼠标拖动旋转中心锚定在柱阵整体中心；WebGL 舞台接入实时或离线 `frequencyData`，按低频 Pulse、中高频 Snare 和高频 Spark 三组频段计算正向频谱通量，使用历史均值、标准差、自适应阈值和冷却窗口识别峰值回落后生成触发点，触发点再扩散成水波式波前；柱体反应强度按 Sonic Topography 的权重关系调整，低频、bass 和 Pulse 波峰更明显推动中心到近中圈高度，中频形成较宽的流动地形，高频只负责外圈尖峰和局部高光；近处柱体保持清晰实体，默认视野四角避免露出圆盘外背景空缺，并通过圆外网格缓冲避免圆盘边缘被方形采样范围截直，远处暗化和融入背景改由相机深度雾化决定，旋转视角后远处融合区域会随视野距离变化，并按不同沉浸主题混入对应深色背景色，保留少量深色柱体轮廓贴合视野外环境融合；柱体保持不透明并继续使用主题色。
-- [x] 沉浸舞台参数可调：参考 Sonic Topography 的 `motionSpeed`、`amplitude`、`terrainDensity` 和频谱通量触发器思路，并结合 Mineradio 的舞台控制面板方式，在沉浸韵律面板新增高度、响应、密度、波峰、触发和视距滑杆；参数保存为本机视觉设置，地面 DJ 可即时调整柱阵数量、柱体高度、运动响应、触发点扩散和默认镜头距离，星河漫游继续保持独立粒子舞台且不显示地面柱体；默认主题与 `animal-island` 主题控件样式可继承现有沉浸式面板，需求计划见 `docs/music-immersive-stage-parameter-controls-requirements.md`。
-- [x] 星河漫游舞台参数与地面 DJ 大范围调参：舞台参数改为按舞台分别保存，星河漫游显示星量、流速、纵深、星云、闪耀和视距，并把星量接入 WebGL 粒子几何重建，把流速、纵深、星云和闪耀接入星河 shader；地面 DJ 的高度、响应、密度、波峰、触发和视距调节范围扩大，密度上下限同步放宽但继续限制实例数；旧版单组舞台参数会作为地面 DJ 兼容回退，本机设置只保存视觉数值，需求计划见 `docs/music-immersive-stage-parameter-controls-requirements.md`。
-- [x] 星河漫游规则环形粒子自然化：星河 `stage` 和 `burst` 粒子不再按固定圆环重排，改为星云团和散射星尘位置随音乐轻微漂移，减少可见规律圆环。
-- [x] 沉浸模式只看舞台：沉浸模式新增眼睛图标“只看舞台/显示界面”隐藏功能，可一键隐藏标题、播放列表、韵律面板、底部控制栏和空状态，保留音乐视觉舞台与歌词舞台；右上角恢复图标在鼠标移入或键盘聚焦时显示，也可按 `Esc` 恢复完整界面；播放列表和韵律面板可通过各自卡片上的图标隐藏，隐藏后只保留贴边热区，鼠标靠近或键盘聚焦时小型图标卡片滑出用于恢复；默认主题与 `animal-island` 主题均已检查，需求计划见 `docs/music-immersive-stage-only-mode-requirements.md`。
-- [x] 沉浸模式顶部音乐搜索：参考 Mineradio 的顶部搜索与多平台聚合体验，新增贴顶自动隐藏搜索框、搜索框下方平台按钮、“全部 / 网易云 / 酷狗”平台选择和搜索结果下拉；支持关闭单个平台后组合搜索，点击搜索区域外会取消选中并收起；搜索结果复用现有网易云和酷狗临时在线播放链路，默认主题与 `animal-island` 主题均已检查；不保存搜索关键词、播放 URL、Cookie、token、本机歌曲路径或运行历史，需求计划见 `docs/music-immersive-search-requirements.md`。
-- [x] 沉浸模式本机壁纸导入：参考 Mineradio 的沉浸背景方向，新增本机图片和视频壁纸导入、显示/隐藏、移除、强度和柔化调节；图片壁纸以静态 CSS/GPU 合成层叠在 Canvas 背景上、WebGL 和歌词层下方，视频壁纸使用原生 video 稳定背景层静音循环播放，不再跟随音乐驱动的 3D 舞台 transform；视频壁纸不压缩、不转码、不降分辨率或码率，默认避开全屏 blur/filter，开启时停用舞台内 Canvas 背景绘制，掉帧时只临时降低 Canvas/WebGL 有效强度；默认主题与 `animal-island` 主题均已检查；只保存本机路径、媒体类型和视觉参数到用户本机设置，不复制、提交或上传图片/视频，不保存播放 URL、Cookie、token、音频数据或运行历史，需求计划见 `docs/music-immersive-wallpaper-requirements.md`。
-- [x] 沉浸模式隐藏卡片恢复入口：播放列表卡片和舞台/主题面板隐藏后，舞台根层会显示独立左右浮动恢复按钮，不再依赖已经折叠或窄屏隐藏的卡片内部按钮；窄屏下播放列表可作为覆盖面板重新打开，默认主题与 `animal-island` 主题均已检查。
-- [x] 沉浸音乐歌词舞台融合：参考 Mineradio 的歌词舞台、粒子视觉和电影镜头方向，只看舞台模式保留歌词舞台；后续已移除清晰前景、舞台投影、沉浸漂浮三种歌词舞台预设，以及景深、歌词光粒、镜头绑定和鼓点溢光调节，固定为单一歌词舞台表现，并保留倾角与溢光控制；偏好只保存为本机视觉数值，默认主题与 `animal-island` 主题均已检查，需求计划见 `docs/music-immersive-lyric-stage-integration-requirements.md`。
-- [x] 沉浸模式歌词参数可调：歌词舞台卡片保留字号、位置、远近、弱化滑杆和“重置歌词”，字号范围扩大到约 66% 到 138%，位置范围扩大到约上/下 260px，远近范围为约远/近 180px，并只保留约 96% 到 104% 的轻量空间缩放，避免和字号调节过于相似；后续已移除宽度和进度调节；参数即时生效和本机保存，刷新后可恢复；只保存视觉数值，不保存歌词文本、歌曲路径、播放 URL、平台 Cookie、token、音频数据或本机运行历史，默认主题与 `animal-island` 主题均已适配，需求计划见 `docs/music-immersive-lyrics-parameter-controls-requirements.md`。
-- [x] 沉浸歌词音乐融合响应：歌词舞台新增运行态音乐包络，把鼓点、持续能量、中高频空气感和歌词行进度拆成 `pulse`、`breath`、`air`、`phrase` 与 `focus` 五组响应；主歌词、进度线、光晕和投影不再直接吃瞬时音频值，而是通过 attack/release 平滑后轻柔联动，当前句换句时即时替换且不额外触发入场聚焦，降低动态时清零明显运动；默认主题与 `animal-island` 主题均已适配，不保存歌词文本、歌曲路径、播放 URL、Cookie、token 或音频数据，需求计划见 `docs/music-immersive-lyrics-music-coupling-requirements.md`。
-- [x] 星河漫游节奏驱动粒子速度：WebGL 星河新增运行态平滑节奏时钟，粒子漂移、星云流动和星尘闪烁速度会根据平滑后的 beat、bass 和 volume 变化，避免直接使用突变音频值造成抖动；该状态只存在于渲染循环，不保存歌曲路径、音频数据或歌词内容。
-- [x] 地面 DJ 圆盘半径接缝修复：柱阵频段和流动相位改为无接缝环形函数，不再使用非整数角度倍频或直线列坐标制造圆盘半径方向的明显高低差。
-- [x] 地面 DJ 波纹扩散速度音乐化：触发点生成时会根据平滑后的 beat、bass、mid、treble、volume、触发强度和触发参数记录扩散速度倍率，强鼓点和重低音波扩散更快，弱节奏波扩散更慢，并避免逐帧速度抖动。
-- [x] 地面 DJ 中心低频波纹调速：参考 Sonic Topography 的 Kick 响应分层方式，新增独立中心波 uniform，只把从舞台中心扩散的大片地面突起波基础速度试调到 `24.0`，不修改随机触发点、中频和高频波纹速度。
-- [x] 地面 DJ 中心波纹与随机低频波纹拆分：中心波固定从舞台中心扩散并使用 `24.0` 速度，且不占用普通随机波纹队列；随机低频 `pulse` 触发点保持原始 `3.05` 扩散速度、`0.34` 波面宽度和 `5.15` 拖尾参数，只由中心波触发 Kick 抬升，避免随机触发点被中心调速一起加快。
-- [x] 地面 DJ 中心 Kick 冲击抬升：参考 Sonic Topography 的 Kick envelope 思路，中心波触发时新增独立中心冲击包络，shader 只在中心和内圈叠加短促高度、高光和暖色变化，让鼓点命中时中间柱子先突然抬起，再接续现有扩散波纹。
-- [x] 地面 DJ 参数说明文档：新增 `docs/music-dj-terrain-parameter-reference.md`，按中心大片波、随机触发点波纹、频谱触发器、Kick 冲击、慢速地形流动、柱阵布局、高度合成、波纹可见性、镜头和主题材质分类记录当前参数、修改口径和验证步骤，方便后续准确描述要调整的视觉效果。
-- [x] 地面 DJ 中心波内侧填充：中心大片波从纯环形波峰调整为“环形波峰 + 内侧低隆起填充”，波峰向外扩散时中心区域保留较低地形抬升，避免外圈抬高后视觉上形成中心凹陷；随机触发点波纹速度和位置不变。
-- [x] 地面 DJ 波纹可见性独立化：扩散波纹的高度和高光从整体音乐高度门限中拆出，旧波纹不会因为歌曲瞬时能量下降被整体压没，也不会在后续整体升高时突兀重新出现。
-- [x] 地面 DJ Shader 高度驱动改造：参考 Sonic Topography 的 GPU 顶点高度驱动方式，柱阵创建时写入环位、角度、螺旋、频段、随机种子和边缘雾化等静态实例属性，运行时只更新音乐能量、舞台参数、主题色和 pulse/snare/spark 触发点 uniform；柱体高度、波纹抬升、顶面高光、侧面亮度和远景雾化改由 terrain shader 计算，CPU 侧保留频谱通量触发和圆形声场布局，不再逐帧逐柱更新实例矩阵和颜色；默认主题与 `animal-island` 主题均已检查，需求计划见 `docs/music-dj-terrain-shader-height-rework-requirements.md`。
-- [x] 地面 DJ 主题材质与柱体样式重设计：参考 Sonic Topography 的主题 token 和分层柱体材质思路，为地面 DJ 增加专用材质 palette，把柱体颜色拆成暗色柱身、顶面发光、顶沿高光、冷暖音色混色、波纹覆盖、局部闪光和远景雾化；默认主题使用深蓝黑底、青蓝顶光和琥珀节拍波，`animal-island` 主题使用木色/橄榄暗底、薄荷顶光和奶油顶沿；空播放状态下保留轻量 idle 微地形，播放时由 bass/mid/treble/beat/volume 派生的 `presence`、`brilliance`、`air`、`warmth`、`brightness` 和 `sharpness` 驱动高频微闪与冷暖材质变化，需求计划见 `docs/music-dj-terrain-theme-material-redesign-requirements.md`。
-- [x] 地面 DJ 柱体抬升高亮试调：柱体 shader 新增抬升高亮和冲击高亮 varying，并把顶点阶段的柱体自身颜色接入片元材质；柱子抬升时会直接提高柱身本体亮度，同时推高顶面暖色、边缘发光、波纹覆盖和短促亮度闪光；已移除“中圈暖色径向流”的选中效果，地形材质固定使用原未选中态，默认主题与 `animal-island` 主题继承同一套地形材质增强。
-- [x] 地面 DJ 歌词立体悬浮舞台：沉浸模式使用地面 DJ 预设时，歌词舞台会移动到柱阵中心上方，并使用当前歌词前移、状态标签分层、下方柔光投影和较克制的音乐漂浮响应来形成悬浮舞台感；星河漫游继续保持原有悬浮歌词。该实现保留 DOM 歌词清晰度和逐字进度，不做 WebGL 柱体真实遮挡，默认主题与 `animal-island` 主题均已适配，需求计划见 `docs/music-dj-floating-lyrics-stage-requirements.md`。
-- [x] 星河漫游层高参数：星河舞台新增“层高”滑杆，独立控制星尘、星云团和流星轨迹的上下分布范围；“纵深”继续负责前后空间厚度，地面 DJ 参数不受影响。
-- [x] 网易云音乐接入第三阶段：音乐窗口新增网易云页签，支持二维码登录、扫码状态轮询、本机凭据保存、登录状态读取、本机退出清除、当前账号歌单列表读取、歌单歌曲摘要展示、在线歌词读取和接口允许的临时在线播放；Cookie 和本机路径不返回前端，播放 URL 只用于当前运行态播放，不写入本地音乐库；后续计划见 `docs/music-netease-cloud-requirements.md`。
-- [x] 网易云音乐 YRC 逐字歌词：后端分离返回 LRC/YRC/K 歌词字段，前端优先使用 YRC 片段时间驱动沉浸歌词逐字进度，缺少 YRC 时自动回退普通歌词同步；后续计划见 `docs/music-netease-cloud-requirements.md`。
-- [x] 酷狗音乐基础接入：音乐窗口新增酷狗页签，支持关键词搜索、搜索结果临时列表、在线 LRC 歌词读取、接口允许的临时在线播放，并接入沉浸模式播放列表；搜索结果和播放 URL 只用于当前运行态，不写入本地音乐库；需求计划见 `docs/music-kugou-requirements.md`。
-- [x] 平台音乐扩展：酷狗音乐新增二维码登录、本机凭据保存、登录状态读取和退出清除；网易云音乐新增关键词搜索，搜索结果可复用在线歌词与临时在线播放链路；平台凭据、播放 URL 和搜索结果都不写入源码或本地音乐库。
-- [x] 酷狗个人歌单只读接入：登录后可读取当前账号歌单列表和单个歌单歌曲摘要，歌单歌曲可复用在线歌词与临时在线播放链路，并接入沉浸模式酷狗播放列表；token、Cookie、设备标识和播放 URL 不返回前端展示或持久化到本地音乐库。
-- [x] 酷狗播放链路代理化第一阶段：在线播放改走本机运行态代理，支持 Range 转发、临时播放链接刷新重试、播放链接预检和疑似试听片段拦截；登录态播放前补充酷狗设备注册并优先尝试 `/v5/url` 播放地址候选；普通接口需要付费且登录态只返回试听片段时给出会员/付费/版权授权边界提示，真实播放 URL、token、Cookie 和设备标识不返回前端展示或写入本地音乐库。
-- [x] 在线音乐不可播放自动跳过：网易云和酷狗播放地址获取到下架、无版权、会员、地区限制或播放链接为空等明确失败时，会在当前运行态标记歌曲不可播放，普通列表和沉浸列表显示原因，自动连续播放会跳过已知不可播放歌曲并继续尝试后续歌曲，手动点击仍可重试；不持久化播放 URL、Cookie、token 或本机资源路径，需求计划见 `docs/music-online-unavailable-autoskip-requirements.md`。
-- [x] 在线音乐播放音质偏好：音乐设置新增按当前平台动态切换的在线播放音质选项，网易云显示超清母带、沉浸环绕、高清环绕、Hi-Res、无损 SQ、极高 HQ 和标准档位，酷狗显示蝰蛇母带音质、蝰蛇超清音质、蝰蛇HIFI音质、蝰蛇全景声2.0、Hi-Res 音质、无损音质、高品音质和标准音质；网易云按 `jymaster/sky/jyeffect/hires/lossless/exhigh/standard` 逐级回退，酷狗按偏好尝试 `/v5/url` 和会员接口质量候选，当前播放信息展示平台实际返回的音质、格式、码率或大小摘要；不同平台的音质偏好分开保存，且只保存枚举值，不保存播放 URL、Cookie、token、设备标识或用户本机路径，默认主题与 `animal-island` 主题均已适配，需求计划见 `docs/music-online-playback-quality-requirements.md`。
-- [x] 酷狗高音质播放兼容增强：参考 Mineradio 的显式音质候选方式，酷狗“最高可用”在 `/v5/url` 和会员接口中尝试蝰蛇母带音质、蝰蛇超清音质、蝰蛇HIFI音质、蝰蛇全景声2.0、Hi-Res 音质、无损音质、高品音质和标准音质候选，并把实际命中的音质档位、格式、码率和大小显示在当前播放信息中；显式选择高品、无损、Hi-Res 或蝰蛇类音质时会校验接口实际返回音质，避免把标准音质链接当作高音质成功；高音质失败详情会补充脱敏的 `priv_status`、`fail_process`、`auth_through`、`tracker_through`、`trans_param`、`qualitymap` 和 `hash_offset` 摘要，辅助判断会员包、版权、地区、风控、设备注册或档位不可用原因；会员 `/v6/priv_url` 不再发送已确认不被接口接受的 `hires` 参数，显式 Hi-Res 只尝试登录态 `/v5/url` 并在授权失败时直接返回诊断，最高可用的会员接口候选继续尝试其他可接受高音质档位；前端错误提示改为短标题、简短原因、建议和可展开诊断详情，平台歌曲行与沉浸播放列表只显示短原因，代理 Range 续读失败会显示为“酷狗代理读取中断”并把失败 Range 放入诊断详情，避免长诊断撑乱界面或摘要详情重复；多个音源 hash 或会员请求体都失败时只展示脱敏候选编号和错误摘要，不直接暴露原始歌曲 hash；仍按平台授权结果回退，不绕过会员、版权、地区、DRM、设备风控或付费限制，需求计划见 `docs/music-kugou-quality-compatibility-requirements.md`。
-- [x] 酷狗音质可用性预检查：播放和切换酷狗在线歌曲前新增 `/v2/get_res_privilege/lite` 轻量预检，只向前端返回当前歌曲各音质档位的可用、不可用或未确认摘要；普通设置面板和沉浸模式音质列表会按当前歌曲动态禁用已知不可用档位，Hi-Res 在当前接口不能验证授权时提前显示不可用，播放前如果已保存的酷狗音质偏好不可用会回退到可用档位；预检结果只保存在前端运行态缓存，不写入曲库、源码或文档示例，不返回播放 URL、Cookie、token、设备标识或本机路径，默认主题与 `animal-island` 主题均已适配，需求计划见 `docs/music-kugou-quality-compatibility-requirements.md`。
-- [x] 在线播放音质即时切换：参考 Mineradio 的播放中切换方式，当前网易云或酷狗在线歌曲播放时切换音质会记录进度、清理运行态播放缓存、重新请求目标音质播放链路并从原进度继续；普通设置面板和沉浸模式底部控制栏都提供音质切换入口，沉浸模式使用“当前音质按钮 + 上浮列表”的方式展示当前平台自己的音质分类；不提前获取或保存所有音质播放源，缓存和正在请求的播放源按“歌曲 + 音质”隔离；切换失败或酷狗实际返回标准音质不满足所选高音质时恢复上一档音质偏好、旧播放源和原播放进度，避免当前歌曲停在失败的新链路上；新音质开始播放后会立即结束“正在切换”状态，需求计划见 `docs/music-online-playback-quality-switching-requirements.md`。
-- [x] 音乐平台账号会员信息显示：网易云和酷狗账号凭据区域新增会员摘要，显示会员状态、类型、等级和到期时间等脱敏信息；后端不向前端返回 vip_token、Cookie、设备标识或播放 URL，播放授权仍以平台接口实际返回为准，需求计划见 `docs/music-platform-membership-display-requirements.md`。
-- [x] 音乐播放普通窗口布局重设计：新增播放工作台与内容工作区，缓解当前播放、控制区和列表内容上下堆叠拥挤问题；默认主题与 `animal-island` 主题均已适配，需求计划见 `docs/music-playback-layout-redesign-requirements.md`。
-- [x] 音乐歌曲列表浏览区扩展：普通窗口改为宽版双栏，新增“列表”优先状态，优化本地歌曲和平台歌曲列表浏览空间；网易云和酷狗搜索结果、我的歌单歌曲详情支持继续加载后续结果，平台歌单播放到当前页末尾时会自动续载下一页，平台歌曲列表由右侧内容区统一滚动；默认主题与 `animal-island` 主题均已适配，需求计划见 `docs/music-list-browsing-redesign-requirements.md`。
-- [x] 我的歌单左侧布局优化：去除网易云、酷狗歌单卡片中的独立“查看/播放”按钮，本地歌单去除独立“播放”按钮，改为封面、名称、元信息和状态标识的整卡式布局；点击歌单卡片查看详情，播放操作回到右侧歌曲列表内完成，默认主题与 `animal-island` 主题均已适配。
-- [x] 音乐封面显示修复：本地音乐 metadata 读取增加内嵌封面解析，导入和重新读取 metadata 时会把封面保存到本机运行时曲库；在线封面图片加载失败时自动回退唱片占位，不再留下空白封面框。
-- [x] 音乐播放左上角当前歌曲信息悬停增强：鼠标停在当前歌曲信息区域、歌名、歌手或详情行时显示完整歌曲、歌手、专辑、时长、音质、来源、分类、标签和来源详情；仅作为本地界面运行态展示，不写入用户歌曲路径或播放信息。
-- [x] 音乐迷你窗口贴边自动隐藏：迷你播放器拖到当前显示器工作区边缘附近后会先平滑吸附到对应屏幕边，再在鼠标未停留时平滑隐藏并保留边缘提示条；鼠标移入展开、移出后重新收起，切回完整窗口、沉浸模式或隐藏播放器前会恢复到可见位置；每次拖拽会清理上一轮吸附状态，避免回弹到旧吸附点；默认主题与 `animal-island` 主题均已适配，不保存屏幕位置、歌曲路径或播放信息，需求计划见 `docs/music-mini-edge-autohide-requirements.md`。
-- [x] 沉浸模式歌词舞台感增强：参考 Mineradio 的歌词舞台、粒子视觉和节奏电影镜头方向，歌词舞台新增舞台地面椭圆投影、空气扫描光带、当前歌词边缘阴影和音乐能量驱动的轻微漂浮、低频抬升、Z 轴前移、光晕与进度线亮度响应；歌词背景不再绘制独立光点，星河光点交给 WebGL 舞台层处理远近关系；降低动态时禁用明显运动，只保留静态舞台层次；默认主题与 `animal-island` 主题均已检查，不保存歌词文本、歌曲路径、播放 URL、Cookie、token 或音频数据，需求计划见 `docs/music-immersive-lyrics-stage-presence-requirements.md`。
-- [x] 酷狗推荐歌单扩展：音乐窗口酷狗页签新增公开推荐歌单、推荐歌单歌曲详情和每日推荐歌曲入口；推荐内容只作为运行态在线列表展示，可复用歌词、临时在线播放、不可播放标记和沉浸模式播放列表，不写入本机曲库、源码或文档示例；默认主题与 `animal-island` 主题均已检查，需求计划见 `docs/music-kugou-recommendations-requirements.md`。
-- [x] 桌宠气泡多通道展示：Codex 工作状态气泡和划选翻译气泡拆分为独立通道，任一通道更新或关闭时不会打断另一通道；多个可见气泡会在同一个宠物气泡窗口内按出现顺序纵向排列，并保持默认主题与 `animal-island` 主题尾巴、边框和状态色一致。
-- [x] 划选翻译 PDF 剪贴板格式增强：Windows 划选翻译读取选区时，除 `CF_UNICODETEXT` 外支持 `HTML Format`、`Rich Text Format`、`Rich Text Format Without Objects`、`CF_TEXT` 和 `CF_OEMTEXT`，并增加 UTF-16 HTML/RTF 解码、福昕阅读器复制等待/剪贴板占用重试和失败格式摘要；不做 OCR，不绕过 PDF 复制限制，不保存选中文本、PDF 路径或剪贴板历史，需求计划见 `docs/translation-selection-pdf-clipboard-enhancement-requirements.md`。
-- [x] Mineradio 风格舞台歌词效果增强：沉浸歌词舞台新增自研的日光溢光、文字可读羽化、舞台柔光和音乐焦点变量，当前句保持即时替换，不增加入退场过渡或强制重建；歌词背景不再绘制独立光点，星河光点交给 WebGL 舞台层处理远近关系，星河漫游与地面 DJ 的歌词光带、地面投影和主题表现进一步区分；默认主题与 `animal-island` 主题均已检查，不保存歌词文本、歌曲路径、播放 URL、Cookie、token、音频数据或本机运行历史，需求计划见 `docs/music-mineradio-like-stage-lyrics-effect-requirements.md`。
-- [x] 星河内歌词与卡片舞台化修正：星河漫游移除围绕歌词生成的 WebGL 局部点云，避免歌词附近出现细小光点星云；歌词不再向 WebGL 传递当前文本摘要，DOM 当前句继续即时替换，不增加当前句切换动画、强制 key 重建或延迟层；播放列表、韵律面板、舞台卡片和列表行保留更透明的星河玻璃舞台质感，并补齐默认主题与 `animal-island` 主题覆盖；不保存歌词文本、歌曲路径、播放 URL、Cookie、token、音频数据或本机运行历史，需求计划见 `docs/music-starfield-embedded-lyrics-cards-requirements.md`。
-- [x] WebGL 3D 歌词舞台：星河漫游下当前歌词、上一句和下一句改由 WebGL CanvasTexture 平面显示，并与星河粒子共用同一 Three.js 场景和相机；歌词层从会自转的星河粒子组移到根场景，锚定舞台中心并保持固定世界朝向，不再复制 `camera.quaternion`，主歌词材质改为正面渲染以避免背面镜像；星河预设下 `sceneGroup` 不再自动自转，也取消默认相机 idle 绕转、鼓点相机 roll 和松手后的舞台惯性，歌词只保留用户倾角参数，星尘、星云团、流星轨迹和闪烁继续由粒子 shader 的时间和音乐参数驱动；歌词基准 Z 深度推回星河主体层，并加入无颗粒点阵的平滑前景雾面，让歌词前方有轻微星云空气遮罩；播放起始、加载、空态和错误统一由 WebGL 状态文字接管，长间隔间奏不生成主歌词占位，WebGL 歌词启用时不再渲染 DOM 歌词 section，DOM 只用于 WebGL 未启用、WebGL 不可用、地面 DJ 和无当前歌曲回退；文字本体关闭深度写入和深度测试以避免被透明星河排序吞掉，当前句仍即时替换，不增加切换动画，并把歌词行 key 纳入 WebGL 贴图缓存签名以确保主歌词随播放进度刷新；不在歌词附近生成独立粒子点云，不保存歌词文本、歌曲路径、播放 URL、Cookie、token、音频数据或本机运行历史，需求计划见 `docs/music-webgl-3d-lyrics-stage-requirements.md`。
-- [x] WebGL 主歌词时间同步修正：沉浸模式播放中 `timeupdate` 事件也会同步 WebGL 使用的 `visualPlaybackTime`，避免 visual clock 未及时推进时主歌词停在歌名或第一句；该修正不增加歌词切换动画、不恢复 DOM 歌词层，也不保存歌词文本、歌曲路径、播放 URL、Cookie、token、音频数据或本机运行历史。
-- [x] WebGL 主歌词“间奏”占位修正：长间隔歌词状态不再在 WebGL 主歌词中显示“间奏”，LRC/YRC/纯文本里的“间奏”“音乐间奏”和 `instrumental` 占位行会在解析阶段过滤；主歌词继续使用真实歌词行，不增加切换动画、不恢复 DOM 歌词层，也不保存歌词文本、歌曲路径、播放 URL、Cookie、token、音频数据或本机运行历史。
-- [x] WebGL 主歌词歌名兜底修正：歌词 ready 后当前句不再使用 `track.title` 兜底，WebGL 运行态也不再用歌名补空主句；当前歌词窗口先过滤纯音乐/间奏占位和完整文件名/艺人标题式身份行后再计算当前句，修复“上下句正常但中间主歌词显示歌名”的情况；不增加切换动画、不恢复 DOM 歌词层，也不保存歌词文本、歌曲路径、播放 URL、Cookie、token、音频数据或本机运行历史。
-- [x] 主歌词显示模型重构：沉浸歌词窗口改为“可显示歌词行 -> 当前显示索引 -> 三行窗口”的单一模型，WebGL 主歌词按 `textMode` 明确显示真实歌词、加载、空态或错误状态，不再把歌曲标题、文件名或播放器标题混入主歌词；当前句仍即时替换，不增加切换动画、不恢复 DOM 主歌词层，也不保存歌词文本、歌曲路径、播放 URL、Cookie、token、音频数据或本机运行历史，需求计划见 `docs/music-main-lyric-display-redesign-requirements.md`。
-- [x] WebGL 主歌词加载态占位修正：加载态不再把“在线歌词读取中/本机歌词读取中”作为中心主歌词显示，歌词读取请求加入 15 秒超时保护，超时后进入错误态并允许后续重试；主歌词只显示真实歌词、空态或错误态，不保存歌词文本、歌曲路径、播放 URL、Cookie、token、音频数据或本机运行历史。
-- [x] 全舞台 WebGL 歌词统一：星河漫游和地面 DJ 在 WebGL 可用且有当前歌曲时都使用同一套 WebGL CanvasTexture 歌词平面，地面 DJ 会把歌词锚点对齐到柱阵地形相机目标附近，DOM 歌词只作为 WebGL 不可用或无当前歌曲时的回退；WebGL 和 DOM 回退歌词都不再显示倒影，歌词舞台不再提供鼓点溢光选项；当前句状态仍即时替换，并在视觉上让下一句移动放大到当前句位置、当前句移动缩小到上一句位置，不保存歌词文本、歌曲路径、播放 URL、Cookie、token、音频数据或本机运行历史，需求计划见 `docs/music-all-stage-webgl-lyrics-unification-requirements.md`。
+## 维护规则
+
+1. 新完成能力先归入下方既有模块；确实没有同类模块时再新增模块。
+2. 单次小修不再重复堆叠流水条目，应更新模块摘要或对应需求文档状态。
+3. 涉及前端界面的功能完成记录，必须确认默认主题和 `animal-island` 主题已检查或可继承现有样式。
+4. 涉及用户本机数据的能力，只记录数据边界，不记录真实路径、账号、密钥、Cookie、token 或历史内容。
+
+## 桌宠核心与快捷入口
+
+- [x] 桌面宠物、快捷入口抽屉、宠物右键菜单、系统托盘和多窗口基础流程已完成。
+- [x] 支持软件、文件夹、文件和网站快捷入口的添加、编辑、删除、搜索、分类、标签、常用和管理员启动。
+- [x] 快捷入口启动时前端只传 `app_id`，后端从本机运行时数据读取路径并执行打开操作。
+- [x] 支持开机自启、自动加入常用、窗口置顶、缩略/详细视图和运行时诊断信息。
+- [x] Windows exe 高清图标提取和手动图标选择已完成；通用方法记录见 `docs/windows-executable-icon-extraction-method.md`，需求记录见 `docs/executable-icon-extraction-requirements.md`。
+
+## 本机数据与隐私边界
+
+- [x] 快捷入口、AI 配置、窗口设置、伴侣档案、宠物素材、图标、聊天记忆、音乐库和平台凭据都按模块保存到用户本机应用数据目录。
+- [x] `.gitignore` 已覆盖 `.env*`、`config.json`、`apps.json`、记忆数据库、导入资源、打包产物、日志、证书和 token 类文件。
+- [x] 发布和修改前隐私检查清单已建立，见 `docs/RELEASE_PRIVACY_CHECKLIST.md`。
+- [x] 需求文档和 release notes 均使用通用描述，不写真实用户路径、密钥、Cookie、token、音乐文件或 Codex 内容。
+
+## 主题与界面基础
+
+- [x] 默认主题与 `animal-island` 主题基础适配已完成。
+- [x] `animal-island` 主题已补齐主题 token、纸感卡片、胶囊控件、弹窗、音乐面板、宠物气泡、状态卡和错误提示样式，需求记录见 `docs/animal-island-theme-refresh-requirements.md`。
+- [x] 新增窗口、弹窗、按钮、输入框、列表、空状态和错误提示的主题检查规则已写入项目注意事项。
+
+## 宠物形象与操作绑定
+
+- [x] 宠物形象库、内置默认宠物、导入宠物、编辑动画、预览和删除流程已完成。
+- [x] 宠物动画状态模型已扩展到 `idle`、`hover`、`click`、`dragging`、`draggingLeft`、`draggingRight`、`waving`、`jumping`、`waiting`、`running`、`review` 和 `failed`，并保持旧版 4 状态宠物包兼容。
+- [x] 拖动方向动画、状态回退规则、导入校验和默认素材回退已完成；后续 AI 素材转换计划见 `docs/ai-pet-material-generation-requirements.md`。
+- [x] 宠物操作绑定支持单击、双击和右键分别绑定抽屉、Codex 完成优先、菜单、聊天、故事模式、音乐播放器或无操作，需求记录见 `docs/pet-action-bindings-requirements.md`。
+
+## AI 伴侣、聊天与记忆
+
+- [x] AI 接口配置支持 OpenAI 兼容、DeepSeek、Anthropic、Gemini、Ollama 和自定义服务；配置只保存到本机运行时数据。
+- [x] 支持多伴侣档案、角色卡导入导出、人设、附加规则、模型覆盖、语音标识、关系状态和绑定形象。
+- [x] 宠物聊天支持打字机回复、本地 Twemoji 表情、DeepSeek JSON Output 优先解析与普通请求降级。
+- [x] 本机记忆系统已迁移到 SQLite + FTS5，支持按伴侣隔离的聊天记录、长期记忆、短期摘要、导入导出、手动维护和敏感信息跳过。
+- [x] 好感度系统支持开关、AI/规则混合评分、关系阶段、心情、信任度、亲密度和关系变化日志。
+- [x] 故事模式窗口、存档创建、推进、重命名和删除流程已接入现有伴侣和 AI 配置。
+
+## Codex 状态聚合
+
+- [x] Codex App Server 接入、运行时任务表、脱敏任务摘要、最近任务列表、未读完成/失败/待处理计数和确认入口已完成，需求记录见 `docs/codex-app-server-integration-requirements.md` 和 `docs/codex-multi-session-completion-notification-requirements.md`。
+- [x] 宠物会根据聚合状态切换等待、处理中、检查、失败、完成等动画；全部任务完成后保留完成动画，直到用户悬浮或确认。
+- [x] Codex 状态提醒改为悬浮触发和低打扰展示，不再主动弹出完成气泡或状态徽标。
+- [x] 宠物气泡已拆成独立透明窗口，并支持多个气泡通道纵向展示、边界避让和双主题适配，需求记录见 `docs/pet-bubble-window-requirements.md`。
+
+## 翻译功能
+
+- [x] 独立翻译窗口已完成，支持源/目标语言选择、直译/润色、交换语言、复制译文和双主题样式；翻译不写入聊天、记忆、好感度、故事、音乐或历史记录，需求记录见 `docs/translation-window-requirements.md`。
+- [x] 划选翻译快捷键已完成，默认 `Ctrl+Alt+T`，支持用户自定义；只在运行态读取选中文本和译文，需求记录见 `docs/translation-selection-shortcut-requirements.md`。
+- [x] 划选翻译气泡支持短译文、悬停展开完整译文、点击打开翻译窗口并填入本次运行态内容。
+- [x] Windows PDF 剪贴板格式增强已完成，支持多种文本/富文本剪贴板格式和失败摘要；不做 OCR，不绕过复制限制，需求记录见 `docs/translation-selection-pdf-clipboard-enhancement-requirements.md`。
+
+## 音乐播放器与本地音乐库
+
+- [x] 音乐播放器基础、本机文件/文件夹导入、metadata 读取、内嵌封面、本机歌词、分类、标签、收藏、播放队列、播放历史和本机存储目录规则已完成，主需求见 `docs/music-feature-requirements.md`。
+- [x] 普通音乐窗口布局已重设计为播放工作台和内容工作区，列表浏览区已扩展为宽版双栏；需求记录见 `docs/music-playback-layout-redesign-requirements.md` 和 `docs/music-list-browsing-redesign-requirements.md`。
+- [x] 当前歌曲信息悬停详情、封面加载回退、歌单卡片布局和平台歌曲详情继续加载已完成。
+- [x] 音乐迷你窗口贴边自动隐藏已完成，并适配默认主题和 `animal-island` 主题，需求记录见 `docs/music-mini-edge-autohide-requirements.md`。
+
+## 在线音乐平台
+
+- [x] 网易云音乐二维码登录、登录状态、本机凭据保存、歌单读取、歌曲搜索、在线歌词、YRC 逐字歌词和接口允许的临时在线播放已完成，需求记录见 `docs/music-netease-cloud-requirements.md`。
+- [x] 酷狗音乐关键词搜索、二维码登录、个人歌单、推荐歌单、每日推荐、在线歌词和临时在线播放已完成，需求记录见 `docs/music-kugou-requirements.md` 和 `docs/music-kugou-recommendations-requirements.md`。
+- [x] 酷狗播放链路已代理化，支持 Range 转发、临时播放链接刷新、播放链接预检、试听片段识别和脱敏诊断，需求记录见 `docs/music-kugou-playback-proxy-requirements.md`。
+- [x] 在线音乐不可播放自动跳过、音质偏好、酷狗音质可用性预检查、播放中音质即时切换和平台会员信息显示已完成；相关需求见 `docs/music-online-*.md`、`docs/music-kugou-quality-compatibility-requirements.md` 和 `docs/music-platform-membership-display-requirements.md`。
+- [x] 平台 Cookie、token、设备标识、播放 URL 和搜索结果只在本机运行态或本机配置中处理，不写入源码、本地音乐库或文档示例。
+
+## 沉浸音乐与 WebGL 舞台
+
+- [x] 沉浸式音乐模式基础已完成：播放与分析分离、本机节奏图、Web Audio 旁路频谱、Canvas 可视化、本机歌词沉浸显示、视觉模式、强度和降低动态控制，主需求见 `docs/music-immersive-mode-requirements.md`。
+- [x] 沉浸模式独立主题、实时可视化样式、WebGL 星辰可视化、3D 可拖动舞台、自由镜头、只看舞台、顶部搜索和本机壁纸导入已完成，相关需求见 `docs/music-immersive-*.md`。
+- [x] WebGL 星河和地面 DJ 两个舞台预设已完成，歌词已统一为 WebGL CanvasTexture 平面，DOM 歌词保留为 WebGL 不可用或无当前歌曲时的回退。
+- [x] 地面 DJ 圆形声音地形、中心 Kick 冲击、波纹扩散、Shader 高度驱动、主题材质、柱体抬升高亮和歌词悬浮舞台已完成；参数说明见 `docs/music-dj-terrain-parameter-reference.md`。
+- [x] 主歌词显示模型已重构，过滤歌名/文件名/间奏占位，加载、空态和错误态与真实歌词明确区分，需求记录见 `docs/music-main-lyric-display-redesign-requirements.md`。
+
+## 工程维护与文档
+
+- [x] 版本发布记录已按版本保存在 `docs/releases/`。
+- [x] 当前后续开发优先级和阶段路线记录在 `docs/next-development-plan.md`。
+- [x] 本轮项目扫描、已清理代码和后续技术债记录在 `docs/project-code-audit-2026-07-07.md`。

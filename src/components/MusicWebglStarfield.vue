@@ -3268,12 +3268,6 @@ function inactiveTerrainCenterPulse() {
   return { radius: 0, width: TERRAIN_PULSE_WIDTH, fade: 0, strength: 0 }
 }
 
-function clearTerrainCenterPulse() {
-  terrainCenterPulseStartedAt = -999
-  terrainCenterPulseStrength = 0
-  terrainCenterPulseSpeedScale = 1
-}
-
 function triggerTerrainKickEnvelope(strength: number) {
   const motionScale = props.reducedMotion ? 0.62 : 1
   const impulse = clamp(Math.max(TERRAIN_KICK_MIN_IMPULSE, strength * 0.88) * motionScale, 0, 1)

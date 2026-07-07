@@ -1,4 +1,4 @@
-import type { PetAnimationKey, PetAnimationSet, PetSkinSummary } from '../types/app'
+import type { PetAnimationKey, PetSkinSummary } from '../types/app'
 
 type BuiltinPetAnimations = Record<PetAnimationKey, string>
 
