@@ -12,6 +12,9 @@ use tauri::{AppHandle, Manager};
 const STORAGE_SETTINGS_FILE_NAME: &str = "storage.json";
 const CONFIG_FILE_NAME: &str = "config.json";
 const APPS_FILE_NAME: &str = "apps.json";
+const MUSIC_LIBRARY_FILE_NAME: &str = "music-library.json";
+const MUSIC_PLATFORM_DIR_NAME: &str = "music-platforms";
+const MUSIC_LIBRARY_VERSION: u64 = 1;
 pub const DEFAULT_PET_SIZE: u32 = 160;
 pub const MIN_PET_SIZE: u32 = 96;
 pub const MAX_PET_SIZE: u32 = 320;
@@ -157,6 +160,9 @@ pub struct ShortcutSettings {
     pub toggle_drawer: String,
     #[serde(default = "default_translate_selection_shortcut")]
     pub translate_selection: String,
+    // 旧配置缺少该字段时保持原有快捷键；新配置由 Default 明确设为 false。
+    #[serde(default = "default_true")]
+    pub translate_selection_consent: bool,
     #[serde(default = "default_pet_single_click_action")]
     pub pet_single_click: String,
     #[serde(default = "default_pet_double_click_action")]
@@ -448,6 +454,7 @@ impl Default for ShortcutSettings {
         Self {
             toggle_drawer: default_toggle_drawer_shortcut(),
             translate_selection: default_translate_selection_shortcut(),
+            translate_selection_consent: false,
             pet_single_click: default_pet_single_click_action(),
             pet_double_click: default_pet_double_click_action(),
             pet_right_click: default_pet_right_click_action(),
@@ -730,7 +737,8 @@ pub fn ensure_data_files(app: &AppHandle) -> Result<(), String> {
 
     let apps_path = apps_file(app)?;
     if !apps_path.exists() {
-        fs::write(apps_path, "[]").map_err(|err| err.to_string())?;
+        atomic_write_file(&apps_path, b"[]")
+            .map_err(|err| format!("初始化 apps.json 失败：{err}"))?;
     }
 
     let config_path = config_file(app)?;
@@ -765,8 +773,224 @@ pub fn read_apps(app: &AppHandle) -> Result<Vec<PetApp>, String> {
 
 pub fn write_apps(app: &AppHandle, apps: &[PetApp]) -> Result<(), String> {
     ensure_data_files(app)?;
-    let content = serde_json::to_string_pretty(apps).map_err(|err| err.to_string())?;
-    fs::write(apps_file(app)?, content).map_err(|err| err.to_string())
+    let content = serde_json::to_vec_pretty(apps).map_err(|err| err.to_string())?;
+    atomic_write_file(&apps_file(app)?, &content)
+        .map_err(|err| format!("写入 apps.json 失败：{err}"))
+}
+
+pub fn music_library_file(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join(MUSIC_LIBRARY_FILE_NAME))
+}
+
+pub fn read_music_library_state(app: &AppHandle) -> Result<serde_json::Value, String> {
+    ensure_data_files(app)?;
+    let path = music_library_file(app)?;
+    if !path.exists() {
+        return Ok(default_music_library_state());
+    }
+
+    match read_music_library_state_from_path(&path) {
+        Ok(state) => Ok(state),
+        Err(reason) => {
+            let backup_path = backup_corrupt_file(&path)
+                .map_err(|err| format!("{reason}；备份损坏音乐库失败：{err}"))?;
+            Err(format!(
+                "{reason}；原文件已保留并备份到 {}，已禁止自动写入空音乐库",
+                backup_path.display()
+            ))
+        }
+    }
+}
+
+pub fn write_music_library_state(app: &AppHandle, state: &serde_json::Value) -> Result<(), String> {
+    ensure_data_files(app)?;
+    validate_music_library_state(state)?;
+    let path = music_library_file(app)?;
+    let content = serde_json::to_vec_pretty(state).map_err(|err| err.to_string())?;
+    atomic_write_file(&path, &content).map_err(|err| format!("写入 music-library.json 失败：{err}"))
+}
+
+fn default_music_library_state() -> serde_json::Value {
+    serde_json::json!({
+        "version": MUSIC_LIBRARY_VERSION,
+        "settings": {},
+        "tracks": [],
+        "playlists": [],
+        "savedAt": null
+    })
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicLibrarySummary {
+    pub track_count: usize,
+    pub favorite_count: usize,
+    pub recent_count: usize,
+    pub available_tags: Vec<String>,
+}
+
+pub fn read_music_library_summary(app: &AppHandle) -> Result<MusicLibrarySummary, String> {
+    let state = read_music_library_state(app)?;
+    Ok(summarize_music_library_state(&state))
+}
+
+pub fn music_library_track_paths(state: &serde_json::Value) -> Vec<PathBuf> {
+    state
+        .get("tracks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|track| track.get("path").and_then(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn summarize_music_library_state(state: &serde_json::Value) -> MusicLibrarySummary {
+    let Some(tracks) = state.get("tracks").and_then(serde_json::Value::as_array) else {
+        return MusicLibrarySummary::default();
+    };
+
+    let mut summary = MusicLibrarySummary {
+        track_count: tracks.len(),
+        ..MusicLibrarySummary::default()
+    };
+    for track in tracks {
+        if track
+            .get("favorite")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            summary.favorite_count += 1;
+        }
+        if track
+            .get("lastPlayedAt")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            summary.recent_count += 1;
+        }
+        let Some(tags) = track.get("tags").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for tag in tags {
+            let Some(tag) = tag.as_str().map(str::trim).filter(|tag| !tag.is_empty()) else {
+                continue;
+            };
+            let tag: String = tag.chars().take(24).collect();
+            if !summary.available_tags.contains(&tag) {
+                summary.available_tags.push(tag);
+                if summary.available_tags.len() >= 32 {
+                    return summary;
+                }
+            }
+        }
+    }
+
+    summary
+}
+
+fn read_music_library_state_from_path(path: &Path) -> Result<serde_json::Value, String> {
+    let content =
+        fs::read_to_string(path).map_err(|err| format!("读取 music-library.json 失败：{err}"))?;
+    if content.trim().is_empty() {
+        return Err("music-library.json 为空".to_string());
+    }
+
+    let state: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|err| format!("music-library.json JSON 格式错误：{err}"))?;
+    validate_music_library_state(&state)?;
+    Ok(state)
+}
+
+fn validate_music_library_state(state: &serde_json::Value) -> Result<(), String> {
+    let root = state
+        .as_object()
+        .ok_or_else(|| "music-library.json 根节点必须为对象".to_string())?;
+    match root.get("version").and_then(serde_json::Value::as_u64) {
+        Some(MUSIC_LIBRARY_VERSION) => {}
+        Some(version) => {
+            return Err(format!(
+                "不支持 music-library.json 版本 {version}，当前要求版本 {MUSIC_LIBRARY_VERSION}"
+            ))
+        }
+        None => return Err("music-library.json version 缺失或无效".to_string()),
+    }
+
+    if !root
+        .get("settings")
+        .is_some_and(serde_json::Value::is_object)
+    {
+        return Err("music-library.json settings 必须为对象".to_string());
+    }
+    let tracks = root
+        .get("tracks")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "music-library.json tracks 必须为数组".to_string())?;
+    let playlists = root
+        .get("playlists")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "music-library.json playlists 必须为数组".to_string())?;
+
+    for (index, track) in tracks.iter().enumerate() {
+        let track = track
+            .as_object()
+            .ok_or_else(|| format!("music-library.json tracks[{index}] 必须为对象"))?;
+        let path = track
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| format!("music-library.json tracks[{index}].path 无效"))?;
+        if path.chars().count() > 32_768 {
+            return Err(format!(
+                "music-library.json tracks[{index}].path 超出长度限制"
+            ));
+        }
+        if let Some(source_path) = track.get("sourcePath") {
+            if !source_path.is_string() {
+                return Err(format!(
+                    "music-library.json tracks[{index}].sourcePath 必须为字符串"
+                ));
+            }
+        }
+        if let Some(tags) = track.get("tags") {
+            let tags = tags
+                .as_array()
+                .ok_or_else(|| format!("music-library.json tracks[{index}].tags 必须为数组"))?;
+            if !tags.iter().all(serde_json::Value::is_string) {
+                return Err(format!(
+                    "music-library.json tracks[{index}].tags 只能包含字符串"
+                ));
+            }
+        }
+    }
+
+    for (index, playlist) in playlists.iter().enumerate() {
+        let playlist = playlist
+            .as_object()
+            .ok_or_else(|| format!("music-library.json playlists[{index}] 必须为对象"))?;
+        if let Some(track_ids) = playlist.get("trackIds") {
+            let track_ids = track_ids.as_array().ok_or_else(|| {
+                format!("music-library.json playlists[{index}].trackIds 必须为数组")
+            })?;
+            if !track_ids.iter().all(serde_json::Value::is_string) {
+                return Err(format!(
+                    "music-library.json playlists[{index}].trackIds 只能包含字符串"
+                ));
+            }
+        }
+    }
+
+    if root
+        .get("savedAt")
+        .is_some_and(|value| !value.is_null() && !value.is_string())
+    {
+        return Err("music-library.json savedAt 必须为字符串或 null".to_string());
+    }
+
+    Ok(())
 }
 
 pub fn read_config(app: &AppHandle) -> Result<PetDrawerConfig, String> {
@@ -831,13 +1055,34 @@ fn recover_default_config(
 }
 
 fn backup_corrupt_config_file(config_path: &Path) -> Result<PathBuf, String> {
-    let parent = config_path
+    backup_corrupt_file(config_path)
+}
+
+fn backup_corrupt_file(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
         .parent()
-        .ok_or_else(|| "config.json 缺少父目录".to_string())?;
-    let file_name = config_path
+        .ok_or_else(|| "损坏文件缺少父目录".to_string())?;
+    let file_name = path
         .file_name()
-        .ok_or_else(|| "config.json 文件名无效".to_string())?
+        .ok_or_else(|| "损坏文件的文件名无效".to_string())?
         .to_string_lossy();
+    let backup_prefix = format!("{file_name}.corrupt-");
+    for entry in fs::read_dir(parent).map_err(|err| err.to_string())? {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let backup_path = entry.path();
+        let is_matching_backup = backup_path.is_file()
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&backup_prefix)
+            && backup_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("bak"));
+        if is_matching_backup && files_have_same_content(path, &backup_path)? {
+            return Ok(backup_path);
+        }
+    }
     let timestamp = now_millis();
 
     for index in 0..1000 {
@@ -851,7 +1096,7 @@ fn backup_corrupt_config_file(config_path: &Path) -> Result<PathBuf, String> {
             continue;
         }
 
-        fs::copy(config_path, &backup_path).map_err(|err| err.to_string())?;
+        fs::copy(path, &backup_path).map_err(|err| err.to_string())?;
         return Ok(backup_path);
     }
 
@@ -2263,11 +2508,8 @@ pub fn save_storage_settings(
     migrate_storage_paths(&old_paths, &new_paths)?;
 
     let path = storage_settings_file(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| format!("创建存储目录配置失败：{err}"))?;
-    }
-    let content = serde_json::to_string_pretty(&normalized).map_err(|err| err.to_string())?;
-    fs::write(path, content).map_err(|err| format!("写入存储目录配置失败：{err}"))?;
+    let content = serde_json::to_vec_pretty(&normalized).map_err(|err| err.to_string())?;
+    atomic_write_file(&path, &content).map_err(|err| format!("写入存储目录配置失败：{err}"))?;
     ensure_data_files(app)?;
     cleanup_old_storage_paths(&old_paths, &new_paths)
         .map_err(|err| format!("存储目录已切换，但清理旧数据失败：{err}"))?;
@@ -2470,6 +2712,16 @@ fn migrate_storage_paths(old: &StoragePaths, new: &StoragePaths) -> Result<(), S
         &new.data_dir.join(APPS_FILE_NAME),
         "快捷入口数据",
     )?;
+    copy_missing_file(
+        &old.data_dir.join(MUSIC_LIBRARY_FILE_NAME),
+        &new.data_dir.join(MUSIC_LIBRARY_FILE_NAME),
+        "音乐库数据",
+    )?;
+    copy_dir_contents_missing(
+        &old.data_dir.join(MUSIC_PLATFORM_DIR_NAME),
+        &new.data_dir.join(MUSIC_PLATFORM_DIR_NAME),
+        "音乐平台凭据目录",
+    )?;
     copy_memory_files_missing(&old.memory_dir, &new.memory_dir)?;
     copy_pet_assets_missing(&old.pet_assets_dir, &new.pet_assets_dir)?;
     copy_icon_assets_missing(&old.icons_dir, &new.icons_dir)?;
@@ -2487,6 +2739,17 @@ fn cleanup_old_storage_paths(old: &StoragePaths, new: &StoragePaths) -> Result<(
         &new.data_dir.join(APPS_FILE_NAME),
         "快捷入口数据",
     )?;
+    remove_migrated_file(
+        &old.data_dir.join(MUSIC_LIBRARY_FILE_NAME),
+        &new.data_dir.join(MUSIC_LIBRARY_FILE_NAME),
+        "音乐库数据",
+    )?;
+    remove_migrated_dir_contents(
+        &old.data_dir.join(MUSIC_PLATFORM_DIR_NAME),
+        &new.data_dir.join(MUSIC_PLATFORM_DIR_NAME),
+        "音乐平台凭据目录",
+    )?;
+    remove_empty_storage_dir(&old.data_dir.join(MUSIC_PLATFORM_DIR_NAME))?;
     remove_migrated_memory_files(&old.memory_dir, &new.memory_dir)?;
     remove_migrated_pet_assets(&old.pet_assets_dir, &new.pet_assets_dir)?;
     remove_migrated_icon_assets(&old.icons_dir, &new.icons_dir)?;
@@ -2819,6 +3082,18 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_consent_migrates_legacy_config_without_enabling_new_defaults() {
+        let legacy: ShortcutSettings = serde_json::from_value(serde_json::json!({
+            "toggleDrawer": "Ctrl+Space",
+            "translateSelection": "Ctrl+Alt+T"
+        }))
+        .expect("deserialize legacy shortcut settings");
+
+        assert!(legacy.translate_selection_consent);
+        assert!(!ShortcutSettings::default().translate_selection_consent);
+    }
+
+    #[test]
     fn atomic_write_file_replaces_existing_file() {
         let dir = temp_test_dir("atomic_write");
         let path = dir.join("config.json");
@@ -2861,6 +3136,81 @@ mod tests {
     }
 
     #[test]
+    fn music_library_validation_rejects_invalid_version_and_shape() {
+        let invalid_version = serde_json::json!({
+            "version": 2,
+            "settings": {},
+            "tracks": [],
+            "playlists": []
+        });
+        assert!(validate_music_library_state(&invalid_version)
+            .expect_err("unsupported version should fail")
+            .contains("版本"));
+
+        let invalid_tracks = serde_json::json!({
+            "version": MUSIC_LIBRARY_VERSION,
+            "settings": {},
+            "tracks": [{ "path": "", "tags": [] }],
+            "playlists": []
+        });
+        assert!(validate_music_library_state(&invalid_tracks)
+            .expect_err("empty path should fail")
+            .contains("path"));
+    }
+
+    #[test]
+    fn invalid_music_library_is_backed_up_without_replacing_original() {
+        let dir = temp_test_dir("backup_corrupt_music_library");
+        let path = dir.join(MUSIC_LIBRARY_FILE_NAME);
+        let corrupt_content = b"{not-json";
+        fs::write(&path, corrupt_content).expect("write corrupt music library");
+
+        assert!(read_music_library_state_from_path(&path).is_err());
+        let backup_path = backup_corrupt_file(&path).expect("backup corrupt music library");
+        let repeated_backup_path =
+            backup_corrupt_file(&path).expect("reuse existing corrupt music library backup");
+
+        assert_eq!(fs::read(&path).expect("read original"), corrupt_content);
+        assert_eq!(
+            fs::read(&backup_path).expect("read backup"),
+            corrupt_content
+        );
+        assert_eq!(backup_path, repeated_backup_path);
+
+        fs::remove_dir_all(dir).expect("remove temp test dir");
+    }
+
+    #[test]
+    fn music_library_summary_does_not_include_paths_or_track_names() {
+        let state = serde_json::json!({
+            "version": MUSIC_LIBRARY_VERSION,
+            "settings": {},
+            "tracks": [
+                {
+                    "path": "private/song-a.mp3",
+                    "title": "private title",
+                    "favorite": true,
+                    "lastPlayedAt": "2026-07-01T00:00:00Z",
+                    "tags": ["专注", "纯音乐"]
+                },
+                {
+                    "path": "private/song-b.mp3",
+                    "favorite": false,
+                    "lastPlayedAt": null,
+                    "tags": ["专注"]
+                }
+            ],
+            "playlists": []
+        });
+
+        let summary = summarize_music_library_state(&state);
+        assert_eq!(summary.track_count, 2);
+        assert_eq!(summary.favorite_count, 1);
+        assert_eq!(summary.recent_count, 1);
+        assert_eq!(summary.available_tags, vec!["专注", "纯音乐"]);
+    }
+
+    #[test]
     fn cleanup_old_storage_paths_removes_migrated_app_data() {
         let dir = temp_test_dir("cleanup_migrated_storage");
         let old_data = dir.join("old");
@@ -2878,6 +3228,22 @@ mod tests {
         fs::write(new_data.join(CONFIG_FILE_NAME), b"config").expect("write new config");
         fs::write(old_data.join(APPS_FILE_NAME), b"apps").expect("write old apps");
         fs::write(new_data.join(APPS_FILE_NAME), b"apps").expect("write new apps");
+        fs::write(old_data.join(MUSIC_LIBRARY_FILE_NAME), b"music").expect("write old music");
+        fs::write(new_data.join(MUSIC_LIBRARY_FILE_NAME), b"music").expect("write new music");
+        fs::create_dir_all(old_data.join(MUSIC_PLATFORM_DIR_NAME))
+            .expect("create old music credentials");
+        fs::create_dir_all(new_data.join(MUSIC_PLATFORM_DIR_NAME))
+            .expect("create new music credentials");
+        fs::write(
+            old_data.join(MUSIC_PLATFORM_DIR_NAME).join("provider.json"),
+            b"credential",
+        )
+        .expect("write old credential");
+        fs::write(
+            new_data.join(MUSIC_PLATFORM_DIR_NAME).join("provider.json"),
+            b"credential",
+        )
+        .expect("write new credential");
         fs::write(old_data.join("pet-memory.db"), b"memory").expect("write old memory");
         fs::write(new_data.join("pet-memory.db"), b"memory").expect("write new memory");
         fs::write(old_pets.join("skins").join("cat").join("idle.png"), b"pet")
@@ -2910,12 +3276,19 @@ mod tests {
 
         assert!(!old_data.join(CONFIG_FILE_NAME).exists());
         assert!(!old_data.join(APPS_FILE_NAME).exists());
+        assert!(!old_data.join(MUSIC_LIBRARY_FILE_NAME).exists());
+        assert!(!old_data.join(MUSIC_PLATFORM_DIR_NAME).exists());
         assert!(!old_data.join("pet-memory.db").exists());
         assert!(!old_paths.pet_assets_dir.exists());
         assert!(!old_paths.icons_dir.exists());
         assert!(old_data.join(STORAGE_SETTINGS_FILE_NAME).exists());
         assert!(new_data.join(CONFIG_FILE_NAME).exists());
         assert!(new_data.join(APPS_FILE_NAME).exists());
+        assert!(new_data.join(MUSIC_LIBRARY_FILE_NAME).exists());
+        assert!(new_data
+            .join(MUSIC_PLATFORM_DIR_NAME)
+            .join("provider.json")
+            .exists());
         assert!(new_data.join("pet-memory.db").exists());
 
         fs::remove_dir_all(dir).expect("remove temp test dir");
@@ -2958,6 +3331,46 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_keeps_conflicting_music_platform_credential() {
+        let dir = temp_test_dir("cleanup_music_credential_conflict");
+        let old_data = dir.join("old");
+        let new_data = dir.join("new");
+        fs::create_dir_all(old_data.join(MUSIC_PLATFORM_DIR_NAME)).expect("create old credentials");
+        fs::create_dir_all(new_data.join(MUSIC_PLATFORM_DIR_NAME)).expect("create new credentials");
+        let old_credential = old_data.join(MUSIC_PLATFORM_DIR_NAME).join("provider.json");
+        let new_credential = new_data.join(MUSIC_PLATFORM_DIR_NAME).join("provider.json");
+        fs::write(&old_credential, b"old credential").expect("write old credential");
+        fs::write(&new_credential, b"new credential").expect("write new credential");
+
+        let old_paths = StoragePaths {
+            default_data_dir: old_data.clone(),
+            data_dir: old_data.clone(),
+            memory_dir: old_data.clone(),
+            pet_assets_dir: old_data.join("pets"),
+            icons_dir: old_data.join("icons"),
+            storage_config_file: old_data.join(STORAGE_SETTINGS_FILE_NAME),
+        };
+        let new_paths = StoragePaths {
+            default_data_dir: old_data.clone(),
+            data_dir: new_data,
+            memory_dir: dir.join("new-memory"),
+            pet_assets_dir: dir.join("new-pets"),
+            icons_dir: dir.join("new-icons"),
+            storage_config_file: old_data.join(STORAGE_SETTINGS_FILE_NAME),
+        };
+
+        let error = cleanup_old_storage_paths(&old_paths, &new_paths)
+            .expect_err("conflicting credential should block cleanup");
+        assert!(error.contains("内容不同"));
+        assert_eq!(
+            fs::read(old_credential).expect("read preserved old credential"),
+            b"old credential"
+        );
+
+        fs::remove_dir_all(dir).expect("remove temp test dir");
+    }
+
+    #[test]
     fn migrate_storage_paths_filters_mixed_asset_directories() {
         let dir = temp_test_dir("migrate_filters_assets");
         let old_data = dir.join("old");
@@ -2971,6 +3384,14 @@ mod tests {
         fs::create_dir_all(&old_icons).expect("create old icons");
         fs::write(old_data.join(CONFIG_FILE_NAME), b"config").expect("write old config");
         fs::write(old_data.join(APPS_FILE_NAME), b"apps").expect("write old apps");
+        fs::write(old_data.join(MUSIC_LIBRARY_FILE_NAME), b"music").expect("write music library");
+        fs::create_dir_all(old_data.join(MUSIC_PLATFORM_DIR_NAME))
+            .expect("create music platform directory");
+        fs::write(
+            old_data.join(MUSIC_PLATFORM_DIR_NAME).join("provider.json"),
+            b"credential",
+        )
+        .expect("write credential");
         fs::write(old_pets.join("config.json"), b"wrong pet config")
             .expect("write mixed pet config");
         fs::write(old_pets.join("pet_1.png"), b"pet").expect("write pet image");
@@ -3004,6 +3425,11 @@ mod tests {
 
         assert!(new_data.join(CONFIG_FILE_NAME).exists());
         assert!(new_data.join(APPS_FILE_NAME).exists());
+        assert!(new_data.join(MUSIC_LIBRARY_FILE_NAME).exists());
+        assert!(new_data
+            .join(MUSIC_PLATFORM_DIR_NAME)
+            .join("provider.json")
+            .exists());
         assert!(new_paths.pet_assets_dir.join("pet_1.png").exists());
         assert!(new_paths
             .pet_assets_dir

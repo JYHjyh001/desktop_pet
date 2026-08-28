@@ -9,7 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use aes::{Aes128, Aes256};
+use aes::Aes128;
 use base64::{engine::general_purpose, Engine as _};
 use cbc::{Decryptor as CbcDecryptor, Encryptor as CbcEncryptor};
 use cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
@@ -22,7 +22,8 @@ use reqwest::{
         HeaderMap, ACCEPT_ENCODING, ACCEPT_RANGES, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_RANGE,
         CONTENT_TYPE, RANGE, REFERER, SET_COOKIE, USER_AGENT,
     },
-    StatusCode,
+    redirect::Policy,
+    StatusCode, Url,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,9 +36,8 @@ const KUGOU_PLAY_INFO_ENDPOINT: &str = "http://m.kugou.com/app/i/getSongInfo.php
 const KUGOU_LYRIC_SEARCH_ENDPOINT: &str = "https://lyrics.kugou.com/search";
 const KUGOU_LYRIC_DOWNLOAD_ENDPOINT: &str = "https://lyrics.kugou.com/download";
 const KUGOU_LOGIN_BASE: &str = "https://login-user.kugou.com";
-const KUGOU_LOGIN_TOKEN_BASE: &str = "http://login.user.kugou.com";
 const KUGOU_GATEWAY_BASE: &str = "https://gateway.kugou.com";
-const KUGOU_TRACKER_BASE: &str = "http://tracker.kugou.com";
+const KUGOU_TRACKER_BASE: &str = "https://tracker.kugou.com";
 const KUGOU_USER_SERVICE_BASE: &str = "https://userservice.kugou.com";
 const KUGOU_QR_KEY_PATH: &str = "/v2/qrcode";
 const KUGOU_QR_CHECK_PATH: &str = "/v2/get_userinfo_qrcode";
@@ -49,12 +49,6 @@ const KUGOU_QR_APPID: &str = "1001";
 const KUGOU_CLIENTVER: &str = "11440";
 const KUGOU_SRC_APPID: &str = "2919";
 const KUGOU_TRACKER_KEY_SECRET: &str = "185672dd44712f60bb1736df5a377e82";
-const KUGOU_LOGIN_TOKEN_LITE_KEY: &str = "c24f74ca2820225badc01946dba4fdf7";
-const KUGOU_LOGIN_TOKEN_LITE_IV: &str = "adc01946dba4fdf7";
-const KUGOU_LOGIN_TOKEN_LITE_T2_KEY: &str = "fd14b35e3f81af3817a20ae7adae7020";
-const KUGOU_LOGIN_TOKEN_LITE_T2_IV: &str = "17a20ae7adae7020";
-const KUGOU_LOGIN_TOKEN_LITE_T1_KEY: &str = "5e4ef500e9597fe004bd09a46d8add98";
-const KUGOU_LOGIN_TOKEN_LITE_T1_IV: &str = "04bd09a46d8add98";
 const KUGOU_DEVICE_REGISTER_MARKER: &str = "KUGOU_API_DFID_REGISTERED_AT";
 const KUGOU_DEVICE_REGISTER_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 const KUGOU_LITE_RSA_MODULUS_HEX: &str = "c40a2d0da76511f3bb1cc2bbd3afbd8bea83b4d6b05b6c13eb8920c53f1af7679b32ba0d0edb843240ef1b836efed3ee240734c14c1399fd6594d16af22f52525d14d72e0155c6dcc8638d4f7bb94f3a0b1f4c29f991972f2a160a25eb0a9e724336be7f69bbd319ffab1c6dd8470b021dc434f3faba89f4a2a01b33bdbdd08b";
@@ -1769,9 +1763,11 @@ enum KugouProxyTransferOutcome {
 }
 
 fn request_kugou_probe_range(playback_url: &str, range: &str) -> Result<KugouRangeProbe, String> {
+    guard_kugou_transport(playback_url, None, None, None)?;
     let client = Client::builder()
         .user_agent(KUGOU_USER_AGENT)
         .timeout(Duration::from_secs(10))
+        .redirect(kugou_safe_redirect_policy())
         .build()
         .map_err(|err| format!("创建酷狗预检请求客户端失败：{err}"))?;
     let response = client
@@ -1856,11 +1852,13 @@ fn proxy_kugou_audio_request(
     request: &KugouProxyRequest,
     playback_url: &str,
 ) -> Result<KugouProxyTransferOutcome, String> {
+    guard_kugou_transport(playback_url, None, None, None)?;
     let client = Client::builder()
         .user_agent(KUGOU_USER_AGENT)
         .connect_timeout(Duration::from_secs(
             KUGOU_PROXY_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
         ))
+        .redirect(kugou_safe_redirect_policy())
         .build()
         .map_err(|err| format!("创建酷狗代理请求客户端失败：{err}"))?;
     let method = if request.method == "HEAD" {
@@ -2123,7 +2121,7 @@ fn get_legacy_song_playback_url(
 ) -> Result<KugouPlaybackUrl, String> {
     let url = format!(
         "{KUGOU_PLAY_INFO_ENDPOINT}?cmd=playInfo&hash={}",
-        url_encode_component(&hash)
+        url_encode_component(hash)
     );
     let body = http_get_json(&url)?;
     let play_url = value_as_string(&body, "url")
@@ -2245,9 +2243,6 @@ fn get_registered_gateway_song_playback_url(
             credential,
             Some("trackercdn.kugou.com"),
             Some(&request_hash),
-            KUGOU_APPID,
-            KUGOU_CLIENTVER,
-            KUGOU_SIGNATURE_ANDROID_SECRET,
         ) {
             Ok(response) => response,
             Err(err) => {
@@ -2396,18 +2391,18 @@ fn get_logged_in_song_playback_url(
             .unwrap_or_else(|| calculate_mid(hash));
         let collect_time = current_epoch_millis() as u64;
         let tracker_key = playback_tracker_key(hash, &mid, &user_id);
-        let bodies = playback_request_bodies(
+        let bodies = playback_request_bodies(PlaybackRequestParams {
             hash,
             album_audio_id,
             audio_id,
-            &user_id,
-            &token,
-            &vip_token,
-            &tracker_key,
+            user_id: &user_id,
+            token: &token,
+            vip_token: &vip_token,
+            tracker_key: &tracker_key,
             collect_time,
-            vip_type_number,
+            vip_type: vip_type_number,
             quality_preference,
-        );
+        });
         if bodies.is_empty() {
             return Err(kugou_priv_url_unsupported_quality_message(
                 quality_preference,
@@ -2422,9 +2417,6 @@ fn get_logged_in_song_playback_url(
                 body,
                 &mut credential.cookies,
                 None,
-                KUGOU_APPID,
-                KUGOU_CLIENTVER,
-                KUGOU_SIGNATURE_ANDROID_SECRET,
             )?;
             match ensure_kugou_success(&response, "酷狗会员播放链接获取") {
                 Ok(()) => break 'request response,
@@ -2516,101 +2508,99 @@ fn get_logged_in_song_playback_url(
     })
 }
 
-fn playback_request_bodies(
-    hash: &str,
+struct PlaybackRequestParams<'a> {
+    hash: &'a str,
     album_audio_id: Option<u64>,
     audio_id: Option<u64>,
-    user_id: &str,
-    token: &str,
-    vip_token: &str,
-    tracker_key: &str,
+    user_id: &'a str,
+    token: &'a str,
+    vip_token: &'a str,
+    tracker_key: &'a str,
     collect_time: u64,
     vip_type: u64,
-    quality_preference: &str,
-) -> Vec<(&'static str, Value)> {
+    quality_preference: &'a str,
+}
+
+fn playback_request_bodies(params: PlaybackRequestParams<'_>) -> Vec<(&'static str, Value)> {
+    let PlaybackRequestParams {
+        hash,
+        album_audio_id,
+        audio_id,
+        user_id,
+        token,
+        vip_token,
+        tracker_key,
+        collect_time,
+        vip_type,
+        quality_preference,
+    } = params;
     let mut attempts = Vec::new();
     let qualities = kugou_priv_url_quality_candidates(quality_preference);
     if qualities.is_empty() {
         return attempts;
     }
-    attempts.push((
-        "数值 album_audio_id",
-        playback_request_body(
+    let build_body = |album_audio_id, audio_id, user_id, vip| {
+        playback_request_body(PlaybackRequestBodyParams {
             hash,
-            album_audio_id.map(Value::from),
-            audio_id.map(Value::from),
-            Value::String(user_id.to_string()),
+            album_audio_id,
+            audio_id,
+            user_id,
             token,
             vip_token,
             tracker_key,
             collect_time,
+            vip,
+            qualities: &qualities,
+        })
+    };
+    attempts.push((
+        "数值 album_audio_id",
+        build_body(
+            album_audio_id.map(Value::from),
+            audio_id.map(Value::from),
+            Value::String(user_id.to_string()),
             Value::from(vip_type),
-            &qualities,
         ),
     ));
     if let Some(album_audio_id) = album_audio_id {
         attempts.push((
             "字符串 album_audio_id",
-            playback_request_body(
-                hash,
+            build_body(
                 Some(Value::String(album_audio_id.to_string())),
                 audio_id.map(Value::from),
                 Value::String(user_id.to_string()),
-                token,
-                vip_token,
-                tracker_key,
-                collect_time,
                 Value::from(vip_type),
-                &qualities,
             ),
         ));
     } else {
         attempts.push((
             "省略 album_audio_id",
-            playback_request_body(
-                hash,
+            build_body(
                 None,
                 audio_id.map(Value::from),
                 Value::String(user_id.to_string()),
-                token,
-                vip_token,
-                tracker_key,
-                collect_time,
                 Value::from(vip_type),
-                &qualities,
             ),
         ));
     }
     if let Some(audio_id) = audio_id {
         attempts.push((
             "数值 audio_id",
-            playback_request_body(
-                hash,
+            build_body(
                 album_audio_id.map(Value::from),
                 Some(Value::from(audio_id)),
                 Value::String(user_id.to_string()),
-                token,
-                vip_token,
-                tracker_key,
-                collect_time,
                 Value::from(vip_type),
-                &qualities,
             ),
         ));
         if album_audio_id.is_none() {
             attempts.push((
                 "audio_id 作为 album_audio_id",
-                playback_request_body(
-                    hash,
+                build_body(
                     Some(Value::from(audio_id)),
                     Some(Value::from(audio_id)),
                     Value::String(user_id.to_string()),
-                    token,
-                    vip_token,
-                    tracker_key,
-                    collect_time,
                     Value::from(vip_type),
-                    &qualities,
                 ),
             ));
         }
@@ -2619,17 +2609,11 @@ fn playback_request_bodies(
     if let Ok(user_id_number) = user_id.trim().parse::<u64>() {
         attempts.push((
             "userid 数字格式",
-            playback_request_body(
-                hash,
+            build_body(
                 album_audio_id.map(Value::from),
                 audio_id.map(Value::from),
                 Value::from(user_id_number),
-                token,
-                vip_token,
-                tracker_key,
-                collect_time,
                 Value::from(vip_type),
-                &qualities,
             ),
         ));
     }
@@ -2637,18 +2621,32 @@ fn playback_request_bodies(
     attempts
 }
 
-fn playback_request_body(
-    hash: &str,
+struct PlaybackRequestBodyParams<'a> {
+    hash: &'a str,
     album_audio_id: Option<Value>,
     audio_id: Option<Value>,
     user_id: Value,
-    token: &str,
-    vip_token: &str,
-    tracker_key: &str,
+    token: &'a str,
+    vip_token: &'a str,
+    tracker_key: &'a str,
     collect_time: u64,
     vip: Value,
-    qualities: &[&str],
-) -> Value {
+    qualities: &'a [&'a str],
+}
+
+fn playback_request_body(params: PlaybackRequestBodyParams<'_>) -> Value {
+    let PlaybackRequestBodyParams {
+        hash,
+        album_audio_id,
+        audio_id,
+        user_id,
+        token,
+        vip_token,
+        tracker_key,
+        collect_time,
+        vip,
+        qualities,
+    } = params;
     let mut resource = serde_json::Map::new();
     if let Some(album_audio_id) = album_audio_id {
         resource.insert("album_audio_id".to_string(), album_audio_id);
@@ -2750,9 +2748,6 @@ fn get_kugou_privilege_lite(
         body,
         cookies,
         Some("media.store.kugou.com"),
-        KUGOU_APPID,
-        KUGOU_CLIENTVER,
-        KUGOU_SIGNATURE_ANDROID_SECRET,
     )?;
     ensure_kugou_success(&response, "酷狗音质可用性预检")
         .map_err(|err| append_kugou_playback_diagnostic(err, &response))?;
@@ -3182,118 +3177,11 @@ fn kugou_quality_availability_diagnostic(
     Some(parts.join("；"))
 }
 
-fn refresh_kugou_login_token(credential: &mut KugouCredential) -> Result<(), String> {
-    let token = credential
-        .cookies
-        .get("token")
-        .cloned()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "酷狗登录刷新缺少 token，请重新扫码登录。".to_string())?;
-    let user_id = credential
-        .cookies
-        .get("userid")
-        .cloned()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "酷狗登录刷新缺少用户 ID，请重新扫码登录。".to_string())?;
-    let now_ms = current_epoch_millis() as u64;
-    let p3 = aes256_cbc_encrypt_hex_value(
-        &json!({
-            "clienttime": now_ms / 1000,
-            "token": token,
-        }),
-        KUGOU_LOGIN_TOKEN_LITE_KEY,
-        KUGOU_LOGIN_TOKEN_LITE_IV,
-    )?;
-    let (encrypted_params, encrypted_params_key) =
-        aes256_cbc_encrypt_hex_with_temp_key(&json!({}))?;
-    let pk = rsa_raw_encrypt_lite_hex(
-        &serde_json::to_string(&json!({
-            "clienttime_ms": now_ms,
-            "key": encrypted_params_key,
-        }))
-        .map_err(|err| format!("序列化酷狗登录刷新 pk 失败：{err}"))?,
-    )?;
-    let guid = credential
-        .cookies
-        .get("KUGOU_API_GUID")
-        .cloned()
-        .unwrap_or_else(pseudo_uuid);
-    let mac = credential
-        .cookies
-        .get("KUGOU_API_MAC")
-        .cloned()
-        .unwrap_or_else(|| pseudo_alnum(12));
-    let dev = credential
-        .cookies
-        .get("KUGOU_API_DEV")
-        .cloned()
-        .unwrap_or_else(|| pseudo_alnum(16));
-    credential
-        .cookies
-        .entry("KUGOU_API_GUID".to_string())
-        .or_insert(guid.clone());
-    credential
-        .cookies
-        .entry("KUGOU_API_MAC".to_string())
-        .or_insert(mac.clone());
-    credential
-        .cookies
-        .entry("KUGOU_API_DEV".to_string())
-        .or_insert(dev.clone());
-    let t2 = aes256_cbc_encrypt_hex_text(
-        &format!("{guid}|0f607264fc6318a92b9e13c65db7cd3c|{mac}|{dev}|{now_ms}"),
-        KUGOU_LOGIN_TOKEN_LITE_T2_KEY,
-        KUGOU_LOGIN_TOKEN_LITE_T2_IV,
-    )?;
-    let existing_t1 = credential.cookies.get("t1").cloned().unwrap_or_default();
-    let t1 = aes256_cbc_encrypt_hex_text(
-        &format!("{existing_t1}|{now_ms}"),
-        KUGOU_LOGIN_TOKEN_LITE_T1_KEY,
-        KUGOU_LOGIN_TOKEN_LITE_T1_IV,
-    )?;
-    let body = json!({
-        "dfid": first_cookie_value(&credential.cookies, &["dfid", "DFID"]).unwrap_or_else(|| "-".to_string()),
-        "p3": p3,
-        "plat": 1,
-        "t1": t1,
-        "t2": t2,
-        "t3": "MCwwLDAsMCwwLDAsMCwwLDA=",
-        "pk": pk,
-        "params": encrypted_params,
-        "userid": user_id,
-        "clienttime_ms": now_ms,
-        "dev": dev,
-    });
-    let response = kugou_android_post_json(
-        KUGOU_LOGIN_TOKEN_BASE,
-        "/v5/login_by_token",
-        BTreeMap::new(),
-        body,
-        &mut credential.cookies,
-        None,
-    )?;
-    ensure_kugou_success(&response, "酷狗登录 token 刷新")?;
-    let data = response
-        .get("data")
-        .ok_or_else(|| "酷狗登录 token 刷新响应缺少 data 字段。".to_string())?;
-    if let Some(secu_params) =
-        value_as_string(data, "secu_params").filter(|value| !value.trim().is_empty())
-    {
-        if let Some(decoded) =
-            aes256_cbc_decrypt_hex_with_temp_key(&secu_params, &encrypted_params_key)?
-        {
-            if let Some(token) = decoded.as_str().filter(|value| !value.trim().is_empty()) {
-                credential
-                    .cookies
-                    .insert("token".to_string(), token.to_string());
-            } else {
-                merge_login_token_fields(credential, &decoded);
-            }
-        }
-    }
-    merge_login_token_fields(credential, data);
-
-    Ok(())
+fn refresh_kugou_login_token(_credential: &mut KugouCredential) -> Result<(), String> {
+    Err(
+        "酷狗登录 token 自动刷新已安全禁用：当前仅确认到明文 HTTP 官方端点，应用不会通过不安全连接发送 token、用户 ID 或设备标识。请清除酷狗登录状态后重新扫码登录。"
+            .to_string(),
+    )
 }
 
 fn ensure_kugou_device_registered(
@@ -3413,9 +3301,6 @@ fn register_kugou_device(
         &encrypted_body,
         cookies,
         &aes_key,
-        KUGOU_APPID,
-        KUGOU_CLIENTVER,
-        KUGOU_SIGNATURE_ANDROID_SECRET,
     )?;
     ensure_kugou_success(&response, "酷狗设备注册")?;
     response
@@ -3426,18 +3311,114 @@ fn register_kugou_device(
         .ok_or_else(|| "酷狗设备注册响应缺少 dfid。".to_string())
 }
 
-fn merge_login_token_fields(credential: &mut KugouCredential, data: &Value) {
-    for (cookie_key, response_keys) in [
-        ("t1", &["t1"][..]),
-        ("token", &["token"][..]),
-        ("userid", &["userid", "user_id"][..]),
-        ("vip_type", &["vip_type", "vipType", "viptype"][..]),
-        ("vip_token", &["vip_token", "vipToken", "viptoken"][..]),
-    ] {
-        if let Some(value) = first_string(data, response_keys).filter(|value| !value.is_empty()) {
-            credential.cookies.insert(cookie_key.to_string(), value);
-        }
+fn guard_kugou_transport(
+    target_url: &str,
+    params: Option<&BTreeMap<String, String>>,
+    body: Option<&Value>,
+    transmitted_metadata: Option<&BTreeMap<String, String>>,
+) -> Result<(), String> {
+    let parsed =
+        Url::parse(target_url).map_err(|_| "酷狗请求地址无效，已阻止发送。".to_string())?;
+
+    match parsed.scheme() {
+        "https" => return Ok(()),
+        "http" => {}
+        _ => return Err("酷狗请求仅允许使用 HTTP 或 HTTPS。".to_string()),
     }
+
+    let sensitive_field = if !parsed.username().is_empty() || parsed.password().is_some() {
+        Some("URL 认证信息".to_string())
+    } else {
+        parsed
+            .query_pairs()
+            .find_map(|(key, _)| sensitive_kugou_transport_field(&key).then(|| key.into_owned()))
+            .or_else(|| {
+                params.and_then(|values| {
+                    values
+                        .keys()
+                        .find(|key| sensitive_kugou_transport_field(key))
+                        .cloned()
+                })
+            })
+            .or_else(|| body.and_then(find_sensitive_kugou_json_field))
+            .or_else(|| {
+                transmitted_metadata.and_then(|values| {
+                    values
+                        .keys()
+                        .find(|key| sensitive_kugou_transport_field(key))
+                        .cloned()
+                })
+            })
+    };
+
+    if let Some(field) = sensitive_field {
+        return Err(format!(
+            "安全策略已阻止酷狗明文 HTTP 请求：检测到敏感字段 {field}。请使用证书有效的 HTTPS 端点。"
+        ));
+    }
+
+    Ok(())
+}
+
+fn sensitive_kugou_transport_field(field: &str) -> bool {
+    let normalized = field
+        .chars()
+        .filter(|char| char.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+
+    normalized.contains("token")
+        || matches!(
+            normalized.as_str(),
+            "userid"
+                | "uid"
+                | "dfid"
+                | "mid"
+                | "uuid"
+                | "guid"
+                | "mac"
+                | "dev"
+                | "device"
+                | "deviceid"
+                | "imei"
+                | "imsi"
+                | "authorization"
+                | "cookie"
+                | "session"
+                | "credential"
+        )
+        || normalized.ends_with("userid")
+        || normalized.ends_with("apidfid")
+        || normalized.ends_with("apimid")
+        || normalized.ends_with("apiguid")
+        || normalized.ends_with("apimac")
+        || normalized.ends_with("apidev")
+}
+
+fn find_sensitive_kugou_json_field(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(object) => object.iter().find_map(|(key, value)| {
+            if sensitive_kugou_transport_field(key) {
+                Some(key.clone())
+            } else {
+                find_sensitive_kugou_json_field(value)
+            }
+        }),
+        Value::Array(values) => values.iter().find_map(find_sensitive_kugou_json_field),
+        _ => None,
+    }
+}
+
+fn kugou_safe_redirect_policy() -> Policy {
+    Policy::custom(|attempt| {
+        if attempt.previous().len() >= 10 {
+            return attempt.stop();
+        }
+        if guard_kugou_transport(attempt.url().as_str(), None, None, None).is_err() {
+            return attempt.stop();
+        }
+        attempt.follow()
+    })
 }
 
 fn kugou_signed_get_json(
@@ -3487,6 +3468,9 @@ fn kugou_signed_get_json(
     }
     final_params.insert("signature".to_string(), signature_web(&final_params));
 
+    let target_url = format!("{base_url}{path}");
+    guard_kugou_transport(&target_url, Some(&final_params), None, Some(cookies))?;
+
     let query = final_params
         .iter()
         .map(|(key, value)| {
@@ -3502,6 +3486,8 @@ fn kugou_signed_get_json(
     let client = Client::builder()
         .user_agent(KUGOU_USER_AGENT)
         .timeout(Duration::from_secs(18))
+        .https_only(true)
+        .redirect(kugou_safe_redirect_policy())
         .build()
         .map_err(|err| format!("创建酷狗登录请求客户端失败：{err}"))?;
     let response = client
@@ -3538,17 +3524,7 @@ fn kugou_android_post_json(
     cookies: &mut BTreeMap<String, String>,
     router: Option<&str>,
 ) -> Result<Value, String> {
-    kugou_android_post_json_with_client(
-        base_url,
-        path,
-        params,
-        data,
-        cookies,
-        router,
-        KUGOU_APPID,
-        KUGOU_CLIENTVER,
-        KUGOU_SIGNATURE_ANDROID_SECRET,
-    )
+    kugou_android_post_json_with_client(base_url, path, params, data, cookies, router)
 }
 
 fn kugou_android_post_json_with_client(
@@ -3558,9 +3534,6 @@ fn kugou_android_post_json_with_client(
     data: Value,
     cookies: &mut BTreeMap<String, String>,
     router: Option<&str>,
-    appid: &str,
-    clientver: &str,
-    signature_secret: &str,
 ) -> Result<Value, String> {
     let mut final_params = BTreeMap::new();
     final_params.insert(
@@ -3580,8 +3553,8 @@ fn kugou_android_post_json_with_client(
             .unwrap_or_else(|| "-".to_string()),
     );
     final_params.insert("uuid".to_string(), "-".to_string());
-    final_params.insert("appid".to_string(), appid.to_string());
-    final_params.insert("clientver".to_string(), clientver.to_string());
+    final_params.insert("appid".to_string(), KUGOU_APPID.to_string());
+    final_params.insert("clientver".to_string(), KUGOU_CLIENTVER.to_string());
     final_params.insert(
         "clienttime".to_string(),
         current_epoch_seconds().to_string(),
@@ -3602,10 +3575,13 @@ fn kugou_android_post_json_with_client(
         final_params.insert(key, value);
     }
 
+    let target_url = format!("{base_url}{path}");
+    guard_kugou_transport(&target_url, Some(&final_params), Some(&data), Some(cookies))?;
+
     let data_text = serde_json::to_string(&data).map_err(|err| err.to_string())?;
     final_params.insert(
         "signature".to_string(),
-        signature_android_with_secret(&final_params, &data_text, signature_secret),
+        signature_android_with_secret(&final_params, &data_text, KUGOU_SIGNATURE_ANDROID_SECRET),
     );
     let query = final_params
         .iter()
@@ -3622,6 +3598,8 @@ fn kugou_android_post_json_with_client(
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent("Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi")
+        .https_only(true)
+        .redirect(kugou_safe_redirect_policy())
         .build()
         .map_err(|err| format!("创建酷狗请求客户端失败：{err}"))?;
     let mut request = client
@@ -3667,12 +3645,9 @@ fn kugou_android_get_json_with_client(
     credential: &mut KugouCredential,
     router: Option<&str>,
     key_hash: Option<&str>,
-    appid: &str,
-    clientver: &str,
-    signature_secret: &str,
 ) -> Result<Value, String> {
     let cookies = &mut credential.cookies;
-    let mut final_params = kugou_android_base_params(cookies, appid, clientver);
+    let mut final_params = kugou_android_base_params(cookies, KUGOU_APPID, KUGOU_CLIENTVER);
     for (key, value) in params {
         final_params.insert(key, value);
     }
@@ -3687,9 +3662,11 @@ fn kugou_android_get_json_with_client(
             playback_tracker_key(hash, &mid, &user_id),
         );
     }
+    let target_url = format!("{base_url}{path}");
+    guard_kugou_transport(&target_url, Some(&final_params), None, Some(cookies))?;
     final_params.insert(
         "signature".to_string(),
-        signature_android_with_secret(&final_params, "", signature_secret),
+        signature_android_with_secret(&final_params, "", KUGOU_SIGNATURE_ANDROID_SECRET),
     );
     let query = final_params
         .iter()
@@ -3706,6 +3683,8 @@ fn kugou_android_get_json_with_client(
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent("Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi")
+        .https_only(true)
+        .redirect(kugou_safe_redirect_policy())
         .build()
         .map_err(|err| format!("创建酷狗请求客户端失败：{err}"))?;
     let mut request = client
@@ -3749,17 +3728,16 @@ fn kugou_android_post_text_encrypted_json(
     data_text: &str,
     cookies: &mut BTreeMap<String, String>,
     decrypt_key: &str,
-    appid: &str,
-    clientver: &str,
-    signature_secret: &str,
 ) -> Result<Value, String> {
-    let mut final_params = kugou_android_base_params(cookies, appid, clientver);
+    let mut final_params = kugou_android_base_params(cookies, KUGOU_APPID, KUGOU_CLIENTVER);
     for (key, value) in params {
         final_params.insert(key, value);
     }
+    let target_url = format!("{base_url}{path}");
+    guard_kugou_transport(&target_url, Some(&final_params), None, Some(cookies))?;
     final_params.insert(
         "signature".to_string(),
-        signature_android_with_secret(&final_params, data_text, signature_secret),
+        signature_android_with_secret(&final_params, data_text, KUGOU_SIGNATURE_ANDROID_SECRET),
     );
     let query = final_params
         .iter()
@@ -3776,6 +3754,8 @@ fn kugou_android_post_text_encrypted_json(
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
         .user_agent("Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi")
+        .https_only(true)
+        .redirect(kugou_safe_redirect_policy())
         .build()
         .map_err(|err| format!("创建酷狗请求客户端失败：{err}"))?;
     let response = client
@@ -4744,7 +4724,7 @@ fn extract_login_profile(data: &Value, user_id: &str) -> KugouLoginProfile {
     let avatar_url = value_as_string(data, "pic")
         .or_else(|| value_as_string(data, "img"))
         .or_else(|| value_as_string(data, "avatar"))
-        .and_then(|value| normalize_cover_url(value));
+        .and_then(normalize_cover_url);
 
     KugouLoginProfile {
         user_id: user_id.to_string(),
@@ -4815,48 +4795,6 @@ fn sign_params_key(data: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn aes256_cbc_encrypt_hex_value(value: &Value, key: &str, iv: &str) -> Result<String, String> {
-    let text =
-        serde_json::to_string(value).map_err(|err| format!("序列化酷狗加密参数失败：{err}"))?;
-    aes256_cbc_encrypt_hex_text(&text, key, iv)
-}
-
-fn aes256_cbc_encrypt_hex_text(text: &str, key: &str, iv: &str) -> Result<String, String> {
-    let encrypted = CbcEncryptor::<Aes256>::new_from_slices(key.as_bytes(), iv.as_bytes())
-        .map_err(|err| format!("初始化酷狗 AES 加密失败：{err}"))?
-        .encrypt_padded_vec_mut::<Pkcs7>(text.as_bytes());
-    Ok(hex_encode(&encrypted))
-}
-
-fn aes256_cbc_encrypt_hex_with_temp_key(value: &Value) -> Result<(String, String), String> {
-    let temp_key = pseudo_alnum(16).to_lowercase();
-    let md5_key = md5_hex(&temp_key);
-    let iv = &md5_key[md5_key.len() - 16..];
-    let encrypted = aes256_cbc_encrypt_hex_value(value, &md5_key, iv)?;
-    Ok((encrypted, temp_key))
-}
-
-fn aes256_cbc_decrypt_hex_with_temp_key(
-    data: &str,
-    temp_key: &str,
-) -> Result<Option<Value>, String> {
-    let md5_key = md5_hex(temp_key);
-    let iv = &md5_key[md5_key.len() - 16..];
-    let encrypted = hex_decode(data)?;
-    let decrypted = CbcDecryptor::<Aes256>::new_from_slices(md5_key.as_bytes(), iv.as_bytes())
-        .map_err(|err| format!("初始化酷狗 AES 解密失败：{err}"))?
-        .decrypt_padded_vec_mut::<Pkcs7>(&encrypted)
-        .map_err(|err| format!("解密酷狗会员 token 失败：{err}"))?;
-    let text =
-        String::from_utf8(decrypted).map_err(|err| format!("解析酷狗会员 token 失败：{err}"))?;
-    if text.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(
-        serde_json::from_str::<Value>(&text).unwrap_or_else(|_| Value::String(text)),
-    ))
-}
-
 fn playlist_aes_encrypt_base64_value(value: &Value, temp_key: &str) -> Result<String, String> {
     let text =
         serde_json::to_string(value).map_err(|err| format!("序列化酷狗设备注册参数失败：{err}"))?;
@@ -4892,29 +4830,7 @@ fn playlist_aes_decrypt_bytes(bytes: &[u8], temp_key: &str) -> Result<Value, Str
         return Err("酷狗设备注册响应为空。".to_string());
     }
 
-    Ok(serde_json::from_str::<Value>(&text).unwrap_or_else(|_| Value::String(text)))
-}
-
-fn rsa_raw_encrypt_lite_hex(text: &str) -> Result<String, String> {
-    let modulus = BigUint::parse_bytes(KUGOU_LITE_RSA_MODULUS_HEX.as_bytes(), 16)
-        .ok_or_else(|| "解析酷狗 RSA 公钥失败。".to_string())?;
-    let exponent = BigUint::parse_bytes(KUGOU_RSA_PUBLIC_EXPONENT_HEX.as_bytes(), 16)
-        .ok_or_else(|| "解析酷狗 RSA 指数失败。".to_string())?;
-    let key_len = KUGOU_LITE_RSA_MODULUS_HEX.len() / 2;
-    let bytes = text.as_bytes();
-    if bytes.len() > key_len {
-        return Err("酷狗 RSA 加密数据过长。".to_string());
-    }
-    let mut padded = vec![0u8; key_len];
-    padded[..bytes.len()].copy_from_slice(bytes);
-    let encrypted = BigUint::from_bytes_be(&padded).modpow(&exponent, &modulus);
-    let mut output = encrypted.to_bytes_be();
-    if output.len() < key_len {
-        let mut padded_output = vec![0u8; key_len - output.len()];
-        padded_output.extend(output);
-        output = padded_output;
-    }
-    Ok(hex_encode(&output))
+    Ok(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
 }
 
 fn rsa_pkcs1_encrypt_lite_hex(text: &str) -> Result<String, String> {
@@ -4969,20 +4885,6 @@ fn hex_encode(bytes: &[u8]) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
-}
-
-fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
-    let value = value.trim();
-    if value.len() % 2 != 0 {
-        return Err("酷狗 hex 数据长度无效。".to_string());
-    }
-    (0..value.len())
-        .step_by(2)
-        .map(|index| {
-            u8::from_str_radix(&value[index..index + 2], 16)
-                .map_err(|err| format!("解析酷狗 hex 数据失败：{err}"))
-        })
-        .collect()
 }
 
 fn create_qr_image(qr_url: &str) -> Result<String, String> {
@@ -5059,12 +4961,9 @@ fn pending_file(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn write_credential(app: &AppHandle, credential: &KugouCredential) -> Result<(), String> {
     let path = credential_file(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| format!("创建酷狗凭据目录失败：{err}"))?;
-    }
-    let content = serde_json::to_string_pretty(credential)
+    let content = serde_json::to_vec_pretty(credential)
         .map_err(|err| format!("序列化酷狗凭据失败：{err}"))?;
-    fs::write(path, content).map_err(|err| format!("保存酷狗凭据失败：{err}"))
+    app_data::atomic_write_file(&path, &content).map_err(|err| format!("保存酷狗凭据失败：{err}"))
 }
 
 fn read_credential(app: &AppHandle) -> Result<Option<KugouCredential>, String> {
@@ -5080,12 +4979,10 @@ fn read_credential(app: &AppHandle) -> Result<Option<KugouCredential>, String> {
 
 fn write_pending_login(app: &AppHandle, pending: &KugouPendingLogin) -> Result<(), String> {
     let path = pending_file(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| format!("创建酷狗登录目录失败：{err}"))?;
-    }
-    let content = serde_json::to_string_pretty(pending)
+    let content = serde_json::to_vec_pretty(pending)
         .map_err(|err| format!("序列化酷狗登录状态失败：{err}"))?;
-    fs::write(path, content).map_err(|err| format!("保存酷狗登录状态失败：{err}"))
+    app_data::atomic_write_file(&path, &content)
+        .map_err(|err| format!("保存酷狗登录状态失败：{err}"))
 }
 
 fn read_pending_login(app: &AppHandle) -> Result<Option<KugouPendingLogin>, String> {
@@ -5215,13 +5112,10 @@ fn decode_track_items_from_text(text: &str) -> Option<Vec<Value>> {
         if let Some(items) = find_owned_track_array(&parsed) {
             return Some(items);
         }
-        let Some(inner) = parsed
+        let inner = parsed
             .as_str()
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-        else {
-            return None;
-        };
+            .filter(|value| !value.is_empty())?;
         if inner == current {
             return None;
         }
@@ -5383,9 +5277,6 @@ fn request_public_playlist_track_page(
         &mut temp_credential,
         None,
         None,
-        KUGOU_APPID,
-        KUGOU_CLIENTVER,
-        KUGOU_SIGNATURE_ANDROID_SECRET,
     );
     *cookies = temp_credential.cookies;
 
@@ -5863,9 +5754,11 @@ fn value_shape_summary(value: &Value) -> String {
 }
 
 fn http_get_json(url: &str) -> Result<Value, String> {
+    guard_kugou_transport(url, None, None, None)?;
     let client = Client::builder()
         .user_agent(KUGOU_USER_AGENT)
         .timeout(Duration::from_secs(18))
+        .redirect(kugou_safe_redirect_policy())
         .build()
         .map_err(|err| format!("创建酷狗请求客户端失败：{err}"))?;
     let response = client
@@ -6150,4 +6043,106 @@ fn url_encode_component(value: &str) -> String {
         }
     }
     output
+}
+
+#[cfg(test)]
+mod transport_security_tests {
+    use super::*;
+
+    #[test]
+    fn public_http_request_without_authentication_is_allowed() {
+        let result = guard_kugou_transport(
+            "http://mobilecdn.kugou.com/api/v3/search/song?keyword=test&page=1",
+            None,
+            None,
+            None,
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn plaintext_http_query_with_login_token_is_blocked_without_echoing_value() {
+        let result = guard_kugou_transport(
+            "http://example.kugou.com/path?token=should-not-appear",
+            None,
+            None,
+            None,
+        )
+        .expect_err("HTTP token query must be rejected");
+
+        assert!(result.contains("敏感字段 token"));
+        assert!(!result.contains("should-not-appear"));
+    }
+
+    #[test]
+    fn plaintext_http_nested_vip_token_is_blocked() {
+        let body = json!({
+            "data": {
+                "vip_token": "redacted"
+            }
+        });
+        let result = guard_kugou_transport(
+            "http://tracker.kugou.com/v6/priv_url",
+            None,
+            Some(&body),
+            None,
+        )
+        .expect_err("HTTP VIP token body must be rejected");
+
+        assert!(result.contains("敏感字段 vip_token"));
+    }
+
+    #[test]
+    fn plaintext_http_user_id_parameter_is_blocked() {
+        let params = BTreeMap::from([("user_id".to_string(), "redacted".to_string())]);
+        let result =
+            guard_kugou_transport("http://example.kugou.com/path", Some(&params), None, None)
+                .expect_err("HTTP user ID parameter must be rejected");
+
+        assert!(result.contains("敏感字段 user_id"));
+    }
+
+    #[test]
+    fn plaintext_http_device_metadata_is_blocked() {
+        let metadata = BTreeMap::from([("KUGOU_API_GUID".to_string(), "redacted".to_string())]);
+        let result =
+            guard_kugou_transport("http://example.kugou.com/path", None, None, Some(&metadata))
+                .expect_err("HTTP device identifier must be rejected");
+
+        assert!(result.contains("敏感字段 KUGOU_API_GUID"));
+    }
+
+    #[test]
+    fn https_request_can_carry_authentication_fields() {
+        let params = BTreeMap::from([
+            ("userid".to_string(), "redacted".to_string()),
+            ("token".to_string(), "redacted".to_string()),
+        ]);
+
+        assert!(guard_kugou_transport(
+            "https://gateway.kugou.com/v5/url",
+            Some(&params),
+            None,
+            None,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn login_token_refresh_is_disabled_without_verified_https_endpoint() {
+        let mut credential = KugouCredential {
+            cookies: BTreeMap::from([
+                ("userid".to_string(), "redacted".to_string()),
+                ("token".to_string(), "redacted".to_string()),
+            ]),
+            saved_at: "test".to_string(),
+            profile: None,
+        };
+
+        let error = refresh_kugou_login_token(&mut credential)
+            .expect_err("insecure login refresh must remain disabled");
+        assert!(error.contains("自动刷新已安全禁用"));
+        assert!(error.contains("明文 HTTP"));
+    }
 }

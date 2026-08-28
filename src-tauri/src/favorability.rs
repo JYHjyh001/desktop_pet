@@ -151,17 +151,19 @@ pub fn set_enabled(
         &conn,
         &old,
         &row,
-        0,
-        0,
-        0,
-        0,
-        if enabled {
-            "好感度系统已开启"
-        } else {
-            "好感度系统已关闭"
+        LogChange {
+            favorability: 0,
+            mood: 0,
+            trust: 0,
+            intimacy: 0,
+            reason: if enabled {
+                "好感度系统已开启"
+            } else {
+                "好感度系统已关闭"
+            },
+            source: "system",
+            message_id: None,
         },
-        "system",
-        None,
     )?;
     status_from_row(&conn, row)
 }
@@ -188,13 +190,15 @@ pub fn set_favorability(
         &conn,
         &old,
         &row,
-        row.favorability - old.favorability,
-        0,
-        0,
-        0,
-        "用户手动设置好感度",
-        "manual",
-        None,
+        LogChange {
+            favorability: row.favorability - old.favorability,
+            mood: 0,
+            trust: 0,
+            intimacy: 0,
+            reason: "用户手动设置好感度",
+            source: "manual",
+            message_id: None,
+        },
     )?;
     status_from_row(&conn, row)
 }
@@ -218,13 +222,15 @@ pub fn reset_favorability(app: &AppHandle, character_id: &str) -> Result<Compani
         &conn,
         &old,
         &row,
-        -old.favorability,
-        0,
-        0,
-        0,
-        "用户重置好感度为 0",
-        "reset",
-        None,
+        LogChange {
+            favorability: -old.favorability,
+            mood: 0,
+            trust: 0,
+            intimacy: 0,
+            reason: "用户重置好感度为 0",
+            source: "reset",
+            message_id: None,
+        },
     )?;
     status_from_row(&conn, row)
 }
@@ -255,7 +261,7 @@ pub fn list_logs(
         .map_err(|err| format!("读取好感度日志失败：{err}"))?;
     let rows = stmt
         .query_map(
-            params![LOCAL_USER_ID, character_id, limit.max(1).min(200) as i64],
+            params![LOCAL_USER_ID, character_id, limit.clamp(1, 200) as i64],
             row_to_log,
         )
         .map_err(|err| format!("读取好感度日志失败：{err}"))?;
@@ -341,13 +347,15 @@ pub fn apply_dialogue_change(
             &conn,
             &old,
             &row,
-            favorability_change,
-            mood_change,
-            trust_change,
-            intimacy_change,
-            &reason,
-            "dialogue",
-            None,
+            LogChange {
+                favorability: favorability_change,
+                mood: mood_change,
+                trust: trust_change,
+                intimacy: intimacy_change,
+                reason: &reason,
+                source: "dialogue",
+                message_id: None,
+            },
         )?)
     } else {
         None
@@ -603,17 +611,21 @@ fn latest_reason(conn: &Connection, character_id: &str) -> Result<Option<String>
     .map_err(|err| format!("读取最近好感度变化失败：{err}"))
 }
 
+struct LogChange<'a> {
+    favorability: i32,
+    mood: i32,
+    trust: i32,
+    intimacy: i32,
+    reason: &'a str,
+    source: &'a str,
+    message_id: Option<u64>,
+}
+
 fn insert_log(
     conn: &Connection,
     old: &StatusRow,
     new: &StatusRow,
-    favorability_change: i32,
-    mood_change: i32,
-    trust_change: i32,
-    intimacy_change: i32,
-    reason: &str,
-    source: &str,
-    message_id: Option<u64>,
+    change: LogChange<'_>,
 ) -> Result<FavorabilityLog, String> {
     let created_at = app_data::now_seconds();
     conn.execute(
@@ -627,23 +639,23 @@ fn insert_log(
         params![
             LOCAL_USER_ID,
             new.character_id,
-            optional_sql_id(message_id)?,
+            optional_sql_id(change.message_id)?,
             old.favorability,
-            favorability_change,
+            change.favorability,
             new.favorability,
             old.mood,
-            mood_change,
+            change.mood,
             new.mood,
             old.trust,
-            trust_change,
+            change.trust,
             new.trust,
             old.intimacy,
-            intimacy_change,
+            change.intimacy,
             new.intimacy,
             old.relationship_stage,
             new.relationship_stage,
-            reason.trim(),
-            source,
+            change.reason.trim(),
+            change.source,
             created_at,
         ],
     )

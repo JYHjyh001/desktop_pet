@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewWindow,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position, Size,
+    WebviewWindow,
 };
 
 use crate::app_data;
@@ -306,9 +307,9 @@ pub fn set_pet_size(app: &AppHandle, size: u32) -> Result<(), String> {
         .ok_or_else(|| "未找到宠物窗口".to_string())?;
     let size = app_data::normalize_pet_size(size);
 
-    pet.set_size(Size::Physical(PhysicalSize {
-        width: size,
-        height: size,
+    pet.set_size(Size::Logical(LogicalSize {
+        width: size as f64,
+        height: size as f64,
     }))
     .map_err(|err| err.to_string())?;
     restore_pet_position(app);
@@ -332,16 +333,27 @@ pub fn hide_pet(app: &AppHandle) -> Result<(), String> {
         .get_webview_window("pet")
         .ok_or_else(|| "未找到宠物窗口".to_string())?;
 
-    let _ = hide_pet_bubble(app);
     pet.hide().map_err(|err| err.to_string())?;
+    let _ = hide_pet_bubble(app);
     prepare_window_open_animation(&pet);
     Ok(())
 }
 
 pub fn show_pet_bubble(app: &AppHandle, payload: PetBubblePayload) -> Result<(), String> {
+    let pet = app
+        .get_webview_window("pet")
+        .ok_or_else(|| "未找到宠物窗口".to_string())?;
     let bubble = app
         .get_webview_window("pet-bubble")
         .ok_or_else(|| "未找到宠物气泡窗口".to_string())?;
+
+    if !pet.is_visible().map_err(|err| err.to_string())? {
+        if bubble.is_visible().unwrap_or(false) {
+            hide_pet_bubble(app)?;
+        }
+        return Ok(());
+    }
+
     let payload = normalize_pet_bubble_payload(payload);
     let scale_factor = window_scale_factor(&bubble);
     let (logical_width, logical_height) = pet_bubble_window_size(&payload);
@@ -568,7 +580,7 @@ fn pet_bubble_dynamic_window_size(message: &str) -> (u32, u32) {
     let width = desired_width.clamp(PET_BUBBLE_MIN_WIDTH, PET_BUBBLE_MAX_WIDTH);
     let text_width = width.saturating_sub(PET_BUBBLE_TEXT_CHROME_WIDTH).max(96);
     let estimated_text_px = display_units.saturating_mul(6);
-    let line_count = ((estimated_text_px + text_width - 1) / text_width).clamp(1, 3);
+    let line_count = estimated_text_px.div_ceil(text_width).clamp(1, 3);
     let height = match line_count {
         1 => PET_BUBBLE_SINGLE_LINE_HEIGHT,
         2 => PET_BUBBLE_TWO_LINE_HEIGHT,
@@ -586,7 +598,7 @@ fn pet_bubble_expanded_window_size(message: &str) -> (u32, u32) {
     let width = desired_width.clamp(PET_BUBBLE_MIN_WIDTH, PET_BUBBLE_EXPANDED_MAX_WIDTH);
     let text_width = width.saturating_sub(PET_BUBBLE_TEXT_CHROME_WIDTH).max(120);
     let estimated_text_px = display_units.saturating_mul(6);
-    let line_count = ((estimated_text_px + text_width - 1) / text_width).clamp(2, 18);
+    let line_count = estimated_text_px.div_ceil(text_width).clamp(2, 18);
     let text_height = line_count.saturating_mul(17).saturating_add(22);
     let height = PET_BUBBLE_VERTICAL_CHROME_HEIGHT
         .saturating_add(text_height)
@@ -1123,7 +1135,18 @@ fn visible_pet_position(window: &WebviewWindow, x: i32, y: i32) -> PhysicalPosit
 
             let overlaps = x < right && x + width > left && y < bottom && y + height > top;
             if overlaps {
-                return clamp_to_screen(x, y, width, height, left, top, right, bottom);
+                return clamp_to_screen(
+                    x,
+                    y,
+                    width,
+                    height,
+                    ScreenBounds {
+                        left,
+                        top,
+                        right,
+                        bottom,
+                    },
+                );
             }
         }
 
@@ -1135,10 +1158,12 @@ fn visible_pet_position(window: &WebviewWindow, x: i32, y: i32) -> PhysicalPosit
                 y,
                 width,
                 height,
-                monitor_pos.x,
-                monitor_pos.y,
-                monitor_pos.x + monitor_size.width as i32,
-                monitor_pos.y + monitor_size.height as i32,
+                ScreenBounds {
+                    left: monitor_pos.x,
+                    top: monitor_pos.y,
+                    right: monitor_pos.x + monitor_size.width as i32,
+                    bottom: monitor_pos.y + monitor_size.height as i32,
+                },
             );
         }
     }
@@ -1151,10 +1176,12 @@ fn visible_pet_position(window: &WebviewWindow, x: i32, y: i32) -> PhysicalPosit
             y,
             width,
             height,
-            monitor_pos.x,
-            monitor_pos.y,
-            monitor_pos.x + monitor_size.width as i32,
-            monitor_pos.y + monitor_size.height as i32,
+            ScreenBounds {
+                left: monitor_pos.x,
+                top: monitor_pos.y,
+                right: monitor_pos.x + monitor_size.width as i32,
+                bottom: monitor_pos.y + monitor_size.height as i32,
+            },
         );
     }
 
@@ -1193,7 +1220,18 @@ fn default_pet_position(window: &WebviewWindow) -> PhysicalPosition<i32> {
         let x = right - width - 32;
         let y = bottom - height - 96;
 
-        return clamp_to_screen(x, y, width, height, left, top, right, bottom);
+        return clamp_to_screen(
+            x,
+            y,
+            width,
+            height,
+            ScreenBounds {
+                left,
+                top,
+                right,
+                bottom,
+            },
+        );
     }
 
     PhysicalPosition {
@@ -1202,20 +1240,24 @@ fn default_pet_position(window: &WebviewWindow) -> PhysicalPosition<i32> {
     }
 }
 
+struct ScreenBounds {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
 fn clamp_to_screen(
     x: i32,
     y: i32,
     width: i32,
     height: i32,
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
+    bounds: ScreenBounds,
 ) -> PhysicalPosition<i32> {
-    let min_x = left + SCREEN_MARGIN;
-    let min_y = top + SCREEN_MARGIN;
-    let max_x = (right - width - SCREEN_MARGIN).max(min_x);
-    let max_y = (bottom - height - SCREEN_MARGIN).max(min_y);
+    let min_x = bounds.left + SCREEN_MARGIN;
+    let min_y = bounds.top + SCREEN_MARGIN;
+    let max_x = (bounds.right - width - SCREEN_MARGIN).max(min_x);
+    let max_y = (bounds.bottom - height - SCREEN_MARGIN).max(min_y);
 
     PhysicalPosition {
         x: x.max(min_x).min(max_x),

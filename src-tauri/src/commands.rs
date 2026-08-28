@@ -9,7 +9,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Listener, Manager, WebviewWindow};
 
 use crate::{
     ai_chat::{
@@ -71,6 +71,8 @@ pub struct ShortcutSettingsDraft {
     pub toggle_drawer: String,
     #[serde(default = "default_translate_selection_shortcut")]
     pub translate_selection: String,
+    #[serde(default)]
+    pub translate_selection_consent: bool,
     #[serde(default = "default_pet_single_click_action")]
     pub pet_single_click: String,
     #[serde(default = "default_pet_double_click_action")]
@@ -84,6 +86,7 @@ impl Default for ShortcutSettingsDraft {
         Self {
             toggle_drawer: default_toggle_drawer_shortcut(),
             translate_selection: default_translate_selection_shortcut(),
+            translate_selection_consent: false,
             pet_single_click: default_pet_single_click_action(),
             pet_double_click: default_pet_double_click_action(),
             pet_right_click: default_pet_right_click_action(),
@@ -224,6 +227,13 @@ pub struct MusicImportItem {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MusicLibraryStorageInfo {
+    data_dir: String,
+    library_file: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MusicMetadataResult {
     title: Option<String>,
     artist: Option<String>,
@@ -244,12 +254,55 @@ pub struct MusicLyricsResult {
 }
 
 #[tauri::command]
-pub fn get_apps(app: AppHandle) -> Result<Vec<PetApp>, String> {
+pub fn get_apps(app: AppHandle, window: WebviewWindow) -> Result<Vec<PetApp>, String> {
+    require_command_window(&window, "get_apps")?;
     app_data::read_apps(&app)
 }
 
+fn reorder_app_list(apps: Vec<PetApp>, app_ids: &[String]) -> Result<Vec<PetApp>, String> {
+    if app_ids.len() != apps.len() {
+        return Err("快捷入口排序数量与当前列表不一致".to_string());
+    }
+
+    let mut apps_by_id = apps
+        .into_iter()
+        .map(|item| (item.id.clone(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut reordered = Vec::with_capacity(app_ids.len());
+
+    for app_id in app_ids {
+        let item = apps_by_id
+            .remove(app_id)
+            .ok_or_else(|| format!("快捷入口排序包含重复或未知 ID：{app_id}"))?;
+        reordered.push(item);
+    }
+
+    if !apps_by_id.is_empty() {
+        return Err("快捷入口排序缺少当前列表中的项目".to_string());
+    }
+
+    Ok(reordered)
+}
+
 #[tauri::command]
-pub fn upsert_app(app: AppHandle, draft: AppDraft) -> Result<PetApp, String> {
+pub fn reorder_apps(
+    app: AppHandle,
+    window: WebviewWindow,
+    app_ids: Vec<String>,
+) -> Result<(), String> {
+    require_command_window(&window, "reorder_apps")?;
+    let apps = app_data::read_apps(&app)?;
+    let reordered = reorder_app_list(apps, &app_ids)?;
+    app_data::write_apps(&app, &reordered)
+}
+
+#[tauri::command]
+pub fn upsert_app(
+    app: AppHandle,
+    window: WebviewWindow,
+    draft: AppDraft,
+) -> Result<PetApp, String> {
+    require_command_window(&window, "upsert_app")?;
     let mut apps = app_data::read_apps(&app)?;
     let now = app_data::now_seconds();
     let item_kind = normalize_item_kind(&draft.item_kind);
@@ -309,7 +362,8 @@ fn normalize_item_kind(value: &str) -> String {
 }
 
 #[tauri::command]
-pub fn delete_app(app: AppHandle, app_id: String) -> Result<(), String> {
+pub fn delete_app(app: AppHandle, window: WebviewWindow, app_id: String) -> Result<(), String> {
+    require_command_window(&window, "delete_app")?;
     let mut apps = app_data::read_apps(&app)?;
     let before_len = apps.len();
     apps.retain(|item| item.id != app_id);
@@ -324,9 +378,11 @@ pub fn delete_app(app: AppHandle, app_id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn set_app_run_as_admin(
     app: AppHandle,
+    window: WebviewWindow,
     app_id: String,
     run_as_admin: bool,
 ) -> Result<PetApp, String> {
+    require_command_window(&window, "set_app_run_as_admin")?;
     let mut apps = app_data::read_apps(&app)?;
     let index = apps
         .iter()
@@ -341,18 +397,30 @@ pub fn set_app_run_as_admin(
 }
 
 #[tauri::command]
-pub fn launch_app(app: AppHandle, app_id: String) -> Result<PetApp, String> {
+pub fn launch_app(app: AppHandle, window: WebviewWindow, app_id: String) -> Result<PetApp, String> {
+    require_command_window(&window, "launch_app")?;
     launcher::launch_app(&app, &app_id)
 }
 
 #[tauri::command]
-pub fn open_app_dir(app: AppHandle, app_id: String) -> Result<(), String> {
+pub fn open_app_dir(app: AppHandle, window: WebviewWindow, app_id: String) -> Result<(), String> {
+    require_command_window(&window, "open_app_dir")?;
     launcher::open_app_dir(&app, &app_id)
 }
 
 #[tauri::command]
-pub fn get_config(app: AppHandle) -> Result<PetDrawerConfig, String> {
-    let mut config = app_data::read_config(&app)?;
+pub fn get_config(app: AppHandle, window: WebviewWindow) -> Result<PetDrawerConfig, String> {
+    require_command_window(&window, "get_config")?;
+    read_runtime_config(&app)
+}
+
+#[tauri::command]
+pub fn get_public_config(app: AppHandle) -> Result<PetDrawerConfig, String> {
+    read_runtime_config(&app).map(redact_public_config)
+}
+
+fn read_runtime_config(app: &AppHandle) -> Result<PetDrawerConfig, String> {
+    let mut config = app_data::read_config(app)?;
     if let Ok(start_on_boot) = startup::is_start_on_boot_enabled() {
         if start_on_boot {
             config.system.start_on_boot = true;
@@ -362,37 +430,230 @@ pub fn get_config(app: AppHandle) -> Result<PetDrawerConfig, String> {
     Ok(config)
 }
 
+fn require_window(window: &WebviewWindow, allowed_labels: &[&str]) -> Result<(), String> {
+    if is_window_label_allowed(window.label(), allowed_labels) {
+        Ok(())
+    } else {
+        Err(format!("窗口 {} 无权执行此操作", window.label()))
+    }
+}
+
+fn is_window_label_allowed(label: &str, allowed_labels: &[&str]) -> bool {
+    allowed_labels.contains(&label)
+}
+
+fn allowed_windows_for_command(command: &str) -> Option<&'static [&'static str]> {
+    match command {
+        "get_apps"
+        | "upsert_app"
+        | "reorder_apps"
+        | "delete_app"
+        | "set_app_run_as_admin"
+        | "launch_app"
+        | "open_app_dir"
+        | "get_config"
+        | "get_runtime_info"
+        | "get_storage_settings"
+        | "save_storage_settings"
+        | "set_quick_search_tags"
+        | "save_drawer_preferences"
+        | "upsert_companion"
+        | "import_companion_card"
+        | "export_companion_card"
+        | "switch_companion"
+        | "delete_companion"
+        | "list_pet_skins"
+        | "set_pet_skin"
+        | "read_pet_skin_package"
+        | "import_pet_skin"
+        | "update_pet_skin"
+        | "delete_pet_skin"
+        | "import_pet_image"
+        | "reset_pet_image"
+        | "import_app_icon"
+        | "import_executable_icon"
+        | "get_image_data_url"
+        | "test_ai_connection"
+        | "test_wechat_clawbot"
+        | "simulate_wechat_clawbot_message"
+        | "start_codex_app_server"
+        | "stop_codex_app_server"
+        | "start_codex_app_server_turn"
+        | "list_pet_memories"
+        | "add_pet_memory"
+        | "update_pet_memory"
+        | "delete_pet_memory"
+        | "clear_pet_memories"
+        | "clear_pet_memory_messages"
+        | "import_pet_memory"
+        | "export_pet_memory"
+        | "open_pet_memory_dir"
+        | "check_for_update"
+        | "open_update_page" => Some(&["drawer"]),
+        "list_companions" => Some(&["drawer", "story"]),
+        "get_current_companion" => Some(&["drawer", "pet-chat"]),
+        "get_current_pet_skin" => Some(&["drawer", "pet-chat", "pet"]),
+        "save_chat_display_preferences"
+        | "get_current_companion_status"
+        | "set_current_companion_favorability_enabled"
+        | "set_current_companion_favorability"
+        | "reset_current_companion_favorability"
+        | "list_current_companion_favorability_logs"
+        | "get_companion_messages"
+        | "delete_companion_messages"
+        | "get_music_library_summary"
+        | "send_pet_chat_message"
+        | "classify_music_intent"
+        | "send_pet_music_chat_message"
+        | "send_wechat_clawbot_message" => Some(&["pet-chat"]),
+        "list_story_saves" | "get_story_save" | "create_story" | "advance_story"
+        | "delete_story_save" | "rename_story_save" => Some(&["story"]),
+        "translate_text" => Some(&["translator"]),
+        "translate_selected_text"
+        | "save_pet_position"
+        | "is_primary_mouse_button_pressed"
+        | "open_codex_window" => Some(&["pet"]),
+        "save_music_immersive_theme"
+        | "get_music_library_state"
+        | "save_music_library_state"
+        | "get_music_library_storage_info"
+        | "list_music_files_in_directory"
+        | "import_music_files"
+        | "read_music_metadata"
+        | "read_music_lyrics"
+        | "create_netease_qr_login"
+        | "check_netease_qr_login"
+        | "get_netease_login_status"
+        | "clear_netease_login"
+        | "list_netease_playlists"
+        | "get_netease_playlist_detail"
+        | "search_netease_songs"
+        | "read_netease_lyrics"
+        | "get_netease_song_playback_url"
+        | "create_kugou_qr_login"
+        | "check_kugou_qr_login"
+        | "get_kugou_login_status"
+        | "clear_kugou_login"
+        | "list_kugou_playlists"
+        | "get_kugou_playlist_detail"
+        | "list_kugou_recommended_playlists"
+        | "get_kugou_recommended_playlist_detail"
+        | "get_kugou_daily_recommended_songs"
+        | "search_kugou_songs"
+        | "read_kugou_lyrics"
+        | "get_kugou_song_playback_url"
+        | "get_kugou_song_quality_availability"
+        | "get_kugou_playback_proxy_status" => Some(&["music"]),
+        "get_codex_app_server_status" | "ack_codex_notifications" => {
+            Some(&["drawer", "pet", "pet-bubble"])
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+fn is_command_allowed_for_window(command: &str, label: &str) -> bool {
+    allowed_windows_for_command(command)
+        .is_some_and(|allowed_labels| is_window_label_allowed(label, allowed_labels))
+}
+
+fn require_command_window(window: &WebviewWindow, command: &str) -> Result<(), String> {
+    let allowed_labels = allowed_windows_for_command(command)
+        .ok_or_else(|| format!("命令 {command} 未配置窗口授权"))?;
+    require_window(window, allowed_labels)
+}
+
+fn redact_public_config(mut config: PetDrawerConfig) -> PetDrawerConfig {
+    config.pet.x = None;
+    config.pet.y = None;
+    config.pet.custom_image = None;
+    config.drawer.categories.clear();
+    config.drawer.quick_search_tags.clear();
+    config.system.start_on_boot = false;
+    config.system.auto_favorite_enabled = false;
+
+    config.ai.api_key.clear();
+    config.ai.base_url = public_ai_origin(&config.ai.base_url);
+    config.ai.system_prompt.clear();
+    config.ai.active_profile_id.clear();
+    config.ai.profiles.clear();
+
+    config.wechat_clawbot.openclaw_command.clear();
+    config.wechat_clawbot.channel.clear();
+    config.wechat_clawbot.account.clear();
+    config.wechat_clawbot.target.clear();
+    config.wechat_clawbot.bridge_host.clear();
+    config.wechat_clawbot.bridge_port = 0;
+    config.wechat_clawbot.bridge_path.clear();
+    config.wechat_clawbot.bridge_token.clear();
+
+    config.codex_app_server.command.clear();
+    config.codex_app_server.socket_path.clear();
+    config.codex_app_server.port = 0;
+    config.companions.clear();
+    config.current_companion_id.clear();
+    config.companions_initialized = false;
+    config
+}
+
+fn public_ai_origin(base_url: &str) -> String {
+    reqwest::Url::parse(base_url.trim())
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
-pub fn list_companions(app: AppHandle) -> Result<Vec<Companion>, String> {
+pub fn list_companions(app: AppHandle, window: WebviewWindow) -> Result<Vec<Companion>, String> {
+    require_command_window(&window, "list_companions")?;
     ai_memory::list_companions(&app)
 }
 
 #[tauri::command]
-pub fn get_current_companion(app: AppHandle) -> Result<Companion, String> {
+pub fn get_current_companion(app: AppHandle, window: WebviewWindow) -> Result<Companion, String> {
+    require_command_window(&window, "get_current_companion")?;
     ai_memory::current_companion(&app)
 }
 
 #[tauri::command]
-pub fn upsert_companion(app: AppHandle, draft: CompanionDraft) -> Result<Companion, String> {
+pub fn upsert_companion(
+    app: AppHandle,
+    window: WebviewWindow,
+    draft: CompanionDraft,
+) -> Result<Companion, String> {
+    require_command_window(&window, "upsert_companion")?;
     ai_memory::upsert_companion(&app, draft)
 }
 
 #[tauri::command]
-pub fn import_companion_card(app: AppHandle, path: String) -> Result<Companion, String> {
+pub fn import_companion_card(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: String,
+) -> Result<Companion, String> {
+    require_command_window(&window, "import_companion_card")?;
     ai_memory::import_companion_card(&app, &path)
 }
 
 #[tauri::command]
 pub fn export_companion_card(
     app: AppHandle,
+    window: WebviewWindow,
     companion_id: String,
     path: String,
 ) -> Result<(), String> {
+    require_command_window(&window, "export_companion_card")?;
     ai_memory::export_companion_card(&app, &companion_id, &path)
 }
 
 #[tauri::command]
-pub fn switch_companion(app: AppHandle, companion_id: String) -> Result<Companion, String> {
+pub fn switch_companion(
+    app: AppHandle,
+    window: WebviewWindow,
+    companion_id: String,
+) -> Result<Companion, String> {
+    require_command_window(&window, "switch_companion")?;
     let mut companion = ai_memory::switch_companion(&app, &companion_id)?;
     if app_data::set_current_pet_skin(&app, &companion.skin_id).is_err() {
         app_data::set_current_pet_skin(&app, "default")?;
@@ -403,7 +664,12 @@ pub fn switch_companion(app: AppHandle, companion_id: String) -> Result<Companio
 }
 
 #[tauri::command]
-pub fn delete_companion(app: AppHandle, companion_id: String) -> Result<Companion, String> {
+pub fn delete_companion(
+    app: AppHandle,
+    window: WebviewWindow,
+    companion_id: String,
+) -> Result<Companion, String> {
+    require_command_window(&window, "delete_companion")?;
     let mut companion = ai_memory::delete_companion(&app, &companion_id)?;
     let _ = favorability::delete_companion_data(&app, &companion_id);
     if app_data::set_current_pet_skin(&app, &companion.skin_id).is_err() {
@@ -415,51 +681,75 @@ pub fn delete_companion(app: AppHandle, companion_id: String) -> Result<Companio
 }
 
 #[tauri::command]
-pub fn get_current_companion_status(app: AppHandle) -> Result<CompanionStatus, String> {
+pub fn get_current_companion_status(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<CompanionStatus, String> {
+    require_command_window(&window, "get_current_companion_status")?;
     favorability::get_current_companion_status(&app)
 }
 
 #[tauri::command]
 pub fn set_current_companion_favorability_enabled(
     app: AppHandle,
+    window: WebviewWindow,
     enabled: bool,
 ) -> Result<CompanionStatus, String> {
+    require_command_window(&window, "set_current_companion_favorability_enabled")?;
     favorability::set_current_enabled(&app, enabled)
 }
 
 #[tauri::command]
 pub fn set_current_companion_favorability(
     app: AppHandle,
+    window: WebviewWindow,
     value: i32,
 ) -> Result<CompanionStatus, String> {
+    require_command_window(&window, "set_current_companion_favorability")?;
     favorability::set_current_favorability(&app, value)
 }
 
 #[tauri::command]
-pub fn reset_current_companion_favorability(app: AppHandle) -> Result<CompanionStatus, String> {
+pub fn reset_current_companion_favorability(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<CompanionStatus, String> {
+    require_command_window(&window, "reset_current_companion_favorability")?;
     favorability::reset_current_favorability(&app)
 }
 
 #[tauri::command]
 pub fn list_current_companion_favorability_logs(
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<Vec<FavorabilityLog>, String> {
+    require_command_window(&window, "list_current_companion_favorability_logs")?;
     favorability::list_current_logs(&app, 100)
 }
 
 #[tauri::command]
-pub fn get_companion_messages(app: AppHandle) -> Result<Vec<PetMemoryMessage>, String> {
+pub fn get_companion_messages(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<Vec<PetMemoryMessage>, String> {
+    require_command_window(&window, "get_companion_messages")?;
     let companion_id = ai_memory::current_companion_id(&app)?;
     ai_memory::recent_messages(&app, &companion_id, 200)
 }
 
 #[tauri::command]
-pub fn delete_companion_messages(app: AppHandle, message_ids: Vec<u64>) -> Result<usize, String> {
+pub fn delete_companion_messages(
+    app: AppHandle,
+    window: WebviewWindow,
+    message_ids: Vec<u64>,
+) -> Result<usize, String> {
+    require_command_window(&window, "delete_companion_messages")?;
     ai_memory::delete_messages(&app, message_ids)
 }
 
 #[tauri::command]
-pub fn get_runtime_info(app: AppHandle) -> Result<RuntimeInfo, String> {
+pub fn get_runtime_info(app: AppHandle, window: WebviewWindow) -> Result<RuntimeInfo, String> {
+    require_command_window(&window, "get_runtime_info")?;
     let executable_path = std::env::current_exe()
         .map_err(|err| format!("无法获取当前程序路径：{err}"))?
         .to_string_lossy()
@@ -479,20 +769,31 @@ pub fn get_runtime_info(app: AppHandle) -> Result<RuntimeInfo, String> {
 }
 
 #[tauri::command]
-pub fn get_storage_settings(app: AppHandle) -> Result<StorageSettings, String> {
+pub fn get_storage_settings(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<StorageSettings, String> {
+    require_command_window(&window, "get_storage_settings")?;
     app_data::read_storage_settings(&app)
 }
 
 #[tauri::command]
 pub fn save_storage_settings(
     app: AppHandle,
+    window: WebviewWindow,
     settings: StorageSettings,
 ) -> Result<StorageSettings, String> {
+    require_command_window(&window, "save_storage_settings")?;
     app_data::save_storage_settings(&app, &settings)
 }
 
 #[tauri::command]
-pub fn set_quick_search_tags(app: AppHandle, tags: Vec<String>) -> Result<Vec<String>, String> {
+pub fn set_quick_search_tags(
+    app: AppHandle,
+    window: WebviewWindow,
+    tags: Vec<String>,
+) -> Result<Vec<String>, String> {
+    require_command_window(&window, "set_quick_search_tags")?;
     let mut seen = std::collections::HashSet::new();
     let normalized: Vec<String> = tags
         .into_iter()
@@ -512,8 +813,10 @@ pub fn set_quick_search_tags(app: AppHandle, tags: Vec<String>) -> Result<Vec<St
 #[tauri::command]
 pub fn save_drawer_preferences(
     app: AppHandle,
+    window: WebviewWindow,
     preferences: DrawerPreferencesDraft,
 ) -> Result<PetDrawerConfig, String> {
+    require_command_window(&window, "save_drawer_preferences")?;
     let categories = normalize_unique_list(preferences.categories, 30);
     let quick_search_tags = normalize_unique_list(preferences.quick_search_tags, 20);
     let tag_display_mode = if preferences.tag_display_mode == "detailed" {
@@ -558,29 +861,33 @@ pub fn save_drawer_preferences(
 #[tauri::command]
 pub fn save_music_immersive_theme(
     app: AppHandle,
+    window: WebviewWindow,
     theme: String,
 ) -> Result<PetDrawerConfig, String> {
+    require_command_window(&window, "save_music_immersive_theme")?;
     let music_immersive_theme = normalize_music_immersive_theme(theme);
     let mut config = app_data::read_config(&app)?;
     config.drawer.music_immersive_theme = music_immersive_theme;
     app_data::write_config(&app, &config)?;
 
-    Ok(config)
+    Ok(redact_public_config(config))
 }
 
 #[tauri::command]
 pub fn save_chat_display_preferences(
     app: AppHandle,
+    window: WebviewWindow,
     chat_typewriter_enabled: bool,
     chat_narration_enabled: bool,
     chat_music_link_enabled: bool,
 ) -> Result<PetDrawerConfig, String> {
+    require_command_window(&window, "save_chat_display_preferences")?;
     let mut config = app_data::read_config(&app)?;
     config.drawer.chat_typewriter_enabled = chat_typewriter_enabled;
     config.drawer.chat_narration_enabled = chat_narration_enabled;
     config.drawer.chat_music_link_enabled = chat_music_link_enabled;
     app_data::write_config(&app, &config)?;
-    Ok(config)
+    Ok(redact_public_config(config))
 }
 
 fn normalize_unique_list(items: Vec<String>, max_items: usize) -> Vec<String> {
@@ -687,6 +994,15 @@ fn normalize_wechat_clawbot_settings(
 }
 
 fn normalize_shortcut_settings(settings: ShortcutSettingsDraft) -> ShortcutSettings {
+    let translate_selection = settings.translate_selection.trim();
+    let translate_selection = if translate_selection.is_empty() {
+        String::new()
+    } else {
+        translate_selection.chars().take(64).collect()
+    };
+    let translate_selection_consent =
+        !translate_selection.is_empty() && settings.translate_selection_consent;
+
     ShortcutSettings {
         toggle_drawer: {
             let value = settings.toggle_drawer.trim();
@@ -696,14 +1012,8 @@ fn normalize_shortcut_settings(settings: ShortcutSettingsDraft) -> ShortcutSetti
                 value.to_string()
             }
         },
-        translate_selection: {
-            let value = settings.translate_selection.trim();
-            if value.is_empty() {
-                default_translate_selection_shortcut()
-            } else {
-                value.chars().take(64).collect()
-            }
-        },
+        translate_selection,
+        translate_selection_consent,
         pet_single_click: normalize_pet_action(
             &settings.pet_single_click,
             &default_pet_single_click_action(),
@@ -888,33 +1198,52 @@ fn normalize_emoji_frequency(value: String) -> String {
 }
 
 #[tauri::command]
-pub fn list_pet_skins(app: AppHandle) -> Result<Vec<PetSkinSummary>, String> {
+pub fn list_pet_skins(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<Vec<PetSkinSummary>, String> {
+    require_command_window(&window, "list_pet_skins")?;
     app_data::list_pet_skins(&app)
 }
 
 #[tauri::command]
-pub fn get_current_pet_skin(app: AppHandle) -> Result<PetSkinSummary, String> {
+pub fn get_current_pet_skin(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<PetSkinSummary, String> {
+    require_command_window(&window, "get_current_pet_skin")?;
     app_data::get_current_pet_skin(&app)
 }
 
 #[tauri::command]
-pub fn set_pet_skin(app: AppHandle, skin_id: String) -> Result<PetSkinSummary, String> {
+pub fn set_pet_skin(
+    app: AppHandle,
+    window: WebviewWindow,
+    skin_id: String,
+) -> Result<PetSkinSummary, String> {
+    require_command_window(&window, "set_pet_skin")?;
     let skin = app_data::set_current_pet_skin(&app, &skin_id)?;
     ai_memory::set_current_companion_skin(&app, &skin.id)?;
     Ok(skin)
 }
 
 #[tauri::command]
-pub fn read_pet_skin_package(path: String) -> Result<PetSkinPackageDraft, String> {
+pub fn read_pet_skin_package(
+    window: WebviewWindow,
+    path: String,
+) -> Result<PetSkinPackageDraft, String> {
+    require_command_window(&window, "read_pet_skin_package")?;
     app_data::read_pet_skin_package(&path)
 }
 
 #[tauri::command]
 pub fn import_pet_skin(
     app: AppHandle,
+    window: WebviewWindow,
     name: String,
     animations: PetAnimationSet,
 ) -> Result<PetSkinSummary, String> {
+    require_command_window(&window, "import_pet_skin")?;
     let skin = app_data::import_pet_skin(&app, &name, animations)?;
     ai_memory::set_current_companion_skin(&app, &skin.id)?;
     Ok(skin)
@@ -923,23 +1252,35 @@ pub fn import_pet_skin(
 #[tauri::command]
 pub fn update_pet_skin(
     app: AppHandle,
+    window: WebviewWindow,
     skin_id: String,
     name: String,
     animations: PetAnimationSet,
     cleared_states: Vec<String>,
 ) -> Result<PetSkinSummary, String> {
+    require_command_window(&window, "update_pet_skin")?;
     app_data::update_pet_skin(&app, &skin_id, &name, animations, cleared_states)
 }
 
 #[tauri::command]
-pub fn delete_pet_skin(app: AppHandle, skin_id: String) -> Result<PetSkinSummary, String> {
+pub fn delete_pet_skin(
+    app: AppHandle,
+    window: WebviewWindow,
+    skin_id: String,
+) -> Result<PetSkinSummary, String> {
+    require_command_window(&window, "delete_pet_skin")?;
     let skin = app_data::delete_pet_skin(&app, &skin_id)?;
     ai_memory::set_current_companion_skin(&app, &skin.id)?;
     Ok(skin)
 }
 
 #[tauri::command]
-pub fn import_pet_image(app: AppHandle, path: String) -> Result<String, String> {
+pub fn import_pet_image(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: String,
+) -> Result<String, String> {
+    require_command_window(&window, "import_pet_image")?;
     let relative_path = app_data::import_image(&app, &path, "pets", "pet")?;
     let mut config = app_data::read_config(&app)?;
     config.pet.current_skin = "default".to_string();
@@ -949,34 +1290,56 @@ pub fn import_pet_image(app: AppHandle, path: String) -> Result<String, String> 
 }
 
 #[tauri::command]
-pub fn reset_pet_image(app: AppHandle) -> Result<(), String> {
+pub fn reset_pet_image(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    require_command_window(&window, "reset_pet_image")?;
     app_data::set_current_pet_skin(&app, "default")?;
     ai_memory::set_current_companion_skin(&app, "default")
 }
 
 #[tauri::command]
-pub fn import_app_icon(app: AppHandle, path: String) -> Result<String, String> {
+pub fn import_app_icon(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: String,
+) -> Result<String, String> {
+    require_command_window(&window, "import_app_icon")?;
     app_data::import_image(&app, &path, "icons", "icon")
 }
 
 #[tauri::command]
-pub fn import_executable_icon(app: AppHandle, path: String) -> Result<String, String> {
+pub fn import_executable_icon(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: String,
+) -> Result<String, String> {
+    require_command_window(&window, "import_executable_icon")?;
     app_data::import_executable_icon(&app, &path)
 }
 
 #[tauri::command]
-pub fn get_image_data_url(app: AppHandle, relative_path: String) -> Result<String, String> {
+pub fn get_image_data_url(
+    app: AppHandle,
+    window: WebviewWindow,
+    relative_path: String,
+) -> Result<String, String> {
+    require_command_window(&window, "get_image_data_url")?;
     app_data::read_image_data_url(&app, &relative_path)
 }
 
 #[tauri::command]
-pub fn save_pet_position(app: AppHandle, position: PetPosition) -> Result<(), String> {
+pub fn save_pet_position(
+    app: AppHandle,
+    window: WebviewWindow,
+    position: PetPosition,
+) -> Result<(), String> {
+    require_command_window(&window, "save_pet_position")?;
     windowing::save_pet_position(&app, position.x, position.y)
 }
 
 #[tauri::command]
-pub fn is_primary_mouse_button_pressed() -> bool {
-    primary_mouse_button_pressed()
+pub fn is_primary_mouse_button_pressed(window: WebviewWindow) -> Result<bool, String> {
+    require_command_window(&window, "is_primary_mouse_button_pressed")?;
+    Ok(primary_mouse_button_pressed())
 }
 
 #[cfg(windows)]
@@ -1083,7 +1446,56 @@ pub fn hide_music_player(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn list_music_files_in_directory(directory: String) -> Result<Vec<String>, String> {
+pub fn get_music_library_state(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<serde_json::Value, String> {
+    require_command_window(&window, "get_music_library_state")?;
+    let state = app_data::read_music_library_state(&app)?;
+    allow_music_library_assets(&app, &state)?;
+    Ok(state)
+}
+
+#[tauri::command]
+pub fn save_music_library_state(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: serde_json::Value,
+) -> Result<(), String> {
+    require_command_window(&window, "save_music_library_state")?;
+    app_data::write_music_library_state(&app, &state)?;
+    allow_music_library_assets(&app, &state)
+}
+
+#[tauri::command]
+pub fn get_music_library_summary(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<app_data::MusicLibrarySummary, String> {
+    require_command_window(&window, "get_music_library_summary")?;
+    app_data::read_music_library_summary(&app)
+}
+
+#[tauri::command]
+pub fn get_music_library_storage_info(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<MusicLibraryStorageInfo, String> {
+    require_command_window(&window, "get_music_library_storage_info")?;
+    Ok(MusicLibraryStorageInfo {
+        data_dir: app_data::data_dir(&app)?.to_string_lossy().to_string(),
+        library_file: app_data::music_library_file(&app)?
+            .to_string_lossy()
+            .to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn list_music_files_in_directory(
+    window: WebviewWindow,
+    directory: String,
+) -> Result<Vec<String>, String> {
+    require_command_window(&window, "list_music_files_in_directory")?;
     let root = PathBuf::from(directory.trim());
     if !root.is_dir() {
         return Err("请选择有效的音乐文件夹".to_string());
@@ -1101,9 +1513,12 @@ pub fn list_music_files_in_directory(directory: String) -> Result<Vec<String>, S
 
 #[tauri::command]
 pub fn import_music_files(
+    app: AppHandle,
+    window: WebviewWindow,
     paths: Vec<String>,
     storage_dir: String,
 ) -> Result<Vec<MusicImportItem>, String> {
+    require_command_window(&window, "import_music_files")?;
     let storage_dir = storage_dir.trim();
     let storage = if storage_dir.is_empty() {
         None
@@ -1129,6 +1544,9 @@ pub fn import_music_files(
             source_path.clone()
         };
 
+        app.asset_protocol_scope()
+            .allow_file(&target_path)
+            .map_err(|err| format!("授权音乐播放文件失败：{err}"))?;
         output.push(MusicImportItem {
             source_path: source_path.to_string_lossy().to_string(),
             path: target_path.to_string_lossy().to_string(),
@@ -1143,7 +1561,11 @@ pub fn import_music_files(
 }
 
 #[tauri::command]
-pub fn read_music_metadata(path: String) -> Result<MusicMetadataResult, String> {
+pub fn read_music_metadata(
+    window: WebviewWindow,
+    path: String,
+) -> Result<MusicMetadataResult, String> {
+    require_command_window(&window, "read_music_metadata")?;
     let music_path = PathBuf::from(path.trim());
     if !music_path.is_file() || !is_supported_music_file(&music_path) {
         return Err("请选择有效的音频文件".to_string());
@@ -1195,22 +1617,25 @@ pub fn read_music_metadata(path: String) -> Result<MusicMetadataResult, String> 
 
 #[tauri::command]
 pub fn read_music_lyrics(
+    app: AppHandle,
+    window: WebviewWindow,
     path: String,
     source_path: Option<String>,
 ) -> Result<Option<MusicLyricsResult>, String> {
+    require_command_window(&window, "read_music_lyrics")?;
     let music_path = PathBuf::from(path.trim());
     if !music_path.is_file() || !is_supported_music_file(&music_path) {
         return Err("请选择有效的音频文件".to_string());
     }
 
-    let mut warnings = Vec::new();
-    let mut candidates = vec![music_path.clone()];
-    if let Some(source) = source_path {
-        let source = PathBuf::from(source.trim());
-        if source.is_file() && source != music_path {
-            candidates.push(source);
-        }
+    let library_state = app_data::read_music_library_state(&app)?;
+    let candidates =
+        registered_lyrics_candidates(&library_state, &music_path, source_path.as_deref())?;
+    if !app.asset_protocol_scope().is_allowed(&music_path) {
+        return Err("音频文件未经用户选择或音乐库授权，已拒绝读取歌词".to_string());
     }
+
+    let mut warnings = Vec::new();
 
     for candidate in candidates {
         let Some(stem) = candidate.file_stem().and_then(|item| item.to_str()) else {
@@ -1231,7 +1656,9 @@ pub fn read_music_lyrics(
 #[tauri::command]
 pub async fn create_netease_qr_login(
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<netease_music::NeteaseQrLogin, String> {
+    require_command_window(&window, "create_netease_qr_login")?;
     tauri::async_runtime::spawn_blocking(move || netease_music::create_qr_login(&app))
         .await
         .map_err(|err| format!("网易云二维码创建任务失败：{err}"))?
@@ -1240,8 +1667,10 @@ pub async fn create_netease_qr_login(
 #[tauri::command]
 pub async fn check_netease_qr_login(
     app: AppHandle,
+    window: WebviewWindow,
     key: String,
 ) -> Result<netease_music::NeteaseQrCheckResult, String> {
+    require_command_window(&window, "check_netease_qr_login")?;
     tauri::async_runtime::spawn_blocking(move || netease_music::check_qr_login(&app, key))
         .await
         .map_err(|err| format!("网易云登录检查任务失败：{err}"))?
@@ -1250,7 +1679,9 @@ pub async fn check_netease_qr_login(
 #[tauri::command]
 pub async fn get_netease_login_status(
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<netease_music::NeteaseLoginStatus, String> {
+    require_command_window(&window, "get_netease_login_status")?;
     tauri::async_runtime::spawn_blocking(move || netease_music::login_status(&app))
         .await
         .map_err(|err| format!("网易云登录状态读取任务失败：{err}"))?
@@ -1259,7 +1690,9 @@ pub async fn get_netease_login_status(
 #[tauri::command]
 pub async fn clear_netease_login(
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<netease_music::NeteaseLoginStatus, String> {
+    require_command_window(&window, "clear_netease_login")?;
     tauri::async_runtime::spawn_blocking(move || netease_music::clear_login(&app))
         .await
         .map_err(|err| format!("网易云登录清除任务失败：{err}"))?
@@ -1268,7 +1701,9 @@ pub async fn clear_netease_login(
 #[tauri::command]
 pub async fn list_netease_playlists(
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<Vec<netease_music::NeteasePlaylistSummary>, String> {
+    require_command_window(&window, "list_netease_playlists")?;
     tauri::async_runtime::spawn_blocking(move || netease_music::list_playlists(&app))
         .await
         .map_err(|err| format!("网易云歌单读取任务失败：{err}"))?
@@ -1277,10 +1712,12 @@ pub async fn list_netease_playlists(
 #[tauri::command]
 pub async fn get_netease_playlist_detail(
     app: AppHandle,
+    window: WebviewWindow,
     playlist_id: u64,
     page: Option<u64>,
     limit: Option<u64>,
 ) -> Result<netease_music::NeteasePlaylistDetail, String> {
+    require_command_window(&window, "get_netease_playlist_detail")?;
     tauri::async_runtime::spawn_blocking(move || {
         netease_music::playlist_detail(&app, playlist_id, page, limit)
     })
@@ -1290,10 +1727,12 @@ pub async fn get_netease_playlist_detail(
 
 #[tauri::command]
 pub async fn search_netease_songs(
+    window: WebviewWindow,
     keyword: String,
     page: u64,
     limit: u64,
 ) -> Result<netease_music::NeteaseSearchResult, String> {
+    require_command_window(&window, "search_netease_songs")?;
     tauri::async_runtime::spawn_blocking(move || netease_music::search_songs(keyword, page, limit))
         .await
         .map_err(|err| format!("网易云搜索任务失败：{err}"))?
@@ -1302,8 +1741,10 @@ pub async fn search_netease_songs(
 #[tauri::command]
 pub async fn read_netease_lyrics(
     app: AppHandle,
+    window: WebviewWindow,
     song_id: u64,
 ) -> Result<netease_music::NeteaseLyricsResult, String> {
+    require_command_window(&window, "read_netease_lyrics")?;
     tauri::async_runtime::spawn_blocking(move || netease_music::song_lyrics(&app, song_id))
         .await
         .map_err(|err| format!("网易云歌词读取任务失败：{err}"))?
@@ -1312,9 +1753,11 @@ pub async fn read_netease_lyrics(
 #[tauri::command]
 pub async fn get_netease_song_playback_url(
     app: AppHandle,
+    window: WebviewWindow,
     song_id: u64,
     level: Option<String>,
 ) -> Result<netease_music::NeteasePlaybackUrl, String> {
+    require_command_window(&window, "get_netease_song_playback_url")?;
     tauri::async_runtime::spawn_blocking(move || {
         netease_music::song_playback_url(&app, song_id, level)
     })
@@ -1323,7 +1766,11 @@ pub async fn get_netease_song_playback_url(
 }
 
 #[tauri::command]
-pub async fn create_kugou_qr_login(app: AppHandle) -> Result<kugou_music::KugouQrLogin, String> {
+pub async fn create_kugou_qr_login(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<kugou_music::KugouQrLogin, String> {
+    require_command_window(&window, "create_kugou_qr_login")?;
     tauri::async_runtime::spawn_blocking(move || kugou_music::create_qr_login(&app))
         .await
         .map_err(|err| format!("酷狗二维码登录创建任务失败：{err}"))?
@@ -1332,8 +1779,10 @@ pub async fn create_kugou_qr_login(app: AppHandle) -> Result<kugou_music::KugouQ
 #[tauri::command]
 pub async fn check_kugou_qr_login(
     app: AppHandle,
+    window: WebviewWindow,
     key: String,
 ) -> Result<kugou_music::KugouQrCheckResult, String> {
+    require_command_window(&window, "check_kugou_qr_login")?;
     tauri::async_runtime::spawn_blocking(move || kugou_music::check_qr_login(&app, key))
         .await
         .map_err(|err| format!("酷狗登录检查任务失败：{err}"))?
@@ -1342,14 +1791,20 @@ pub async fn check_kugou_qr_login(
 #[tauri::command]
 pub async fn get_kugou_login_status(
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<kugou_music::KugouLoginStatus, String> {
+    require_command_window(&window, "get_kugou_login_status")?;
     tauri::async_runtime::spawn_blocking(move || kugou_music::login_status(&app))
         .await
         .map_err(|err| format!("酷狗登录状态读取任务失败：{err}"))?
 }
 
 #[tauri::command]
-pub async fn clear_kugou_login(app: AppHandle) -> Result<kugou_music::KugouLoginStatus, String> {
+pub async fn clear_kugou_login(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<kugou_music::KugouLoginStatus, String> {
+    require_command_window(&window, "clear_kugou_login")?;
     tauri::async_runtime::spawn_blocking(move || kugou_music::clear_login(&app))
         .await
         .map_err(|err| format!("酷狗登录清除任务失败：{err}"))?
@@ -1358,7 +1813,9 @@ pub async fn clear_kugou_login(app: AppHandle) -> Result<kugou_music::KugouLogin
 #[tauri::command]
 pub async fn list_kugou_playlists(
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<Vec<kugou_music::KugouPlaylistSummary>, String> {
+    require_command_window(&window, "list_kugou_playlists")?;
     tauri::async_runtime::spawn_blocking(move || kugou_music::list_playlists(&app))
         .await
         .map_err(|err| format!("酷狗歌单读取任务失败：{err}"))?
@@ -1367,10 +1824,12 @@ pub async fn list_kugou_playlists(
 #[tauri::command]
 pub async fn get_kugou_playlist_detail(
     app: AppHandle,
+    window: WebviewWindow,
     list_id: String,
     page: Option<u64>,
     limit: Option<u64>,
 ) -> Result<kugou_music::KugouPlaylistDetail, String> {
+    require_command_window(&window, "get_kugou_playlist_detail")?;
     tauri::async_runtime::spawn_blocking(move || {
         kugou_music::playlist_detail(&app, list_id, page, limit)
     })
@@ -1381,9 +1840,11 @@ pub async fn get_kugou_playlist_detail(
 #[tauri::command]
 pub async fn list_kugou_recommended_playlists(
     app: AppHandle,
+    window: WebviewWindow,
     page: Option<u64>,
     limit: Option<u64>,
 ) -> Result<kugou_music::KugouRecommendedPlaylists, String> {
+    require_command_window(&window, "list_kugou_recommended_playlists")?;
     tauri::async_runtime::spawn_blocking(move || {
         kugou_music::recommended_playlists(&app, page, limit)
     })
@@ -1394,10 +1855,12 @@ pub async fn list_kugou_recommended_playlists(
 #[tauri::command]
 pub async fn get_kugou_recommended_playlist_detail(
     app: AppHandle,
+    window: WebviewWindow,
     playlist_id: String,
     page: Option<u64>,
     limit: Option<u64>,
 ) -> Result<kugou_music::KugouPlaylistDetail, String> {
+    require_command_window(&window, "get_kugou_recommended_playlist_detail")?;
     tauri::async_runtime::spawn_blocking(move || {
         kugou_music::recommended_playlist_detail(&app, playlist_id, page, limit)
     })
@@ -1408,7 +1871,9 @@ pub async fn get_kugou_recommended_playlist_detail(
 #[tauri::command]
 pub async fn get_kugou_daily_recommended_songs(
     app: AppHandle,
+    window: WebviewWindow,
 ) -> Result<kugou_music::KugouSearchResult, String> {
+    require_command_window(&window, "get_kugou_daily_recommended_songs")?;
     tauri::async_runtime::spawn_blocking(move || kugou_music::daily_recommended_songs(&app))
         .await
         .map_err(|err| format!("酷狗每日推荐读取任务失败：{err}"))?
@@ -1416,10 +1881,12 @@ pub async fn get_kugou_daily_recommended_songs(
 
 #[tauri::command]
 pub async fn search_kugou_songs(
+    window: WebviewWindow,
     keyword: String,
     page: u64,
     limit: u64,
 ) -> Result<kugou_music::KugouSearchResult, String> {
+    require_command_window(&window, "search_kugou_songs")?;
     tauri::async_runtime::spawn_blocking(move || kugou_music::search_songs(keyword, page, limit))
         .await
         .map_err(|err| format!("酷狗搜索任务失败：{err}"))?
@@ -1427,11 +1894,13 @@ pub async fn search_kugou_songs(
 
 #[tauri::command]
 pub async fn read_kugou_lyrics(
+    window: WebviewWindow,
     hash: String,
     name: String,
     artist: String,
     duration_ms: Option<u64>,
 ) -> Result<kugou_music::KugouLyricsResult, String> {
+    require_command_window(&window, "read_kugou_lyrics")?;
     tauri::async_runtime::spawn_blocking(move || {
         kugou_music::read_lyrics(hash, name, artist, duration_ms)
     })
@@ -1442,12 +1911,14 @@ pub async fn read_kugou_lyrics(
 #[tauri::command]
 pub async fn get_kugou_song_playback_url(
     app: AppHandle,
+    window: WebviewWindow,
     hash: String,
     hash_candidates: Option<Vec<String>>,
     album_audio_id: Option<u64>,
     audio_id: Option<u64>,
     playback_quality: Option<String>,
 ) -> Result<kugou_music::KugouPlaybackUrl, String> {
+    require_command_window(&window, "get_kugou_song_playback_url")?;
     tauri::async_runtime::spawn_blocking(move || {
         kugou_music::get_song_playback_url(
             &app,
@@ -1465,10 +1936,12 @@ pub async fn get_kugou_song_playback_url(
 #[tauri::command]
 pub async fn get_kugou_song_quality_availability(
     app: AppHandle,
+    window: WebviewWindow,
     hash: String,
     hash_candidates: Option<Vec<String>>,
     album_audio_id: Option<u64>,
 ) -> Result<kugou_music::KugouQualityAvailability, String> {
+    require_command_window(&window, "get_kugou_song_quality_availability")?;
     tauri::async_runtime::spawn_blocking(move || {
         kugou_music::get_song_quality_availability(&app, hash, hash_candidates, album_audio_id)
     })
@@ -1478,8 +1951,10 @@ pub async fn get_kugou_song_quality_availability(
 
 #[tauri::command]
 pub async fn get_kugou_playback_proxy_status(
+    window: WebviewWindow,
     proxy_url: String,
 ) -> Result<kugou_music::KugouPlaybackProxyStatus, String> {
+    require_command_window(&window, "get_kugou_playback_proxy_status")?;
     tauri::async_runtime::spawn_blocking(move || kugou_music::playback_proxy_status(proxy_url))
         .await
         .map_err(|err| format!("酷狗播放代理状态读取任务失败：{err}"))?
@@ -1552,6 +2027,84 @@ fn is_supported_music_file(path: &Path) -> bool {
                 .any(|item| item.eq_ignore_ascii_case(extension))
         })
         .unwrap_or(false)
+}
+
+fn allow_music_library_assets(app: &AppHandle, state: &serde_json::Value) -> Result<(), String> {
+    for path in app_data::music_library_track_paths(state) {
+        if !path.is_file() || !is_supported_music_file(&path) {
+            continue;
+        }
+        app.asset_protocol_scope()
+            .allow_file(&path)
+            .map_err(|err| format!("授权音乐播放文件失败：{err}"))?;
+    }
+    if let Some(path) = registered_music_wallpaper_path(state) {
+        app.asset_protocol_scope()
+            .allow_file(&path)
+            .map_err(|err| format!("授权沉浸壁纸文件失败：{err}"))?;
+    }
+    Ok(())
+}
+
+fn registered_music_wallpaper_path(state: &serde_json::Value) -> Option<PathBuf> {
+    let path = PathBuf::from(
+        state
+            .get("settings")?
+            .get("immersiveWallpaperPath")?
+            .as_str()?
+            .trim(),
+    );
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    let supported = matches!(
+        extension.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "mp4" | "m4v" | "webm" | "mov" | "ogv" | "ogg"
+    );
+    (supported && path.is_file()).then_some(path)
+}
+
+fn registered_lyrics_candidates(
+    library_state: &serde_json::Value,
+    music_path: &Path,
+    source_path: Option<&str>,
+) -> Result<Vec<PathBuf>, String> {
+    let tracks = library_state
+        .get("tracks")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "音乐库中没有可校验的本机歌曲".to_string())?;
+    let registered_track = tracks.iter().find(|track| {
+        track
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|registered_path| same_path(Path::new(registered_path), music_path))
+    });
+    let Some(registered_track) = registered_track else {
+        return Err("该音频文件未在后端音乐库登记，已拒绝读取歌词".to_string());
+    };
+
+    let mut candidates = vec![music_path.to_path_buf()];
+    let Some(source_path) = source_path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return Ok(candidates);
+    };
+    let source_path = PathBuf::from(source_path);
+    if same_path(&source_path, music_path) {
+        return Ok(candidates);
+    }
+    if !source_path.is_file() || !is_supported_music_file(&source_path) {
+        return Err("sourcePath 必须是已导入的受支持音频文件".to_string());
+    }
+
+    let registered_source_path = registered_track
+        .get("sourcePath")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .ok_or_else(|| "音乐库未登记该歌曲的原始音频路径".to_string())?;
+    if !same_path(Path::new(registered_source_path), &source_path) {
+        return Err("sourcePath 与已登记歌曲不关联，已拒绝读取歌词".to_string());
+    }
+
+    candidates.push(source_path);
+    Ok(candidates)
 }
 
 fn copy_music_file_to_storage(source: &Path, storage: &Path) -> Result<PathBuf, String> {
@@ -1695,8 +2248,10 @@ fn clean_joined_texts<'a>(values: impl IntoIterator<Item = &'a str>) -> Option<S
 #[tauri::command]
 pub async fn send_pet_chat_message(
     app: AppHandle,
+    window: WebviewWindow,
     messages: Vec<PetChatMessageDraft>,
 ) -> Result<PetChatReply, String> {
+    require_command_window(&window, "send_pet_chat_message")?;
     tauri::async_runtime::spawn_blocking(move || ai_chat::send_pet_chat_message(&app, messages))
         .await
         .map_err(|err| format!("宠物对话任务失败：{err}"))?
@@ -1705,9 +2260,11 @@ pub async fn send_pet_chat_message(
 #[tauri::command]
 pub async fn classify_music_intent(
     app: AppHandle,
+    window: WebviewWindow,
     user_input: String,
     context: MusicIntentContext,
 ) -> Result<MusicIntentReply, String> {
+    require_command_window(&window, "classify_music_intent")?;
     tauri::async_runtime::spawn_blocking(move || {
         ai_chat::classify_music_intent(&app, user_input, context)
     })
@@ -1718,9 +2275,11 @@ pub async fn classify_music_intent(
 #[tauri::command]
 pub async fn send_pet_music_chat_message(
     app: AppHandle,
+    window: WebviewWindow,
     messages: Vec<PetChatMessageDraft>,
     action_context: MusicChatActionContext,
 ) -> Result<PetChatReply, String> {
+    require_command_window(&window, "send_pet_music_chat_message")?;
     tauri::async_runtime::spawn_blocking(move || {
         ai_chat::send_pet_music_chat_message(&app, messages, action_context)
     })
@@ -1729,20 +2288,28 @@ pub async fn send_pet_music_chat_message(
 }
 
 #[tauri::command]
-pub fn list_story_saves(app: AppHandle) -> Result<Vec<StorySave>, String> {
+pub fn list_story_saves(app: AppHandle, window: WebviewWindow) -> Result<Vec<StorySave>, String> {
+    require_command_window(&window, "list_story_saves")?;
     story_mode::list_story_saves(&app)
 }
 
 #[tauri::command]
-pub fn get_story_save(app: AppHandle, story_id: String) -> Result<StorySave, String> {
+pub fn get_story_save(
+    app: AppHandle,
+    window: WebviewWindow,
+    story_id: String,
+) -> Result<StorySave, String> {
+    require_command_window(&window, "get_story_save")?;
     story_mode::get_story_save(&app, &story_id)
 }
 
 #[tauri::command]
 pub async fn create_story(
     app: AppHandle,
+    window: WebviewWindow,
     draft: StoryCreateDraft,
 ) -> Result<StoryTurnReply, String> {
+    require_command_window(&window, "create_story")?;
     tauri::async_runtime::spawn_blocking(move || story_mode::create_story(&app, draft))
         .await
         .map_err(|err| format!("故事创建任务失败：{err}"))?
@@ -1751,9 +2318,11 @@ pub async fn create_story(
 #[tauri::command]
 pub async fn advance_story(
     app: AppHandle,
+    window: WebviewWindow,
     story_id: String,
     user_input: String,
 ) -> Result<StoryTurnReply, String> {
+    require_command_window(&window, "advance_story")?;
     tauri::async_runtime::spawn_blocking(move || {
         story_mode::advance_story(&app, &story_id, &user_input)
     })
@@ -1762,23 +2331,32 @@ pub async fn advance_story(
 }
 
 #[tauri::command]
-pub fn delete_story_save(app: AppHandle, story_id: String) -> Result<(), String> {
+pub fn delete_story_save(
+    app: AppHandle,
+    window: WebviewWindow,
+    story_id: String,
+) -> Result<(), String> {
+    require_command_window(&window, "delete_story_save")?;
     story_mode::delete_story_save(&app, &story_id)
 }
 
 #[tauri::command]
 pub fn rename_story_save(
     app: AppHandle,
+    window: WebviewWindow,
     story_id: String,
     title: String,
 ) -> Result<StorySave, String> {
+    require_command_window(&window, "rename_story_save")?;
     story_mode::rename_story_save(&app, &story_id, &title)
 }
 
 #[tauri::command]
 pub async fn test_ai_connection(
+    window: WebviewWindow,
     settings: AiSettingsDraft,
 ) -> Result<AiConnectionTestResult, String> {
+    require_command_window(&window, "test_ai_connection")?;
     tauri::async_runtime::spawn_blocking(move || {
         ai_chat::test_ai_connection(normalize_ai_settings(settings))
     })
@@ -1789,15 +2367,21 @@ pub async fn test_ai_connection(
 #[tauri::command]
 pub async fn translate_text(
     app: AppHandle,
+    window: WebviewWindow,
     request: TranslationRequest,
 ) -> Result<TranslationReply, String> {
+    require_command_window(&window, "translate_text")?;
     tauri::async_runtime::spawn_blocking(move || ai_chat::translate_text(&app, request))
         .await
         .map_err(|err| format!("翻译任务失败：{err}"))?
 }
 
 #[tauri::command]
-pub async fn translate_selected_text(app: AppHandle) -> Result<TranslationReply, String> {
+pub async fn translate_selected_text(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<TranslationReply, String> {
+    require_command_window(&window, "translate_selected_text")?;
     tauri::async_runtime::spawn_blocking(move || ai_chat::translate_selected_text(&app))
         .await
         .map_err(|err| format!("划选翻译任务失败：{err}"))?
@@ -1805,9 +2389,11 @@ pub async fn translate_selected_text(app: AppHandle) -> Result<TranslationReply,
 
 #[tauri::command]
 pub async fn test_wechat_clawbot(
+    window: WebviewWindow,
     settings: WechatClawbotSettingsDraft,
     message: String,
 ) -> Result<wechat_clawbot::WechatClawbotSendResult, String> {
+    require_command_window(&window, "test_wechat_clawbot")?;
     let settings = normalize_wechat_clawbot_settings(settings);
     tauri::async_runtime::spawn_blocking(move || wechat_clawbot::send_message(&settings, &message))
         .await
@@ -1817,11 +2403,13 @@ pub async fn test_wechat_clawbot(
 #[tauri::command]
 pub async fn simulate_wechat_clawbot_message(
     app: AppHandle,
+    window: WebviewWindow,
     settings: WechatClawbotSettingsDraft,
     message: String,
     sender: String,
     session_id: String,
 ) -> Result<clawbot_bridge::ClawbotChatResponse, String> {
+    require_command_window(&window, "simulate_wechat_clawbot_message")?;
     let settings = normalize_wechat_clawbot_settings(settings);
     tauri::async_runtime::spawn_blocking(move || {
         clawbot_bridge::simulate_chat(&app, &settings, message, sender, session_id)
@@ -1833,8 +2421,10 @@ pub async fn simulate_wechat_clawbot_message(
 #[tauri::command]
 pub async fn send_wechat_clawbot_message(
     app: AppHandle,
+    window: WebviewWindow,
     message: String,
 ) -> Result<wechat_clawbot::WechatClawbotSendResult, String> {
+    require_command_window(&window, "send_wechat_clawbot_message")?;
     let settings = app_data::read_config(&app)?.wechat_clawbot;
     tauri::async_runtime::spawn_blocking(move || wechat_clawbot::send_message(&settings, &message))
         .await
@@ -1843,16 +2433,20 @@ pub async fn send_wechat_clawbot_message(
 
 #[tauri::command]
 pub fn get_codex_app_server_status(
+    window: WebviewWindow,
     state: State<'_, codex_app_server::CodexAppServerState>,
-) -> codex_app_server::CodexStatusPayload {
-    codex_app_server::get_status(&state)
+) -> Result<codex_app_server::CodexStatusPayload, String> {
+    require_command_window(&window, "get_codex_app_server_status")?;
+    Ok(codex_app_server::get_status(&state))
 }
 
 #[tauri::command]
 pub fn start_codex_app_server(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, codex_app_server::CodexAppServerState>,
 ) -> Result<codex_app_server::CodexStatusPayload, String> {
+    require_command_window(&window, "start_codex_app_server")?;
     let settings = app_data::read_config(&app)?.codex_app_server;
     codex_app_server::start(app, &state, settings)
 }
@@ -1860,32 +2454,39 @@ pub fn start_codex_app_server(
 #[tauri::command]
 pub fn stop_codex_app_server(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, codex_app_server::CodexAppServerState>,
 ) -> Result<codex_app_server::CodexStatusPayload, String> {
+    require_command_window(&window, "stop_codex_app_server")?;
     codex_app_server::stop(app, &state)
 }
 
 #[tauri::command]
 pub fn ack_codex_notifications(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, codex_app_server::CodexAppServerState>,
 ) -> Result<codex_app_server::CodexStatusPayload, String> {
+    require_command_window(&window, "ack_codex_notifications")?;
     codex_app_server::ack_notifications(app, &state)
 }
 
 #[tauri::command]
 pub fn start_codex_app_server_turn(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, codex_app_server::CodexAppServerState>,
     prompt: String,
     cwd: Option<String>,
 ) -> Result<codex_app_server::CodexStatusPayload, String> {
+    require_command_window(&window, "start_codex_app_server_turn")?;
     let settings = app_data::read_config(&app)?.codex_app_server;
     codex_app_server::start_turn(app, &state, settings, prompt, cwd)
 }
 
 #[tauri::command]
-pub fn open_codex_window() -> Result<(), String> {
+pub fn open_codex_window(window: WebviewWindow) -> Result<(), String> {
+    require_command_window(&window, "open_codex_window")?;
     focus_codex_window()
 }
 
@@ -2005,51 +2606,77 @@ fn focus_codex_window() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn list_pet_memories(app: AppHandle) -> Result<Vec<PetMemory>, String> {
+pub fn list_pet_memories(app: AppHandle, window: WebviewWindow) -> Result<Vec<PetMemory>, String> {
+    require_command_window(&window, "list_pet_memories")?;
     ai_memory::list_memories(&app)
 }
 
 #[tauri::command]
-pub fn add_pet_memory(app: AppHandle, draft: PetMemoryDraft) -> Result<PetMemory, String> {
+pub fn add_pet_memory(
+    app: AppHandle,
+    window: WebviewWindow,
+    draft: PetMemoryDraft,
+) -> Result<PetMemory, String> {
+    require_command_window(&window, "add_pet_memory")?;
     ai_memory::add_memory(&app, draft)
 }
 
 #[tauri::command]
 pub fn update_pet_memory(
     app: AppHandle,
+    window: WebviewWindow,
     memory_id: u64,
     draft: PetMemoryDraft,
 ) -> Result<PetMemory, String> {
+    require_command_window(&window, "update_pet_memory")?;
     ai_memory::update_memory_by_id(&app, memory_id, draft)
 }
 
 #[tauri::command]
-pub fn delete_pet_memory(app: AppHandle, memory_id: u64) -> Result<(), String> {
+pub fn delete_pet_memory(
+    app: AppHandle,
+    window: WebviewWindow,
+    memory_id: u64,
+) -> Result<(), String> {
+    require_command_window(&window, "delete_pet_memory")?;
     ai_memory::delete_memory(&app, memory_id)
 }
 
 #[tauri::command]
-pub fn clear_pet_memories(app: AppHandle) -> Result<(), String> {
+pub fn clear_pet_memories(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    require_command_window(&window, "clear_pet_memories")?;
     ai_memory::clear_memories(&app)
 }
 
 #[tauri::command]
-pub fn clear_pet_memory_messages(app: AppHandle) -> Result<(), String> {
+pub fn clear_pet_memory_messages(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    require_command_window(&window, "clear_pet_memory_messages")?;
     ai_memory::clear_messages(&app)
 }
 
 #[tauri::command]
-pub fn import_pet_memory(app: AppHandle, path: String) -> Result<Vec<PetMemory>, String> {
+pub fn import_pet_memory(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: String,
+) -> Result<Vec<PetMemory>, String> {
+    require_command_window(&window, "import_pet_memory")?;
     ai_memory::import_memory_file(&app, &path)
 }
 
 #[tauri::command]
-pub fn export_pet_memory(app: AppHandle, path: String) -> Result<(), String> {
+pub fn export_pet_memory(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: String,
+) -> Result<(), String> {
+    require_command_window(&window, "export_pet_memory")?;
     ai_memory::export_memory_file(&app, &path)
 }
 
 #[tauri::command]
-pub fn open_pet_memory_dir(app: AppHandle) -> Result<(), String> {
+pub fn open_pet_memory_dir(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    require_command_window(&window, "open_pet_memory_dir")?;
     ai_memory::open_memory_dir(&app)
 }
 
@@ -2064,16 +2691,324 @@ pub fn hide_pet(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn check_for_update(app: AppHandle) -> updater::UpdateCheckResult {
-    updater::check_for_update(&app)
+pub fn check_for_update(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<updater::UpdateCheckResult, String> {
+    require_command_window(&window, "check_for_update")?;
+    Ok(updater::check_for_update(&app))
 }
 
 #[tauri::command]
-pub fn open_update_page(url: Option<String>) -> Result<(), String> {
+pub fn open_update_page(window: WebviewWindow, url: Option<String>) -> Result<(), String> {
+    require_command_window(&window, "open_update_page")?;
     updater::open_update_page(url)
 }
 
 #[tauri::command]
-pub fn quit_app(app: AppHandle) {
+pub async fn quit_app(app: AppHandle) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let listener_id = app.once("music-library-flush-completed", move |_| {
+        let _ = sender.send(());
+    });
+    let flush_requested = app.emit("music-library-flush-requested", ()).is_ok();
+    if flush_requested {
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            receiver.recv_timeout(std::time::Duration::from_secs(5))
+        })
+        .await;
+    }
+    app.unlisten(listener_id);
     app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shortcut_consent_requires_non_empty_shortcut_and_explicit_approval() {
+        let pending = normalize_shortcut_settings(ShortcutSettingsDraft::default());
+        assert!(!pending.translate_selection.is_empty());
+        assert!(!pending.translate_selection_consent);
+
+        let enabled = normalize_shortcut_settings(ShortcutSettingsDraft {
+            translate_selection_consent: true,
+            ..ShortcutSettingsDraft::default()
+        });
+        assert!(enabled.translate_selection_consent);
+
+        let disabled = normalize_shortcut_settings(ShortcutSettingsDraft {
+            translate_selection: String::new(),
+            translate_selection_consent: true,
+            ..ShortcutSettingsDraft::default()
+        });
+        assert!(disabled.translate_selection.is_empty());
+        assert!(!disabled.translate_selection_consent);
+    }
+
+    #[test]
+    fn command_window_matrix_allows_each_feature_owner() {
+        let allowed_cases = [
+            ("reorder_apps", "drawer"),
+            ("save_drawer_preferences", "drawer"),
+            ("list_companions", "story"),
+            ("get_current_companion", "pet-chat"),
+            ("get_current_pet_skin", "pet"),
+            ("send_pet_chat_message", "pet-chat"),
+            ("create_story", "story"),
+            ("translate_text", "translator"),
+            ("translate_selected_text", "pet"),
+            ("save_music_library_state", "music"),
+            ("get_netease_song_playback_url", "music"),
+            ("get_kugou_playlist_detail", "music"),
+            ("get_codex_app_server_status", "pet-bubble"),
+        ];
+
+        for (command, label) in allowed_cases {
+            assert!(
+                is_command_allowed_for_window(command, label),
+                "{label} should be allowed to invoke {command}"
+            );
+        }
+    }
+
+    fn shortcut_for_order_test(id: &str) -> PetApp {
+        PetApp {
+            id: id.to_string(),
+            name: id.to_uppercase(),
+            item_kind: "app".to_string(),
+            path: format!("{id}.exe"),
+            icon: None,
+            category: "其他".to_string(),
+            run_as_admin: false,
+            tags: Vec::new(),
+            favorite: false,
+            auto_favorite: false,
+            launch_count: 0,
+            launch_history: Vec::new(),
+            last_launch_at: None,
+            created_at: "2026-08-01".to_string(),
+        }
+    }
+
+    #[test]
+    fn reorder_app_list_accepts_an_exact_permutation() {
+        let apps = vec![shortcut_for_order_test("a"), shortcut_for_order_test("b")];
+        let ids = vec!["b".to_string(), "a".to_string()];
+
+        let reordered = reorder_app_list(apps, &ids).expect("valid order");
+
+        assert_eq!(
+            reordered
+                .iter()
+                .map(|app| app.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "a"]
+        );
+    }
+
+    #[test]
+    fn reorder_app_list_rejects_missing_duplicate_and_unknown_ids() {
+        let apps = || vec![shortcut_for_order_test("a"), shortcut_for_order_test("b")];
+
+        assert!(reorder_app_list(apps(), &["a".to_string()]).is_err());
+        assert!(reorder_app_list(apps(), &["a".to_string(), "a".to_string()]).is_err());
+        assert!(reorder_app_list(apps(), &["a".to_string(), "x".to_string()]).is_err());
+    }
+
+    #[test]
+    fn command_window_matrix_rejects_cross_window_privilege_escalation() {
+        let rejected_cases = [
+            ("save_drawer_preferences", "music"),
+            ("upsert_companion", "pet-chat"),
+            ("delete_companion_messages", "drawer"),
+            ("create_story", "translator"),
+            ("translate_text", "pet"),
+            ("translate_selected_text", "translator"),
+            ("save_music_library_state", "pet-chat"),
+            ("create_netease_qr_login", "drawer"),
+            ("start_codex_app_server_turn", "pet"),
+            ("unknown_command", "drawer"),
+        ];
+
+        for (command, label) in rejected_cases {
+            assert!(
+                !is_command_allowed_for_window(command, label),
+                "{label} should be rejected from invoking {command}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_read_only_commands_do_not_grant_write_permissions() {
+        assert!(is_command_allowed_for_window("list_companions", "drawer"));
+        assert!(is_command_allowed_for_window("list_companions", "story"));
+        assert!(!is_command_allowed_for_window("upsert_companion", "story"));
+
+        assert!(is_command_allowed_for_window(
+            "get_current_pet_skin",
+            "pet-chat"
+        ));
+        assert!(!is_command_allowed_for_window("set_pet_skin", "pet-chat"));
+
+        assert!(is_command_allowed_for_window(
+            "get_codex_app_server_status",
+            "pet"
+        ));
+        assert!(!is_command_allowed_for_window(
+            "start_codex_app_server",
+            "pet"
+        ));
+    }
+
+    fn temp_music_test_dir(name: &str) -> PathBuf {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pet_drawer_commands_{name}_{}_{}",
+            std::process::id(),
+            timestamp
+        ));
+        fs::create_dir_all(&dir).expect("create temp test dir");
+        dir
+    }
+
+    #[test]
+    fn public_config_removes_secrets_paths_and_private_profiles() {
+        let mut config = PetDrawerConfig::default();
+        config.pet.x = Some(123);
+        config.pet.custom_image = Some("private-image-path".to_string());
+        config.drawer.categories = vec!["private-category".to_string()];
+        config.ai.enabled = true;
+        config.ai.api_key = "private-api-key".to_string();
+        config.ai.base_url = "https://ai.example.test/private/path?token=private".to_string();
+        config.ai.system_prompt = "private-system-prompt".to_string();
+        config.ai.active_profile_id = "private-profile".to_string();
+        config.ai.profiles.push(AiConnectionProfile {
+            id: "private-profile".to_string(),
+            label: "private-label".to_string(),
+            provider: "custom".to_string(),
+            api_key: "private-profile-key".to_string(),
+            base_url: "https://profile.example.test/private".to_string(),
+            model: "private-model".to_string(),
+        });
+        config.wechat_clawbot.target = "private-target".to_string();
+        config.wechat_clawbot.bridge_token = "private-bridge-token".to_string();
+        config.codex_app_server.socket_path = "private-socket-path".to_string();
+
+        let public = redact_public_config(config);
+        let serialized = serde_json::to_string(&public).expect("serialize public config");
+
+        assert!(public.ai.enabled);
+        assert_eq!(public.ai.base_url, "https://ai.example.test");
+        assert!(public.ai.api_key.is_empty());
+        assert!(public.ai.profiles.is_empty());
+        assert!(public.companions.is_empty());
+        assert!(!serialized.contains("private-"));
+    }
+
+    #[test]
+    fn public_ai_origin_rejects_non_http_and_invalid_urls() {
+        assert_eq!(
+            public_ai_origin("http://127.0.0.1:11434/private?key=value"),
+            "http://127.0.0.1:11434"
+        );
+        assert!(public_ai_origin("file:///private/config.json").is_empty());
+        assert!(public_ai_origin("not a url").is_empty());
+    }
+
+    #[test]
+    fn lyrics_candidates_require_registered_audio_relationship() {
+        let dir = temp_music_test_dir("lyrics_relationship");
+        let playback_path = dir.join("stored.mp3");
+        let source_path = dir.join("original.flac");
+        let unrelated_path = dir.join("unrelated.wav");
+        let text_path = dir.join("private.txt");
+        fs::write(&playback_path, b"audio").expect("write playback audio");
+        fs::write(&source_path, b"audio").expect("write source audio");
+        fs::write(&unrelated_path, b"audio").expect("write unrelated audio");
+        fs::write(&text_path, b"private").expect("write private text");
+        let state = serde_json::json!({
+            "version": 1,
+            "settings": {},
+            "tracks": [{
+                "path": playback_path.to_string_lossy(),
+                "sourcePath": source_path.to_string_lossy()
+            }],
+            "playlists": []
+        });
+
+        let candidates = registered_lyrics_candidates(
+            &state,
+            &playback_path,
+            Some(&source_path.to_string_lossy()),
+        )
+        .expect("registered source should be accepted");
+        assert_eq!(candidates, vec![playback_path.clone(), source_path]);
+
+        assert!(registered_lyrics_candidates(
+            &state,
+            &playback_path,
+            Some(&unrelated_path.to_string_lossy())
+        )
+        .expect_err("unregistered audio should fail")
+        .contains("不关联"));
+        assert!(registered_lyrics_candidates(
+            &state,
+            &playback_path,
+            Some(&text_path.to_string_lossy())
+        )
+        .expect_err("text source should fail")
+        .contains("音频文件"));
+
+        fs::remove_dir_all(dir).expect("remove temp test dir");
+    }
+
+    #[test]
+    fn persisted_wallpaper_asset_requires_supported_existing_media() {
+        let dir = temp_music_test_dir("wallpaper_asset");
+        let image_path = dir.join("wallpaper.png");
+        let text_path = dir.join("private.txt");
+        fs::write(&image_path, b"image").expect("write wallpaper image");
+        fs::write(&text_path, b"private").expect("write private text");
+
+        let image_state = serde_json::json!({
+            "settings": { "immersiveWallpaperPath": image_path.to_string_lossy() }
+        });
+        let text_state = serde_json::json!({
+            "settings": { "immersiveWallpaperPath": text_path.to_string_lossy() }
+        });
+
+        assert_eq!(
+            registered_music_wallpaper_path(&image_state),
+            Some(image_path)
+        );
+        assert_eq!(registered_music_wallpaper_path(&text_state), None);
+
+        fs::remove_dir_all(dir).expect("remove temp test dir");
+    }
+
+    #[test]
+    fn lyrics_candidates_reject_unregistered_main_track() {
+        let dir = temp_music_test_dir("lyrics_unregistered_main");
+        let registered_path = dir.join("registered.mp3");
+        let requested_path = dir.join("requested.mp3");
+        fs::write(&registered_path, b"audio").expect("write registered audio");
+        fs::write(&requested_path, b"audio").expect("write requested audio");
+        let state = serde_json::json!({
+            "version": 1,
+            "settings": {},
+            "tracks": [{ "path": registered_path.to_string_lossy() }],
+            "playlists": []
+        });
+
+        assert!(registered_lyrics_candidates(&state, &requested_path, None)
+            .expect_err("unregistered main track should fail")
+            .contains("未在后端音乐库登记"));
+
+        fs::remove_dir_all(dir).expect("remove temp test dir");
+    }
 }

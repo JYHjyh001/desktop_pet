@@ -25,12 +25,14 @@ pub fn run() {
         .manage(codex_app_server::CodexAppServerState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_apps,
+            commands::reorder_apps,
             commands::upsert_app,
             commands::delete_app,
             commands::set_app_run_as_admin,
             commands::launch_app,
             commands::open_app_dir,
             commands::get_config,
+            commands::get_public_config,
             commands::list_companions,
             commands::get_current_companion,
             commands::upsert_companion,
@@ -82,6 +84,10 @@ pub fn run() {
             commands::hide_translator,
             commands::show_music_player,
             commands::hide_music_player,
+            commands::get_music_library_state,
+            commands::save_music_library_state,
+            commands::get_music_library_summary,
+            commands::get_music_library_storage_info,
             commands::list_music_files_in_directory,
             commands::import_music_files,
             commands::read_music_metadata,
@@ -146,12 +152,8 @@ pub fn run() {
             commands::quit_app
         ])
         .setup(|app| {
-            app_data::ensure_data_files(app.handle()).map_err(|err| {
-                Box::<dyn std::error::Error>::from(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    err,
-                ))
-            })?;
+            app_data::ensure_data_files(app.handle())
+                .map_err(|err| Box::<dyn std::error::Error>::from(std::io::Error::other(err)))?;
             windowing::restore_pet_position(app.handle());
             windowing::apply_window_preferences(app.handle());
             if feature_flags::WECHAT_INTEGRATION_ENABLED {

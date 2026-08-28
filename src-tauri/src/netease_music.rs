@@ -498,7 +498,7 @@ pub fn playlist_detail(
         });
     let total_track_count = value_as_u64(playlist_value.get("trackCount"))
         .or_else(|| u64::try_from(track_ids.len()).ok())
-        .unwrap_or_else(|| track_values.len() as u64);
+        .unwrap_or(track_values.len() as u64);
     let page_track_ids = track_ids
         .iter()
         .rev()

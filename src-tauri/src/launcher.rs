@@ -316,7 +316,7 @@ fn normalize_website_url(url: &str) -> Result<String, String> {
         .trim_start_matches("https://");
 
     let host = without_scheme
-        .split(|value| matches!(value, '/' | ':' | '?' | '#'))
+        .split(['/', ':', '?', '#'])
         .next()
         .unwrap_or_default();
 

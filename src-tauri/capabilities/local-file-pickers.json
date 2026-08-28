@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local-file-pickers",
+  "description": "Local file and folder pickers for settings and music import",
+  "windows": ["drawer", "music"],
+  "permissions": [
+    "dialog:default",
+    "dialog:allow-open"
+  ]
+}

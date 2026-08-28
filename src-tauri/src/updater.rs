@@ -103,11 +103,11 @@ pub fn check_for_update(app: &AppHandle) -> UpdateCheckResult {
 }
 
 pub fn open_update_page(url: Option<String>) -> Result<(), String> {
-    let update_url = url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| is_supported_url(value))
-        .unwrap_or(GITHUB_RELEASES_URL);
+    let update_url = match url.as_deref() {
+        Some(value) => validate_update_url(value)?.to_string(),
+        None => GITHUB_RELEASES_URL.to_string(),
+    };
+
     open_url(&update_url).map_err(|err| format!("打开更新页面失败：{err}"))?;
     Ok(())
 }
@@ -251,21 +251,18 @@ fn fetch_latest_release_url(url: &str) -> Result<String, String> {
 }
 
 fn release_tag_from_url(url: &str) -> Result<String, String> {
-    let tag = url
-        .split("/releases/tag/")
-        .nth(1)
-        .map(|value| {
-            value
-                .split(|character| character == '?' || character == '#')
-                .next()
-                .unwrap_or(value)
-                .trim_matches('/')
-                .to_string()
-        })
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("无法从 GitHub 发布地址中解析版本号：{url}"))?;
+    let parsed = validate_update_url(url)?;
+    let segments = parsed
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>())
+        .unwrap_or_default();
 
-    Ok(tag)
+    match segments.as_slice() {
+        [owner, repo, "releases", "tag", tag] if *owner == GITHUB_OWNER && *repo == GITHUB_REPO => {
+            Ok((*tag).to_string())
+        }
+        _ => Err(format!("无法从 GitHub 发布地址中解析版本号：{url}")),
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -334,27 +331,85 @@ fn numeric_version_parts(value: &str) -> Vec<u64> {
         .collect()
 }
 
-fn is_supported_url(value: &str) -> bool {
-    let is_github_url = value.starts_with("https://github.com/")
-        || value.starts_with("https://objects.githubusercontent.com/")
-        || value.starts_with("https://api.github.com/");
-    let is_project_url = value.contains(GITHUB_OWNER) && value.contains(GITHUB_REPO);
+fn validate_update_url(value: &str) -> Result<reqwest::Url, String> {
+    if value.is_empty() || value.chars().any(is_unsafe_url_character) {
+        return Err("更新地址包含不允许的字符".to_string());
+    }
 
-    is_github_url && is_project_url
+    let parsed = reqwest::Url::parse(value).map_err(|_| "更新地址格式无效".to_string())?;
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some("github.com")
+        || parsed.port().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err("更新地址必须是项目的 GitHub HTTPS Release 地址".to_string());
+    }
+
+    let segments = parsed
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>())
+        .ok_or_else(|| "更新地址路径无效".to_string())?;
+    let is_supported_path = match segments.as_slice() {
+        [owner, repo, "releases", "latest"] => *owner == GITHUB_OWNER && *repo == GITHUB_REPO,
+        [owner, repo, "releases", "tag", tag] => {
+            *owner == GITHUB_OWNER && *repo == GITHUB_REPO && is_safe_path_segment(tag)
+        }
+        [owner, repo, "releases", "download", tag, asset_name] => {
+            *owner == GITHUB_OWNER
+                && *repo == GITHUB_REPO
+                && is_safe_path_segment(tag)
+                && is_safe_path_segment(asset_name)
+        }
+        _ => false,
+    };
+
+    if !is_supported_path {
+        return Err("更新地址不属于当前项目允许的 GitHub Release 路径".to_string());
+    }
+
+    Ok(parsed)
+}
+
+fn is_unsafe_url_character(character: char) -> bool {
+    character.is_whitespace()
+        || character.is_control()
+        || matches!(character, '&' | '|' | '^' | '<' | '>' | '"' | '\'' | '`')
+}
+
+fn is_safe_path_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-' | '+')
+        })
 }
 
 #[cfg(target_os = "windows")]
 fn open_url(url: &str) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
+    use std::ptr;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let operation = "open".encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let target = url.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+    let result = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            operation.as_ptr(),
+            target.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    } as isize;
 
-    Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| err.to_string())
+    if result > 32 {
+        Ok(())
+    } else {
+        Err(format!("系统返回错误码 {result}"))
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -364,6 +419,70 @@ fn open_url(url: &str) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{release_tag_from_url, validate_update_url};
+
+    #[test]
+    fn accepts_project_release_urls() {
+        let urls = [
+            "https://github.com/JYHjyh001/desktop_pet/releases/latest",
+            "https://github.com/JYHjyh001/desktop_pet/releases/tag/v0.3.2",
+            "https://github.com/JYHjyh001/desktop_pet/releases/download/v0.3.2/PetDrawer_0.3.2_x64-setup.exe",
+        ];
+
+        for url in urls {
+            assert!(validate_update_url(url).is_ok(), "应接受合法地址：{url}");
+        }
+    }
+
+    #[test]
+    fn rejects_shell_metacharacters() {
+        let url = "https://github.com/JYHjyh001/desktop_pet/releases/tag/v0.3.2&calc.exe";
+
+        assert!(validate_update_url(url).is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_owner_or_repo() {
+        let urls = [
+            "https://github.com/attacker/desktop_pet/releases/tag/v0.3.2",
+            "https://github.com/JYHjyh001/other_repo/releases/tag/v0.3.2",
+        ];
+
+        for url in urls {
+            assert!(validate_update_url(url).is_err(), "应拒绝其他仓库：{url}");
+        }
+    }
+
+    #[test]
+    fn rejects_userinfo_fragment_and_abnormal_host() {
+        let urls = [
+            "https://attacker@github.com/JYHjyh001/desktop_pet/releases/tag/v0.3.2",
+            "https://github.com/JYHjyh001/desktop_pet/releases/tag/v0.3.2#download",
+            "https://github.com:8443/JYHjyh001/desktop_pet/releases/tag/v0.3.2",
+            "https://github.com.evil.example/JYHjyh001/desktop_pet/releases/tag/v0.3.2",
+        ];
+
+        for url in urls {
+            assert!(validate_update_url(url).is_err(), "应拒绝异常地址：{url}");
+        }
+    }
+
+    #[test]
+    fn extracts_tag_only_from_valid_project_tag_url() {
+        assert_eq!(
+            release_tag_from_url("https://github.com/JYHjyh001/desktop_pet/releases/tag/v0.3.2")
+                .as_deref(),
+            Ok("v0.3.2")
+        );
+        assert!(release_tag_from_url(
+            "https://github.com/JYHjyh001/desktop_pet/releases/download/v0.3.2/setup.exe"
+        )
+        .is_err());
+    }
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]

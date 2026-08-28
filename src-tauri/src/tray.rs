@@ -4,7 +4,7 @@ use tauri::{
     AppHandle,
 };
 
-use crate::windowing;
+use crate::{commands, windowing};
 
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let show_pet = MenuItem::with_id(app, "show_pet", "显示宠物", true, None::<&str>)?;
@@ -26,7 +26,12 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             "open_drawer" => {
                 let _ = windowing::show_drawer(app);
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::quit_app(app).await;
+                });
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

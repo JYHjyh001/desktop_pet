@@ -217,10 +217,7 @@ fn send_pet_chat_message_internal(
     let settings = config.ai;
     let companion = ai_memory::current_companion(app)?;
     let companion_id = companion.id.clone();
-    let companion_status = match favorability::get_companion_status(app, &companion_id) {
-        Ok(status) => Some(status),
-        Err(_) => None,
-    };
+    let companion_status = favorability::get_companion_status(app, &companion_id).ok();
 
     if !settings.enabled {
         return Err("请先在抽屉设置的“AI 接口”中启用宠物聊天 API。".to_string());
@@ -318,34 +315,28 @@ fn send_pet_chat_message_internal(
         }
     }
 
+    let fallback_context = PlainChatFallbackContext {
+        companion_context: &companion_context,
+        companion: &companion,
+        emoji_frequency: &settings.emoji_frequency,
+        related_memories: &response_related_memories,
+        short_term_summary: response_short_summary.as_ref(),
+        recent_messages: &response_recent_messages,
+    };
     let reply = if use_deepseek_json_output {
         let raw_reply = send_chat_request(&chat_settings, &messages, true);
         match raw_reply {
             Ok(raw_reply) => {
                 match parse_companion_chat_output(&raw_reply, &settings.emoji_frequency) {
                     Ok(reply) => reply,
-                    Err(_) => send_plain_chat_fallback(
-                        &chat_settings,
-                        &messages,
-                        &companion_context,
-                        &companion,
-                        &settings.emoji_frequency,
-                        &response_related_memories,
-                        response_short_summary.as_ref(),
-                        &response_recent_messages,
-                    )?,
+                    Err(_) => {
+                        send_plain_chat_fallback(&chat_settings, &messages, &fallback_context)?
+                    }
                 }
             }
-            Err(err) if is_empty_reply_error(&err) => send_plain_chat_fallback(
-                &chat_settings,
-                &messages,
-                &companion_context,
-                &companion,
-                &settings.emoji_frequency,
-                &response_related_memories,
-                response_short_summary.as_ref(),
-                &response_recent_messages,
-            )?,
+            Err(err) if is_empty_reply_error(&err) => {
+                send_plain_chat_fallback(&chat_settings, &messages, &fallback_context)?
+            }
             Err(err) => return Err(err),
         }
     } else {
@@ -822,11 +813,8 @@ fn rtf_to_text(value: &str) -> Option<String> {
                 };
 
                 match next {
-                    '\\' | '{' | '}' => {
-                        if !skipping_destination {
-                            output.push(next);
-                        }
-                    }
+                    '\\' | '{' | '}' if !skipping_destination => output.push(next),
+                    '\\' | '{' | '}' => {}
                     '\'' => {
                         let hex = chars.by_ref().take(2).collect::<String>();
                         if !skipping_destination {
@@ -1290,7 +1278,7 @@ fn windows_clipboard_text() -> Result<Option<String>, String> {
         }
 
         drop(close_clipboard);
-        return Ok(None);
+        Ok(None)
     }
 }
 
@@ -1462,7 +1450,7 @@ fn windows_set_clipboard_text(text: Option<&str>) -> Result<(), String> {
         }
 
         drop(close_clipboard);
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -1989,6 +1977,7 @@ fn favorability_scorer_request(
     )
 }
 
+#[derive(Debug)]
 struct AiHttpRequest {
     provider: String,
     url: String,
@@ -2448,25 +2437,31 @@ fn send_chat_request(
     parse_reply(&settings.provider, &response_text)
 }
 
+struct PlainChatFallbackContext<'a> {
+    companion_context: &'a str,
+    companion: &'a Companion,
+    emoji_frequency: &'a str,
+    related_memories: &'a [ai_memory::PetMemory],
+    short_term_summary: Option<&'a ai_memory::PetMemory>,
+    recent_messages: &'a [PetMemoryMessage],
+}
+
 fn send_plain_chat_fallback(
     settings: &AiSettings,
     messages: &[PetChatMessageDraft],
-    companion_context: &str,
-    companion: &Companion,
-    emoji_frequency: &str,
-    related_memories: &[ai_memory::PetMemory],
-    short_term_summary: Option<&ai_memory::PetMemory>,
-    recent_messages: &[PetMemoryMessage],
+    context: &PlainChatFallbackContext<'_>,
 ) -> Result<String, String> {
     let mut fallback_settings = settings.clone();
-    let fallback_prompt = append_chat_output_context(companion_context, emoji_frequency, false);
+    let fallback_prompt =
+        append_chat_output_context(context.companion_context, context.emoji_frequency, false);
     let fallback_prompt = append_memory_context(
         &fallback_prompt,
-        related_memories,
-        short_term_summary,
-        recent_messages,
+        context.related_memories,
+        context.short_term_summary,
+        context.recent_messages,
     );
-    fallback_settings.system_prompt = append_post_history_instructions(&fallback_prompt, companion);
+    fallback_settings.system_prompt =
+        append_post_history_instructions(&fallback_prompt, context.companion);
     let raw_reply = send_chat_request(&fallback_settings, messages, false)?;
     Ok(strip_internal_time_labels(&raw_reply))
 }
@@ -3457,6 +3452,7 @@ fn build_request(
     if settings.base_url.trim().is_empty() {
         return Err("请先在“AI 接口”中填写 Base URL。".to_string());
     }
+    validate_ai_transport(settings)?;
 
     let provider = settings.provider.trim().to_lowercase();
     match provider.as_str() {
@@ -3593,8 +3589,8 @@ fn build_gemini_request(
 
     Ok(AiHttpRequest {
         provider: "gemini".to_string(),
-        url: gemini_generate_url(&settings.base_url, &settings.model, &api_key),
-        api_key: String::new(),
+        url: gemini_generate_url(&settings.base_url, &settings.model),
+        api_key,
         body: body.to_string(),
     })
 }
@@ -3664,20 +3660,52 @@ fn ollama_chat_url(base_url: &str) -> String {
     }
 }
 
-fn gemini_generate_url(base_url: &str, model: &str, api_key: &str) -> String {
+fn gemini_generate_url(base_url: &str, model: &str) -> String {
     let base_url = base_url.trim().trim_end_matches('/');
     if base_url.contains(":generateContent") {
-        return if base_url.contains('?') {
-            base_url.to_string()
-        } else {
-            format!("{base_url}?key={api_key}")
-        };
+        return base_url.to_string();
     }
 
-    format!(
-        "{base_url}/v1beta/models/{}:generateContent?key={api_key}",
-        model.trim()
-    )
+    format!("{base_url}/v1beta/models/{}:generateContent", model.trim())
+}
+
+fn validate_ai_transport(settings: &AiSettings) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(settings.base_url.trim())
+        .map_err(|_| "AI Base URL 格式无效，请填写完整的 HTTP 或 HTTPS 地址。".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("AI Base URL 只支持 HTTP 或 HTTPS 地址。".to_string());
+    }
+
+    let has_sensitive_query = parsed.query_pairs().any(|(name, _)| {
+        matches!(
+            name.to_ascii_lowercase().as_str(),
+            "key" | "api_key" | "apikey" | "token" | "access_token" | "secret"
+        )
+    });
+    if has_sensitive_query {
+        return Err("AI Base URL 不得在查询参数中携带 Key、token 或 secret。".to_string());
+    }
+
+    if parsed.scheme() == "http"
+        && !settings.api_key.trim().is_empty()
+        && !is_loopback_ai_url(&parsed)
+    {
+        return Err(
+            "带 API Key 的 AI 服务必须使用 HTTPS；只有本机回环地址可使用 HTTP。".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+fn is_loopback_ai_url(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 #[cfg(target_os = "windows")]
@@ -3708,6 +3736,10 @@ if ($Provider -eq 'anthropic') {
     $client.DefaultRequestHeaders.Add('x-api-key', $ApiKey)
   }
   $client.DefaultRequestHeaders.Add('anthropic-version', '2023-06-01')
+} elseif ($Provider -eq 'gemini') {
+  if (![string]::IsNullOrWhiteSpace($ApiKey)) {
+    $client.DefaultRequestHeaders.Add('x-goog-api-key', $ApiKey)
+  }
 } elseif (![string]::IsNullOrWhiteSpace($ApiKey)) {
   $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $ApiKey)
 }
@@ -4147,6 +4179,66 @@ mod tests {
         let body: Value = serde_json::from_str(&request.body).unwrap();
 
         assert_eq!(body["response_format"]["type"], "json_object");
+    }
+
+    #[test]
+    fn gemini_key_is_kept_out_of_request_url() {
+        let settings = AiSettings {
+            provider: "gemini".to_string(),
+            base_url: "https://generativelanguage.googleapis.com".to_string(),
+            api_key: "placeholder-key".to_string(),
+            model: "gemini-test".to_string(),
+            ..AiSettings::default()
+        };
+
+        let request = build_request(&settings, &[]).unwrap();
+
+        assert!(!request.url.contains("placeholder-key"));
+        assert!(!request.url.contains("?key="));
+        assert_eq!(request.api_key, "placeholder-key");
+    }
+
+    #[test]
+    fn rejects_credentials_over_remote_plain_http() {
+        let settings = AiSettings {
+            provider: "custom".to_string(),
+            base_url: "http://ai.example.test/v1".to_string(),
+            api_key: "placeholder-key".to_string(),
+            ..AiSettings::default()
+        };
+
+        let error = build_request(&settings, &[]).unwrap_err();
+
+        assert!(error.contains("必须使用 HTTPS"));
+    }
+
+    #[test]
+    fn allows_credentials_for_loopback_http_only() {
+        for base_url in ["http://localhost:11434", "http://127.0.0.1:11434"] {
+            let settings = AiSettings {
+                provider: "custom".to_string(),
+                base_url: base_url.to_string(),
+                api_key: "placeholder-key".to_string(),
+                ..AiSettings::default()
+            };
+
+            assert!(build_request(&settings, &[]).is_ok());
+        }
+    }
+
+    #[test]
+    fn rejects_sensitive_query_parameters_in_ai_base_url() {
+        let settings = AiSettings {
+            provider: "gemini".to_string(),
+            base_url: "https://generativelanguage.googleapis.com/v1beta?key=placeholder"
+                .to_string(),
+            api_key: "placeholder-key".to_string(),
+            ..AiSettings::default()
+        };
+
+        let error = build_request(&settings, &[]).unwrap_err();
+
+        assert!(error.contains("不得在查询参数"));
     }
 
     #[test]

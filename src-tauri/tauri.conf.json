@@ -13,10 +13,10 @@
     "macOSPrivateApi": true,
     "withGlobalTauri": false,
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost https: http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; img-src 'self' asset: http://asset.localhost data: blob: https: http:; media-src 'self' asset: http://asset.localhost blob: https: http:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": []
       }
     },
     "windows": [
@@ -53,6 +53,7 @@
         "decorations": false,
         "transparent": true,
         "shadow": false,
+        "dragDropEnabled": false,
         "resizable": false,
         "visible": false,
         "alwaysOnTop": true,
@@ -133,6 +134,10 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
+    "resources": {
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../src/assets/emoji/twemoji/NOTICE.md": "licenses/twemoji-NOTICE.md"
+    },
     "macOS": {
       "minimumSystemVersion": "10.15"
     }

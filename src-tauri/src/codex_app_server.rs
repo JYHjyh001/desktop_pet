@@ -255,7 +255,7 @@ enum TransportRead {
 type CodexSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
 enum CodexConnection {
-    WebSocket(CodexSocket),
+    WebSocket(Box<CodexSocket>),
     Stdio {
         stdin: ChildStdin,
         events: mpsc::Receiver<TransportEvent>,
@@ -566,6 +566,8 @@ fn run_worker(
     emit_status(&app, &payload);
 }
 
+// 传输工作循环显式借用全部运行态，避免把有不同生命周期的进程、通道和配置隐藏在共享容器中。
+#[allow(clippy::too_many_arguments)]
 fn run_worker_inner(
     app: &AppHandle,
     runtime: &Arc<Mutex<CodexRuntime>>,
@@ -1069,7 +1071,7 @@ fn open_connection(
 
             let (mut socket, _) = tungstenite::connect(endpoint).map_err(|err| err.to_string())?;
             set_socket_timeout(&mut socket);
-            Ok(CodexConnection::WebSocket(socket))
+            Ok(CodexConnection::WebSocket(Box::new(socket)))
         }
         ConnectionMode::Proxy => {
             *child = Some(spawn_codex_proxy(settings)?);
@@ -1092,6 +1094,8 @@ fn open_connection(
     }
 }
 
+// 协议消息回调需要同步推进请求表、线程和待执行回合，保持显式参数可避免扩大锁的作用域。
+#[allow(clippy::too_many_arguments)]
 fn handle_server_message(
     app: &AppHandle,
     runtime: &Arc<Mutex<CodexRuntime>>,
@@ -1153,6 +1157,8 @@ fn handle_server_message(
     Ok(())
 }
 
+// 响应处理与消息回调共享同一组协议状态，参数顺序即状态推进边界。
+#[allow(clippy::too_many_arguments)]
 fn handle_response(
     app: &AppHandle,
     runtime: &Arc<Mutex<CodexRuntime>>,
@@ -1957,7 +1963,7 @@ fn codex_task_payloads(runtime: &CodexRuntime) -> Vec<CodexTaskStatusPayload> {
             unread: task.unread,
         })
         .collect::<Vec<_>>();
-    tasks.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    tasks.sort_by_key(|task| std::cmp::Reverse(task.updated_at));
     tasks
 }
 

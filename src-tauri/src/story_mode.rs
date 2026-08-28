@@ -192,7 +192,7 @@ pub struct StoryTurnReply {
 
 pub fn list_story_saves(app: &AppHandle) -> Result<Vec<StorySave>, String> {
     let mut saves = read_story_saves(app)?;
-    saves.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    saves.sort_by_key(|save| std::cmp::Reverse(save.updated_at));
     Ok(saves)
 }
 
