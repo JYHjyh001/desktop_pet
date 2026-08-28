@@ -57,7 +57,7 @@ jobs:
         run: npm run lint:rust
 
       - name: Audit production npm dependencies
-        run: npm audit --omit=dev
+        run: npm run audit:prod
 
   windows-package-smoke:
     name: Windows Tauri package smoke
