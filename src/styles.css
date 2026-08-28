@@ -3090,8 +3090,8 @@ button:disabled {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 10px;
-  width: clamp(236px, 23vw, 292px);
-  max-height: min(52vh, 430px);
+  width: clamp(286px, 26vw, 348px);
+  max-height: min(66vh, 590px);
   margin-left: 18px;
   padding: 13px;
   border-radius: 14px;
@@ -3172,7 +3172,7 @@ button:disabled {
 
 .music-immersive-playlist-source {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   min-width: 0;
 }
@@ -3208,6 +3208,71 @@ button:disabled {
   overflow-y: auto;
   padding-right: 2px;
   scrollbar-width: thin;
+}
+
+.music-immersive-playlist-filter {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  padding: 2px 0 8px;
+  background: linear-gradient(180deg, rgba(9, 17, 33, 0.96) 72%, transparent);
+  backdrop-filter: blur(18px) saturate(1.12);
+}
+
+.music-immersive-playlist-filter button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 0 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 9px;
+  color: var(--immersive-text-muted);
+  background: rgba(255, 255, 255, 0.055);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.music-immersive-playlist-filter button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-immersive-playlist-filter button small {
+  display: grid;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--immersive-text-subtle);
+  background: rgba(255, 255, 255, 0.09);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.music-immersive-playlist-filter button:hover {
+  border-color: rgba(255, 255, 255, 0.24);
+  color: var(--immersive-text-strong);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.music-immersive-playlist-filter button.active {
+  border-color: color-mix(in srgb, var(--immersive-accent) 66%, white 10%);
+  color: var(--immersive-accent-contrast);
+  background: var(--immersive-accent);
+  box-shadow: 0 8px 22px color-mix(in srgb, var(--immersive-accent) 18%, transparent);
+}
+
+.music-immersive-playlist-filter button.active small {
+  color: inherit;
+  background: color-mix(in srgb, var(--immersive-accent-contrast) 14%, transparent);
 }
 
 .music-immersive-playlist-row {
@@ -3256,7 +3321,206 @@ button:disabled {
 }
 
 .music-immersive-playlist-row.online {
-  border-style: dashed;
+  border-style: solid;
+}
+
+.music-immersive-playlist-row.playlist {
+  grid-template-columns: 28px minmax(0, 1fr) minmax(58px, auto);
+}
+
+.music-immersive-playlist-row.compact {
+  min-height: 38px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.music-immersive-playlist-rack {
+  gap: 4px;
+}
+
+.music-immersive-playlist-platform {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 0 12px;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+}
+
+.music-immersive-playlist-platform:last-of-type {
+  border-bottom: 0;
+}
+
+.music-immersive-playlist-platform-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.music-immersive-playlist-platform-header > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.music-immersive-playlist-platform-header strong,
+.music-immersive-playlist-platform-header span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-immersive-playlist-platform-header strong {
+  color: var(--immersive-text-strong);
+  font-size: 11px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+}
+
+.music-immersive-playlist-platform-header span {
+  color: var(--immersive-text-muted);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.music-immersive-playlist-platform-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.music-immersive-playlist-platform-actions button {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: var(--immersive-text-strong);
+  background: rgba(255, 255, 255, 0.09);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.music-immersive-playlist-platform-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--immersive-accent) 62%, white 10%);
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.music-immersive-playlist-cover {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.music-immersive-playlist-group {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.music-immersive-playlist-group-detail {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 0 8px 8px;
+  border-left: 1px solid color-mix(in srgb, var(--immersive-accent) 42%, transparent);
+}
+
+.music-immersive-playlist-detail-sticky {
+  position: sticky;
+  top: 38px;
+  z-index: 4;
+  display: grid;
+  gap: 7px;
+  margin: 0 0 2px -4px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.08), transparent 58%),
+    rgba(10, 18, 34, 0.9);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(18px) saturate(1.12);
+}
+
+.music-immersive-playlist-detail-summary {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.music-immersive-playlist-detail-summary > span:last-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.music-immersive-playlist-detail-summary strong,
+.music-immersive-playlist-detail-summary small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-immersive-playlist-detail-summary strong {
+  color: var(--immersive-text-strong);
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.music-immersive-playlist-detail-summary small {
+  color: var(--immersive-text-subtle);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.music-immersive-playlist-detail-cover {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 10px;
+  object-fit: cover;
+  color: var(--immersive-accent-contrast);
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.music-immersive-playlist-detail-cover.placeholder {
+  background:
+    radial-gradient(circle at 28% 24%, rgba(255, 255, 255, 0.28), transparent 28%),
+    var(--immersive-accent);
+}
+
+.music-immersive-playlist-group-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 6px;
+}
+
+.music-immersive-playlist-group-actions button {
+  min-height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  color: var(--immersive-text-strong);
+  background: rgba(255, 255, 255, 0.09);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.music-immersive-playlist-group-actions button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--immersive-accent) 62%, white 10%);
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .music-immersive-playlist-row.unavailable:not(.active) {
@@ -3283,6 +3547,15 @@ button:disabled {
   line-height: 1;
 }
 
+.music-immersive-playlist-track-cover {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
 .music-immersive-playlist-main {
   display: grid;
   gap: 2px;
@@ -3307,6 +3580,39 @@ button:disabled {
   color: var(--immersive-text-subtle);
   font-size: 11px;
   font-weight: 800;
+}
+
+.music-immersive-playlist-source-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 16px;
+  margin-right: 4px;
+  padding: 0 5px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: var(--immersive-text-muted);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 9px;
+  font-weight: 950;
+  vertical-align: 1px;
+}
+
+.music-immersive-playlist-source-badge.local {
+  border-color: color-mix(in srgb, #79d8b4 42%, transparent);
+  color: #bdf4df;
+  background: rgba(67, 165, 128, 0.14);
+}
+
+.music-immersive-playlist-source-badge.netease {
+  border-color: rgba(255, 117, 128, 0.34);
+  color: #ffd0d5;
+  background: rgba(210, 52, 67, 0.16);
+}
+
+.music-immersive-playlist-source-badge.kugou {
+  border-color: rgba(111, 174, 255, 0.38);
+  color: #d1e6ff;
+  background: rgba(58, 118, 210, 0.17);
 }
 
 .music-immersive-playlist-duration {
@@ -3685,6 +3991,13 @@ button:disabled {
     rgba(255, 255, 255, 0.055);
   font-size: 11px;
   font-weight: 900;
+}
+
+.music-immersive-playlist-empty-overview {
+  min-height: 154px;
+  padding: 20px;
+  text-align: center;
+  line-height: 1.6;
 }
 
 .music-immersive-wallpaper-preview::after {
@@ -4969,6 +5282,19 @@ button:disabled {
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 7px;
+}
+
+.music-storage-field-readonly {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.music-storage-field small {
+  grid-column: 2 / -1;
+  min-width: 0;
+  color: #718098;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
 }
 
 .music-settings-backdrop {
@@ -8553,6 +8879,33 @@ button:disabled {
   border: 1px solid #dfe7f0;
   border-radius: 8px;
   background: #ffffff;
+  cursor: grab;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, opacity 0.16s ease, transform 0.16s ease;
+}
+
+.app-card:active {
+  cursor: grabbing;
+}
+
+.app-card.is-dragging {
+  opacity: 0.42;
+  transform: scale(0.98);
+}
+
+.app-card.is-drag-over {
+  border-color: #2168e8;
+  box-shadow: 0 0 0 3px rgba(33, 104, 232, 0.2);
+  transform: translateY(-2px);
+}
+
+.reorder-status {
+  margin: 10px 2px 0;
+  color: #315170;
+  font-size: 12px;
+}
+
+.reorder-status.error {
+  color: #b42318;
 }
 
 .app-card.compact {
@@ -9636,6 +9989,7 @@ button:disabled {
   color: #657188;
   font-size: 12px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .settings-update-actions {
@@ -12419,6 +12773,19 @@ button:disabled {
   box-shadow: inset 0 0 100px rgba(88, 59, 30, 0.38);
 }
 
+.theme-animal-island .app-card.is-drag-over {
+  border-color: #d58a35;
+  box-shadow: 0 0 0 4px rgba(213, 138, 53, 0.22), 0 6px 0 rgba(207, 156, 84, 0.28);
+}
+
+.theme-animal-island .reorder-status {
+  color: #6b4b32;
+}
+
+.theme-animal-island .reorder-status.error {
+  color: #a53a2f;
+}
+
 .theme-animal-island .music-immersive-wallpaper {
   filter:
     blur(var(--immersive-wallpaper-blur, 0px))
@@ -13346,6 +13713,91 @@ button:disabled {
   min-width: 38px;
   height: 38px;
   min-height: 38px;
+}
+
+.theme-animal-island .music-immersive-playlist-group-actions button {
+  border-color: #efcf88;
+  color: var(--island-ink);
+  background: #ffe7ad;
+  box-shadow: 0 2px 0 rgba(206, 156, 85, 0.22);
+}
+
+.theme-animal-island .music-immersive-playlist-group-actions button:hover:not(:disabled) {
+  color: var(--island-ink);
+  background: #ffda86;
+}
+
+.theme-animal-island .music-immersive-playlist-filter {
+  background: linear-gradient(180deg, rgba(59, 45, 26, 0.94) 72%, transparent);
+}
+
+.theme-animal-island .music-immersive-playlist-filter button {
+  border-color: rgba(239, 207, 136, 0.54);
+  color: #fff8e9;
+  background: rgba(255, 231, 173, 0.12);
+}
+
+.theme-animal-island .music-immersive-playlist-filter button small {
+  color: rgba(255, 248, 233, 0.76);
+  background: rgba(255, 231, 173, 0.14);
+}
+
+.theme-animal-island .music-immersive-playlist-filter button:hover {
+  border-color: #efcf88;
+  color: #ffffff;
+  background: rgba(255, 218, 134, 0.24);
+}
+
+.theme-animal-island .music-immersive-playlist-filter button.active {
+  border-color: var(--island-mint);
+  color: #ffffff;
+  background: var(--island-mint);
+  box-shadow: 0 3px 0 var(--island-mint-dark);
+}
+
+.theme-animal-island .music-immersive-playlist-detail-sticky {
+  border-color: rgba(239, 207, 136, 0.56);
+  background:
+    radial-gradient(circle at 12% 10%, rgba(255, 231, 173, 0.16), transparent 42%),
+    rgba(59, 45, 26, 0.92);
+  box-shadow: 0 10px 0 rgba(55, 38, 21, 0.12);
+}
+
+.theme-animal-island .music-immersive-playlist-detail-cover,
+.theme-animal-island .music-immersive-playlist-track-cover {
+  background: rgba(255, 244, 201, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(239, 207, 136, 0.62);
+}
+
+.theme-animal-island .music-immersive-playlist-platform {
+  border-bottom-color: rgba(239, 207, 136, 0.38);
+  background: transparent;
+  box-shadow: none;
+}
+
+.theme-animal-island .music-immersive-playlist-platform-header strong {
+  color: var(--immersive-text-strong);
+}
+
+.theme-animal-island .music-immersive-playlist-platform-header span {
+  color: var(--immersive-text-muted);
+}
+
+.theme-animal-island .music-immersive-playlist-platform-actions button {
+  border-color: #efcf88;
+  color: var(--island-ink);
+  background: #ffe7ad;
+  box-shadow: 0 2px 0 rgba(206, 156, 85, 0.22);
+}
+
+.theme-animal-island .music-immersive-playlist-platform-actions button:hover:not(:disabled) {
+  color: var(--island-ink);
+  background: #ffda86;
+}
+
+.theme-animal-island .music-immersive-playlist-cover {
+  background: #fff4c9;
+  box-shadow: inset 0 0 0 1px #efcf88;
 }
 
 .theme-animal-island .music-field input,

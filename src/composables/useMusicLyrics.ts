@@ -63,7 +63,8 @@ const LINE_SWITCH_EARLY_TOLERANCE_SECONDS = 0.18
 const LONG_INTERLUDE_GAP_SECONDS = 8
 const INTERLUDE_FADE_AFTER_SECONDS = 0.65
 const DEFAULT_LAST_LINE_SWEEP_SECONDS = 4.2
-const LYRICS_REQUEST_TIMEOUT_MS = 15000
+const LOCAL_LYRICS_REQUEST_TIMEOUT_MS = 15000
+const ONLINE_LYRICS_REQUEST_TIMEOUT_MS = 45000
 
 export function useMusicLyrics() {
   const lyricsStatus = ref<MusicLyricsStatus>('idle')
@@ -90,6 +91,10 @@ export function useMusicLyrics() {
     lyricsStatus.value = 'loading'
 
     try {
+      const requestTimeoutMs =
+        track.source === 'netease' || track.source === 'kugou'
+          ? ONLINE_LYRICS_REQUEST_TIMEOUT_MS
+          : LOCAL_LYRICS_REQUEST_TIMEOUT_MS
       const result = await withLyricsRequestTimeout(
         track.source === 'netease' && track.neteaseSongId
           ? invoke<MusicLyricsResult | null>('read_netease_lyrics', {
@@ -106,6 +111,7 @@ export function useMusicLyrics() {
               path: track.path,
               sourcePath: track.sourcePath ?? track.path,
             }),
+        requestTimeoutMs,
       )
       if (currentRequestId !== requestId) {
         return
@@ -199,11 +205,14 @@ export function useMusicLyrics() {
   }
 }
 
-function withLyricsRequestTimeout(promise: Promise<MusicLyricsResult | null>) {
+function withLyricsRequestTimeout(
+  promise: Promise<MusicLyricsResult | null>,
+  timeoutMs: number,
+) {
   return new Promise<MusicLyricsResult | null>((resolve, reject) => {
     const timer = window.setTimeout(() => {
       reject(new Error('歌词读取超时，请稍后重试。'))
-    }, LYRICS_REQUEST_TIMEOUT_MS)
+    }, timeoutMs)
 
     promise
       .then(resolve, reject)

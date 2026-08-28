@@ -208,6 +208,77 @@ interface MusicPlaylist {
   updatedAt: string
 }
 
+interface StoredMusicSettings {
+  volume?: number
+  repeatMode?: RepeatMode
+  shuffleEnabled?: boolean
+  musicStorageDir?: string
+  onlinePlaybackQuality?: string
+  neteaseOnlinePlaybackQuality?: string
+  kugouOnlinePlaybackQuality?: string
+  importCategory?: string
+  playQueue?: string[]
+  visualStagePreset?: MusicVisualStagePreset
+  visualMode?: MusicVisualMode
+  visualSpectrumStyle?: MusicSpectrumStyle
+  visualLineStyle?: MusicLineStyle
+  visualRippleStyle?: MusicRippleStyle
+  visualIntensity?: number
+  visualReducedMotion?: boolean
+  visualStageTuning?: Partial<MusicStageTuning>
+  visualStageTunings?: Partial<Record<MusicVisualStagePreset, Partial<MusicStageTuning>>>
+  lyricStageTilt?: number
+  lyricStageGlow?: number
+  lyricStageFontScale?: number
+  lyricStageVertical?: number
+  lyricStageDistance?: number
+  lyricStageSideOpacity?: number
+  immersiveWallpaperPath?: string
+  immersiveWallpaperMediaType?: string
+  immersiveWallpaperEnabled?: boolean
+  immersiveWallpaperOpacity?: number
+  immersiveWallpaperBlur?: number
+  lyricOffsetMs?: number
+}
+
+interface StoredMusicTrack {
+  id?: string
+  path?: string
+  sourcePath?: string
+  title?: string
+  artist?: string
+  album?: string
+  coverImgUrl?: string | null
+  category?: string
+  tags?: string[] | string
+  duration?: number | null
+  favorite?: boolean
+  playCount?: number
+  lastPlayedAt?: string | null
+  playHistory?: string[]
+}
+
+interface StoredMusicPlaylist {
+  id?: string
+  name?: string
+  trackIds?: string[]
+  createdAt?: string
+  updatedAt?: string
+}
+
+interface MusicLibraryState {
+  version?: number
+  settings?: StoredMusicSettings | null
+  tracks?: StoredMusicTrack[] | null
+  playlists?: StoredMusicPlaylist[] | null
+  savedAt?: string | null
+}
+
+interface MusicLibraryStorageInfo {
+  dataDir: string
+  libraryFile: string
+}
+
 interface MusicTagPresetGroup {
   id: string
   title: string
@@ -441,7 +512,8 @@ interface KugouQualityAvailability {
   diagnostic?: string | null
 }
 
-type ImmersivePlaylistSource = 'local' | 'netease' | 'kugou'
+type ImmersivePlaylistSource = 'current' | 'playlists'
+type ImmersivePlaylistFilter = 'all' | 'local' | 'netease' | 'kugou'
 type ImmersiveSearchPlatform = 'netease' | 'kugou'
 type ImmersiveSearchPlatformOptionValue = 'all' | ImmersiveSearchPlatform
 type ImmersiveWallpaperMediaType = 'image' | 'video'
@@ -480,6 +552,7 @@ interface PlaybackFailureDisplay {
 
 interface OnlinePlaybackOptions {
   autoSkip?: boolean
+  preserveImmersivePlaylistSource?: boolean
 }
 
 interface TrackIdentity {
@@ -594,6 +667,9 @@ const IMMERSIVE_PLAYLIST_CONTEXT_RADIUS = 50
 const IMMERSIVE_PLAYLIST_FALLBACK_LIMIT = IMMERSIVE_PLAYLIST_CONTEXT_RADIUS * 2 + 1
 const IMMERSIVE_LYRIC_MAIN_MAX_LINES = 4
 const IMMERSIVE_LYRIC_SIDE_MAX_LINES = 2
+// WebGL remains the visual stage, while DOM is the authoritative lyric renderer.
+// CanvasTexture lyric planes can retain an empty current-line texture across track switches.
+const WEBGL_CANVAS_TEXTURE_LYRICS_ENABLED = false
 const IMMERSIVE_STAGE_MAX_YAW = 22
 const IMMERSIVE_STAGE_MAX_PITCH = 12
 const IMMERSIVE_STAGE_DRAG_YAW_FACTOR = 0.085
@@ -872,6 +948,11 @@ const musicTagPresetGroups: MusicTagPresetGroup[] = [
 ]
 const musicTagPresetOptions = musicTagPresetGroups.flatMap((group) => group.tags)
 const audio = ref<HTMLAudioElement | null>(null)
+const trackDialogRef = ref<HTMLElement | null>(null)
+const playlistTrackPickerDialogRef = ref<HTMLElement | null>(null)
+const playlistTrackPickerSearchRef = ref<HTMLInputElement | null>(null)
+const musicSettingsDialogRef = ref<HTMLElement | null>(null)
+const musicSettingsCloseButtonRef = ref<HTMLButtonElement | null>(null)
 const miniPlayerElement = ref<HTMLElement | null>(null)
 const neteasePlaylistDetailSection = ref<HTMLElement | null>(null)
 const kugouPlaylistDetailSection = ref<HTMLElement | null>(null)
@@ -880,6 +961,7 @@ const { windowOpenAnimationClass } = useWindowOpenAnimation('panel')
 const immersiveScene = ref<HTMLElement | null>(null)
 const immersiveSearchRoot = ref<HTMLElement | null>(null)
 const immersiveSearchInput = ref<HTMLInputElement | null>(null)
+const immersivePlaylistRackRef = ref<HTMLElement | null>(null)
 const tracks = ref<MusicTrack[]>([])
 const playQueue = ref<string[]>([])
 const playbackContext = ref<MusicPlaybackContext>({ source: 'local', trackIds: [] })
@@ -896,8 +978,65 @@ const playlistTrackPickerVisible = ref(false)
 const playlistTrackPickerPlaylistId = ref('')
 const playlistTrackPickerQuery = ref('')
 const playlistTrackPickerSelectedIds = ref<string[]>([])
+const trackByIdLookup = computed(() => {
+  const lookup = new Map<string, MusicTrack>()
+  for (const track of tracks.value) {
+    if (!lookup.has(track.id)) {
+      lookup.set(track.id, track)
+    }
+  }
+  return lookup
+})
+const trackIndexByIdLookup = computed(() => {
+  const lookup = new Map<string, number>()
+  tracks.value.forEach((track, index) => {
+    if (!lookup.has(track.id)) {
+      lookup.set(track.id, index)
+    }
+  })
+  return lookup
+})
+const validLocalTrackIds = computed(() => new Set(trackByIdLookup.value.keys()))
+const queuedTrackIds = computed(() => new Set(playQueue.value))
+const queuePositionByTrackId = computed(() => {
+  const lookup = new Map<string, number>()
+  playQueue.value.forEach((trackId, index) => {
+    if (!lookup.has(trackId)) {
+      lookup.set(trackId, index + 1)
+    }
+  })
+  return lookup
+})
+const playlistTrackPickerSelectedIdSet = computed(
+  () => new Set(playlistTrackPickerSelectedIds.value),
+)
+const customPlaylistTracksByPlaylist = computed(() => {
+  const lookup = trackByIdLookup.value
+  const resolved = new Map<MusicPlaylist, MusicTrack[]>()
+  for (const playlist of customPlaylists.value) {
+    const seenTrackIds = new Set<string>()
+    const playlistTracks: MusicTrack[] = []
+    for (const rawTrackId of playlist.trackIds) {
+      const trackId = normalizeTrackId(rawTrackId)
+      if (!trackId || seenTrackIds.has(trackId)) {
+        continue
+      }
+
+      const track = lookup.get(trackId)
+      if (!track) {
+        continue
+      }
+
+      seenTrackIds.add(trackId)
+      playlistTracks.push(track)
+    }
+    resolved.set(playlist, playlistTracks)
+  }
+  return resolved
+})
 const importCategory = ref(DEFAULT_CATEGORY)
 const musicStorageDir = ref('')
+const musicLibraryStorageInfo = ref<MusicLibraryStorageInfo | null>(null)
 const onlinePlaybackQuality = ref<OnlinePlaybackQuality>(DEFAULT_ONLINE_PLAYBACK_QUALITY)
 const neteaseOnlinePlaybackQuality = ref<OnlinePlaybackQuality>(DEFAULT_NETEASE_ONLINE_PLAYBACK_QUALITY)
 const kugouOnlinePlaybackQuality = ref<OnlinePlaybackQuality>(DEFAULT_KUGOU_ONLINE_PLAYBACK_QUALITY)
@@ -917,7 +1056,11 @@ const immersiveStageOnlyMode = ref(false)
 const listFocusMode = ref(false)
 const immersivePlaylistVisible = ref(true)
 const immersiveRhythmPanelVisible = ref(true)
-const immersivePlaylistSource = ref<ImmersivePlaylistSource>('local')
+const immersivePlaylistSource = ref<ImmersivePlaylistSource>('current')
+const immersivePlaylistFilter = ref<ImmersivePlaylistFilter>('all')
+const immersiveExpandedLocalPlaylistId = ref('')
+const immersiveExpandedNeteasePlaylistId = ref<number | null>(null)
+const immersiveExpandedKugouPlaylistKey = ref('')
 const immersiveSearchQuery = ref('')
 const immersiveSearchFocused = ref(false)
 const immersiveSearchLoading = ref(false)
@@ -954,6 +1097,7 @@ const immersiveWallpaperVideoRef = ref<HTMLVideoElement | null>(null)
 const immersiveWallpaperPerformanceMode = ref<ImmersiveWallpaperPerformanceMode>('normal')
 const immersiveWallpaperDropRatio = ref(0)
 const webglStarfieldUnavailable = ref(false)
+const musicWindowDocumentVisible = ref(true)
 const immersiveStageDragging = ref(false)
 const immersiveStageYaw = ref(0)
 const immersiveStagePitch = ref(0)
@@ -991,6 +1135,7 @@ const neteasePlaylistDetail = ref<NeteasePlaylistDetail | null>(null)
 const neteasePlaylistsLoading = ref(false)
 const neteasePlaylistDetailLoading = ref(false)
 const neteasePlaylistDetailPage = ref(0)
+const neteasePlaylistDetailKey = ref<number | null>(null)
 const neteasePlaylistError = ref('')
 const neteaseTrackActionId = ref<number | null>(null)
 const neteaseCurrentTrack = ref<MusicTrack | null>(null)
@@ -1015,6 +1160,7 @@ const kugouPlaylistDetail = ref<KugouPlaylistDetail | null>(null)
 const kugouPlaylistsLoading = ref(false)
 const kugouPlaylistDetailLoading = ref(false)
 const kugouPlaylistDetailPage = ref(0)
+const kugouPlaylistDetailKey = ref('')
 const kugouPlaylistError = ref('')
 const kugouRecommendedPlaylists = ref<KugouPlaylistSummary[]>([])
 const kugouRecommendedPlaylistsLoading = ref(false)
@@ -1063,6 +1209,9 @@ const editingTrackId = ref<string | null>(null)
 const activeTrackActionsId = ref<string | null>(null)
 const recognitionBusyTrackId = ref<string | null>(null)
 const recognitionCandidate = ref<MusicRecognitionCandidate | null>(null)
+let trackDialogReturnFocus: HTMLElement | null = null
+let playlistTrackPickerReturnFocus: HTMLElement | null = null
+let musicSettingsReturnFocus: HTMLElement | null = null
 const {
   frequencyData,
   energyFrame,
@@ -1823,6 +1972,9 @@ const currentTrackPlatformLabel = computed(() => {
 
   return '本机音乐'
 })
+const musicLibraryStorageLabel = computed(
+  () => musicLibraryStorageInfo.value?.libraryFile || '跟随应用本机数据目录保存',
+)
 const playbackListTrackCount = computed(() => {
   if (currentTrack.value?.source === 'netease') {
     return currentNeteasePlaybackTracks().length
@@ -1857,8 +2009,79 @@ const immersiveKugouPlaylistTracks = computed(() => {
   const currentListIndex = sourceTracks.findIndex((track) => track.hash === currentHash)
   return centeredPlaybackWindow(sourceTracks, currentListIndex)
 })
+const immersiveCurrentPlaylistKind = computed<'local' | 'netease' | 'kugou'>(() => {
+  if (currentTrack.value?.source === 'netease') {
+    return 'netease'
+  }
+
+  if (currentTrack.value?.source === 'kugou') {
+    return 'kugou'
+  }
+
+  return 'local'
+})
+const immersivePlaylistLibraryCount = computed(
+  () => customPlaylists.value.length + neteasePlaylists.value.length + kugouPlaylists.value.length,
+)
+const immersivePlaylistFilterOptions = computed<
+  Array<{ value: ImmersivePlaylistFilter; label: string; count: number }>
+>(() => [
+  { value: 'all', label: '全部', count: immersivePlaylistLibraryCount.value },
+  { value: 'local', label: '本地', count: customPlaylists.value.length },
+  { value: 'netease', label: '网易云', count: neteasePlaylists.value.length },
+  { value: 'kugou', label: '酷狗', count: kugouPlaylists.value.length },
+])
+const immersiveFilteredPlaylistCount = computed(() => {
+  if (immersivePlaylistFilter.value === 'local') {
+    return customPlaylists.value.length
+  }
+
+  if (immersivePlaylistFilter.value === 'netease') {
+    return neteasePlaylists.value.length
+  }
+
+  if (immersivePlaylistFilter.value === 'kugou') {
+    return kugouPlaylists.value.length
+  }
+
+  return immersivePlaylistLibraryCount.value
+})
+const immersivePlaylistFilterLabel = computed(
+  () =>
+    immersivePlaylistFilterOptions.value.find(
+      (option) => option.value === immersivePlaylistFilter.value,
+    )?.label ?? '全部',
+)
+const immersivePlaylistFilterEmptyLabel = computed(() => {
+  if (immersivePlaylistFilter.value === 'local') {
+    return '还没有本地歌单，可在普通音乐窗口中创建。'
+  }
+
+  if (immersivePlaylistFilter.value === 'netease') {
+    return neteaseLoggedIn.value
+      ? '还没有读取到网易云歌单，点击刷新重试。'
+      : '登录网易云后显示我的歌单。'
+  }
+
+  if (immersivePlaylistFilter.value === 'kugou') {
+    return kugouLoggedIn.value
+      ? '还没有读取到酷狗歌单，点击刷新重试。'
+      : '登录酷狗后显示我的歌单。'
+  }
+
+  return '还没有可展示的歌单。'
+})
 const immersivePlaylistCountLabel = computed(() => {
-  if (immersivePlaylistSource.value === 'netease') {
+  if (immersivePlaylistSource.value === 'playlists') {
+    const count = immersiveFilteredPlaylistCount.value
+    return count > 0
+      ? immersivePlaylistFilter.value === 'all'
+        ? `歌单 ${count} 个 · 本地 ${customPlaylists.value.length} / 网易云 ${neteasePlaylists.value.length} / 酷狗 ${kugouPlaylists.value.length}`
+        : `${immersivePlaylistFilterLabel.value} · ${count} 个歌单`
+      : '还没有读取歌单'
+  }
+
+  if (immersiveCurrentPlaylistKind.value === 'netease') {
     if (!neteaseLoggedIn.value) {
       return '未登录网易云'
     }
@@ -1876,7 +2099,7 @@ const immersivePlaylistCountLabel = computed(() => {
     return count > 0 ? `${playlistName} · 当前附近 ${count} / ${total} 首` : '等待读取网易云歌单'
   }
 
-  if (immersivePlaylistSource.value === 'kugou') {
+  if (immersiveCurrentPlaylistKind.value === 'kugou') {
     if (kugouPlaylistDetailLoading.value) {
       return '正在读取酷狗歌单'
     }
@@ -1913,7 +2136,15 @@ const immersivePlaylistCountLabel = computed(() => {
   return count > 0 ? `当前附近 ${count} / ${total} 首` : '等待本机歌曲'
 })
 const immersivePlaylistEmptyLabel = computed(() => {
-  if (immersivePlaylistSource.value === 'netease') {
+  if (immersivePlaylistSource.value === 'playlists') {
+    if (!neteaseLoggedIn.value && !kugouLoggedIn.value && customPlaylists.value.length === 0) {
+      return '还没有本地歌单，也未登录网易云或酷狗。'
+    }
+
+    return immersivePlaylistFilterEmptyLabel.value
+  }
+
+  if (immersiveCurrentPlaylistKind.value === 'netease') {
     if (!neteaseLoggedIn.value) {
       return '先登录网易云音乐'
     }
@@ -1925,7 +2156,7 @@ const immersivePlaylistEmptyLabel = computed(() => {
     return '先在网易云页搜索歌曲或读取歌单'
   }
 
-  if (immersivePlaylistSource.value === 'kugou') {
+  if (immersiveCurrentPlaylistKind.value === 'kugou') {
     if (kugouPlaylistDetailLoading.value) {
       return '正在读取酷狗歌单'
     }
@@ -1986,6 +2217,7 @@ const webglLyricStage = computed<WebglLyricStageState>(() => {
   const fontScale = lyricFontScaleValue()
   const lineCapacityScale = clamp(1 / fontScale, 0.72, 1.38)
   const active =
+    WEBGL_CANVAS_TEXTURE_LYRICS_ENABLED &&
     webglStarfieldActive.value &&
     Boolean(currentTrack.value)
   const fallbackArtist = currentTrack.value?.artist.trim() || ''
@@ -2271,11 +2503,18 @@ let unlistenThemeChanged: (() => void) | null = null
 let unlistenMusicImmersiveThemeChanged: (() => void) | null = null
 let unlistenMusicAction: (() => void) | null = null
 let unlistenMusicWindowMoved: (() => void) | null = null
+let unlistenMusicWindowCloseRequested: (() => void) | null = null
+let unlistenMusicLibraryFlushRequested: (() => void) | null = null
 let playlistsRestored = false
+let musicLibraryRestored = false
+let musicLibraryPersistenceBlocked = false
+let musicLibrarySaveTimer: number | null = null
+let musicLibrarySaveQueued = false
+let musicLibrarySavePromise: Promise<void> | null = null
 let beatMapRequestedTrackId = ''
 let lyricsRequestedTrackId = ''
 let visualClockFrameId: number | null = null
-let lastVisualClockUpdate = 0
+let visualClockTimerId: number | null = null
 let lastLyricMusicEnvelopeUpdate = 0
 let playbackRequestSerial = 0
 let onlinePlaybackPrefetchTimer: number | null = null
@@ -2320,9 +2559,10 @@ let immersiveWallpaperLastVideoQuality: { total: number; dropped: number } | nul
 let immersiveWallpaperRecoverSamples = 0
 
 onMounted(async () => {
-  restoreSettings()
-  restoreTracks()
-  restorePlaylists()
+  musicWindowDocumentVisible.value = document.visibilityState !== 'hidden'
+  document.addEventListener('visibilitychange', handleMusicWindowVisibilityChange)
+  await restoreMusicLibrary()
+  void loadMusicLibraryStorageInfo()
   syncAudioVolume()
   await loadTheme()
   void refreshNeteaseLoginStatus(false)
@@ -2340,12 +2580,24 @@ onMounted(async () => {
   unlistenMusicAction = await listen<MusicActionRequest>('music-action-requested', (event) => {
     void handleMusicActionRequest(event.payload)
   })
+  unlistenMusicLibraryFlushRequested = await listen('music-library-flush-requested', async () => {
+    await persistMusicLibraryNow()
+    await emitEvent('music-library-flush-completed')
+  })
   try {
     unlistenMusicWindowMoved = await musicWindow.onMoved(() => {
       scheduleMiniEdgeDockCheck()
     })
   } catch {
     unlistenMusicWindowMoved = null
+  }
+  try {
+    unlistenMusicWindowCloseRequested = await musicWindow.onCloseRequested(async (event) => {
+      event.preventDefault()
+      await hideMusicPlayer()
+    })
+  } catch {
+    unlistenMusicWindowCloseRequested = null
   }
 })
 
@@ -2354,11 +2606,16 @@ onBeforeUnmount(() => {
   unlistenMusicImmersiveThemeChanged?.()
   unlistenMusicAction?.()
   unlistenMusicWindowMoved?.()
+  unlistenMusicWindowCloseRequested?.()
+  unlistenMusicLibraryFlushRequested?.()
   window.removeEventListener('keydown', handleImmersiveFreeCameraKeyDown, true)
   window.removeEventListener('keyup', handleImmersiveFreeCameraKeyUp, true)
   window.removeEventListener('mousemove', handleImmersiveFreeCameraMouseMove, true)
   window.removeEventListener('pointerdown', handleImmersiveSearchDocumentPointerDown, true)
+  document.removeEventListener('visibilitychange', handleMusicWindowVisibilityChange)
   clearMiniEdgeTimers()
+  clearMusicLibrarySaveTimer()
+  void persistMusicLibraryNow()
   cancelMiniEdgeWindowMove()
   clearOnlinePlaybackPrefetchTimer()
   clearOnlineStallRecoveryTimer()
@@ -2452,6 +2709,10 @@ watch(visualReducedMotion, (reducedMotion) => {
   if (reducedMotion) {
     resetLyricMusicEnvelope()
   }
+  if (playing.value && immersiveMode.value) {
+    stopVisualClock()
+    startVisualClock()
+  }
 })
 
 watch(() => currentTrack.value?.id ?? '', () => {
@@ -2467,6 +2728,7 @@ watch(() => currentTrack.value?.id ?? '', () => {
   resetBeatMap()
   resetLyrics()
   if (immersiveMode.value && currentTrack.value) {
+    void loadCurrentTrackLyrics()
     scheduleImmersiveContentPreparation()
   }
 })
@@ -2576,44 +2838,108 @@ watch(
   { deep: true },
 )
 
-function restoreSettings() {
-  try {
-    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
-    if (!raw) {
-      return
-    }
+async function restoreMusicLibrary() {
+  let restored = false
+  let migratedFromLegacy = false
 
-    const saved = JSON.parse(raw) as {
-      volume?: number
-      repeatMode?: RepeatMode
-      shuffleEnabled?: boolean
-      musicStorageDir?: string
-      onlinePlaybackQuality?: string
-      neteaseOnlinePlaybackQuality?: string
-      kugouOnlinePlaybackQuality?: string
-      importCategory?: string
-      playQueue?: string[]
-      visualStagePreset?: MusicVisualStagePreset
-      visualMode?: MusicVisualMode
-      visualSpectrumStyle?: MusicSpectrumStyle
-      visualLineStyle?: MusicLineStyle
-      visualRippleStyle?: MusicRippleStyle
-      visualIntensity?: number
-      visualReducedMotion?: boolean
-      visualStageTuning?: Partial<MusicStageTuning>
-      visualStageTunings?: Partial<Record<MusicVisualStagePreset, Partial<MusicStageTuning>>>
-      lyricStageTilt?: number
-      lyricStageGlow?: number
-      lyricStageFontScale?: number
-      lyricStageVertical?: number
-      lyricStageDistance?: number
-      lyricStageSideOpacity?: number
-      immersiveWallpaperPath?: string
-      immersiveWallpaperMediaType?: string
-      immersiveWallpaperEnabled?: boolean
-      immersiveWallpaperOpacity?: number
-      immersiveWallpaperBlur?: number
-      lyricOffsetMs?: number
+  try {
+    const state = await invoke<MusicLibraryState>('get_music_library_state')
+    if (hasStoredMusicLibraryState(state)) {
+      applyMusicLibraryState(state)
+      restored = true
+    }
+  } catch (err) {
+    musicLibraryPersistenceBlocked = true
+    playerError.value = `音乐库文件校验失败，为避免覆盖原数据，本次运行已暂停自动保存：${String(err)}`
+    console.warn('music library state read failed:', err)
+  }
+
+  if (!restored) {
+    const legacyState = readLegacyMusicLibraryState()
+    if (hasStoredMusicLibraryState(legacyState)) {
+      applyMusicLibraryState(legacyState)
+      restored = true
+      migratedFromLegacy = true
+    }
+  }
+
+  if (!restored) {
+    restoreSettings({})
+    restoreTracks([])
+    restorePlaylists([])
+  }
+
+  musicLibraryRestored = true
+  syncPlaybackQueue()
+
+  if (tracks.value.length > 0 && currentIndex.value < 0) {
+    currentIndex.value = 0
+  }
+
+  if (migratedFromLegacy && !musicLibraryPersistenceBlocked) {
+    playerStatus.value = '已迁移旧音乐库数据到本机持久层。'
+    await persistMusicLibraryNow()
+  }
+}
+
+async function loadMusicLibraryStorageInfo() {
+  try {
+    musicLibraryStorageInfo.value = await invoke<MusicLibraryStorageInfo>(
+      'get_music_library_storage_info',
+    )
+  } catch {
+    musicLibraryStorageInfo.value = null
+  }
+}
+
+function hasStoredMusicLibraryState(state?: MusicLibraryState | null) {
+  if (!state) {
+    return false
+  }
+
+  const settings =
+    state.settings && typeof state.settings === 'object' ? state.settings : null
+  return Boolean(
+    (Array.isArray(state.tracks) && state.tracks.length > 0) ||
+      (Array.isArray(state.playlists) && state.playlists.length > 0) ||
+      (settings && Object.keys(settings).length > 0),
+  )
+}
+
+function readLegacyMusicLibraryState(): MusicLibraryState {
+  return {
+    version: 1,
+    settings: readLegacyJson<StoredMusicSettings | null>(SETTINGS_STORAGE_KEY, null),
+    tracks: readLegacyJson<StoredMusicTrack[]>(TRACKS_STORAGE_KEY, []),
+    playlists: readLegacyJson<StoredMusicPlaylist[]>(PLAYLISTS_STORAGE_KEY, []),
+    savedAt: null,
+  }
+}
+
+function readLegacyJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? (JSON.parse(raw) as T) : fallback
+  } catch {
+    localStorage.removeItem(key)
+    return fallback
+  }
+}
+
+function applyMusicLibraryState(state: MusicLibraryState) {
+  restoreSettings(state.settings ?? {})
+  restoreTracks(state.tracks ?? [])
+  restorePlaylists(state.playlists ?? [])
+}
+
+function restoreSettings(savedSettings?: StoredMusicSettings | null) {
+  try {
+    const saved = savedSettings ?? readLegacyJson<StoredMusicSettings | null>(
+      SETTINGS_STORAGE_KEY,
+      null,
+    )
+    if (!saved) {
+      return
     }
 
     if (typeof saved.volume === 'number') {
@@ -2674,52 +3000,23 @@ function restoreSettings() {
     if (typeof saved.lyricOffsetMs === 'number') {
       lyricOffsetMs.value = clamp(Math.round(saved.lyricOffsetMs), -2000, 2000)
     }
-  } catch {
-    localStorage.removeItem(SETTINGS_STORAGE_KEY)
+  } catch (err) {
+    console.warn('music settings restore failed:', err)
   }
 }
 
-function restoreTracks() {
+function restoreTracks(savedTracks?: StoredMusicTrack[] | null) {
   try {
-    const raw = localStorage.getItem(TRACKS_STORAGE_KEY)
-    if (!raw) {
+    const saved = Array.isArray(savedTracks)
+      ? savedTracks
+      : readLegacyJson<StoredMusicTrack[]>(TRACKS_STORAGE_KEY, [])
+    if (!Array.isArray(saved)) {
       return
     }
 
-    const saved = JSON.parse(raw) as Array<{
-      id?: string
-      path?: string
-      sourcePath?: string
-      title?: string
-      artist?: string
-      album?: string
-      coverImgUrl?: string | null
-      category?: string
-      tags?: string[]
-      duration?: number | null
-      favorite?: boolean
-      playCount?: number
-      lastPlayedAt?: string | null
-      playHistory?: string[]
-    }>
     tracks.value = saved
       .filter(
-        (item): item is {
-          id?: string
-          path: string
-          sourcePath?: string
-          title?: string
-          artist?: string
-          album?: string
-          coverImgUrl?: string | null
-          category?: string
-          tags?: string[]
-          duration?: number | null
-          favorite?: boolean
-          playCount?: number
-          lastPlayedAt?: string | null
-          playHistory?: string[]
-        } => Boolean(item.path),
+        (item): item is StoredMusicTrack & { path: string } => Boolean(item.path),
       )
       .map((item) => {
         const restoredIdentity = normalizeStoredTrackIdentity(
@@ -2752,26 +3049,21 @@ function restoreTracks() {
       currentIndex.value = 0
     }
     syncPlaybackQueue()
-  } catch {
-    localStorage.removeItem(TRACKS_STORAGE_KEY)
+  } catch (err) {
+    console.warn('music tracks restore failed:', err)
   }
 }
 
-function restorePlaylists() {
+function restorePlaylists(savedPlaylists?: StoredMusicPlaylist[] | null) {
   try {
-    const raw = localStorage.getItem(PLAYLISTS_STORAGE_KEY)
-    if (!raw) {
+    const saved = Array.isArray(savedPlaylists)
+      ? savedPlaylists
+      : readLegacyJson<StoredMusicPlaylist[]>(PLAYLISTS_STORAGE_KEY, [])
+    if (!Array.isArray(saved)) {
       playlistsRestored = true
       return
     }
 
-    const saved = JSON.parse(raw) as Array<{
-      id?: string
-      name?: string
-      trackIds?: string[]
-      createdAt?: string
-      updatedAt?: string
-    }>
     customPlaylists.value = saved
       .map(normalizeCustomPlaylist)
       .filter((playlist): playlist is MusicPlaylist => Boolean(playlist))
@@ -2780,102 +3072,175 @@ function restorePlaylists() {
       activeCustomPlaylistId.value = ''
     }
     playlistsRestored = true
-  } catch {
-    localStorage.removeItem(PLAYLISTS_STORAGE_KEY)
+  } catch (err) {
+    console.warn('music playlists restore failed:', err)
     playlistsRestored = true
   }
 }
 
 function saveSettings() {
-  localStorage.setItem(
-    SETTINGS_STORAGE_KEY,
-    JSON.stringify({
-      volume: volume.value,
-      repeatMode: repeatMode.value,
-      shuffleEnabled: shuffleEnabled.value,
-      musicStorageDir: musicStorageDir.value,
-      onlinePlaybackQuality: onlinePlaybackQuality.value,
-      neteaseOnlinePlaybackQuality: neteaseOnlinePlaybackQuality.value,
-      kugouOnlinePlaybackQuality: kugouOnlinePlaybackQuality.value,
-      importCategory: normalizeMusicCategory(importCategory.value),
-      playQueue: sanitizeQueueIds(playQueue.value),
-      visualStagePreset: visualStagePreset.value,
-      visualMode: visualMode.value,
-      visualSpectrumStyle: visualSpectrumStyle.value,
-      visualLineStyle: visualLineStyle.value,
-      visualRippleStyle: visualRippleStyle.value,
-      visualIntensity: clamp(visualIntensity.value, 0.2, 1),
-      visualReducedMotion: visualReducedMotion.value,
-      visualStageTunings: normalizeMusicStageTunings(visualStageTunings.value),
-      lyricStageTilt: normalizeUnitSetting(lyricStageTilt.value, LYRIC_STAGE_PRESET_DEFAULTS.projection.tilt),
-      lyricStageGlow: normalizeUnitSetting(lyricStageGlow.value, LYRIC_STAGE_PRESET_DEFAULTS.projection.glow),
-      lyricStageFontScale: normalizeUnitSetting(
-        lyricStageFontScale.value,
-        LYRIC_STAGE_PRESET_DEFAULTS.projection.fontScale,
-      ),
-      lyricStageVertical: normalizeUnitSetting(
-        lyricStageVertical.value,
-        LYRIC_STAGE_PRESET_DEFAULTS.projection.vertical,
-      ),
-      lyricStageDistance: normalizeUnitSetting(lyricStageDistance.value, LYRIC_STAGE_DISTANCE_DEFAULT),
-      lyricStageSideOpacity: normalizeUnitSetting(
-        lyricStageSideOpacity.value,
-        LYRIC_STAGE_PRESET_DEFAULTS.projection.sideOpacity,
-      ),
-      immersiveWallpaperPath: normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value),
-      immersiveWallpaperMediaType: normalizeImmersiveWallpaperMediaType(immersiveWallpaperMediaType.value),
-      immersiveWallpaperEnabled: immersiveWallpaperEnabled.value && Boolean(normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value)),
-      immersiveWallpaperOpacity: normalizeUnitSetting(immersiveWallpaperOpacity.value, 0.34),
-      immersiveWallpaperBlur: normalizeUnitSetting(immersiveWallpaperBlur.value, 0.12),
-      lyricOffsetMs: clamp(Math.round(lyricOffsetMs.value), -2000, 2000),
-    }),
-  )
+  scheduleMusicLibrarySave()
 }
 
 function saveTracks() {
-  localStorage.setItem(
-    TRACKS_STORAGE_KEY,
-    JSON.stringify(
-      tracks.value
-        .filter((track) => track.source !== 'netease' && track.source !== 'kugou')
-        .map((track) => ({
-          id: track.id,
-          path: track.path,
-          sourcePath: track.sourcePath,
-          title: track.title,
-          artist: normalizeTrackArtist(track.artist),
-          album: normalizeTrackAlbum(track.album),
-          coverImgUrl: normalizeCoverImgUrl(track.coverImgUrl),
-          category: normalizeMusicCategory(track.category),
-          tags: normalizeTrackTags(track.tags),
-          duration: sanitizeTrackDuration(track.duration),
-          favorite: track.favorite,
-          playCount: sanitizePlayCount(track.playCount),
-          lastPlayedAt: normalizeTrackDate(track.lastPlayedAt),
-          playHistory: normalizeTrackHistory(track.playHistory),
-        })),
-    ),
-  )
+  scheduleMusicLibrarySave()
 }
 
 function savePlaylists() {
-  localStorage.setItem(
-    PLAYLISTS_STORAGE_KEY,
-    JSON.stringify(
-      customPlaylists.value.map((playlist) => ({
-        id: playlist.id,
-        name: normalizePlaylistName(playlist.name),
-        trackIds: normalizePlaylistTrackIds(playlist.trackIds),
-        createdAt: normalizeTrackDate(playlist.createdAt) || new Date().toISOString(),
-        updatedAt: normalizeTrackDate(playlist.updatedAt) || new Date().toISOString(),
-      })),
+  scheduleMusicLibrarySave()
+}
+
+function serializeMusicSettings(): StoredMusicSettings {
+  return {
+    volume: volume.value,
+    repeatMode: repeatMode.value,
+    shuffleEnabled: shuffleEnabled.value,
+    musicStorageDir: musicStorageDir.value,
+    onlinePlaybackQuality: onlinePlaybackQuality.value,
+    neteaseOnlinePlaybackQuality: neteaseOnlinePlaybackQuality.value,
+    kugouOnlinePlaybackQuality: kugouOnlinePlaybackQuality.value,
+    importCategory: normalizeMusicCategory(importCategory.value),
+    playQueue: sanitizeQueueIds(playQueue.value),
+    visualStagePreset: visualStagePreset.value,
+    visualMode: visualMode.value,
+    visualSpectrumStyle: visualSpectrumStyle.value,
+    visualLineStyle: visualLineStyle.value,
+    visualRippleStyle: visualRippleStyle.value,
+    visualIntensity: clamp(visualIntensity.value, 0.2, 1),
+    visualReducedMotion: visualReducedMotion.value,
+    visualStageTunings: normalizeMusicStageTunings(visualStageTunings.value),
+    lyricStageTilt: normalizeUnitSetting(
+      lyricStageTilt.value,
+      LYRIC_STAGE_PRESET_DEFAULTS.projection.tilt,
     ),
-  )
+    lyricStageGlow: normalizeUnitSetting(
+      lyricStageGlow.value,
+      LYRIC_STAGE_PRESET_DEFAULTS.projection.glow,
+    ),
+    lyricStageFontScale: normalizeUnitSetting(
+      lyricStageFontScale.value,
+      LYRIC_STAGE_PRESET_DEFAULTS.projection.fontScale,
+    ),
+    lyricStageVertical: normalizeUnitSetting(
+      lyricStageVertical.value,
+      LYRIC_STAGE_PRESET_DEFAULTS.projection.vertical,
+    ),
+    lyricStageDistance: normalizeUnitSetting(lyricStageDistance.value, LYRIC_STAGE_DISTANCE_DEFAULT),
+    lyricStageSideOpacity: normalizeUnitSetting(
+      lyricStageSideOpacity.value,
+      LYRIC_STAGE_PRESET_DEFAULTS.projection.sideOpacity,
+    ),
+    immersiveWallpaperPath: normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value),
+    immersiveWallpaperMediaType: normalizeImmersiveWallpaperMediaType(immersiveWallpaperMediaType.value),
+    immersiveWallpaperEnabled:
+      immersiveWallpaperEnabled.value &&
+      Boolean(normalizeImmersiveWallpaperPath(immersiveWallpaperPath.value)),
+    immersiveWallpaperOpacity: normalizeUnitSetting(immersiveWallpaperOpacity.value, 0.34),
+    immersiveWallpaperBlur: normalizeUnitSetting(immersiveWallpaperBlur.value, 0.12),
+    lyricOffsetMs: clamp(Math.round(lyricOffsetMs.value), -2000, 2000),
+  }
+}
+
+function serializeMusicTracks(): StoredMusicTrack[] {
+  return tracks.value
+    .filter((track) => track.source !== 'netease' && track.source !== 'kugou')
+    .map((track) => ({
+      id: track.id,
+      path: track.path,
+      sourcePath: track.sourcePath,
+      title: track.title,
+      artist: normalizeTrackArtist(track.artist),
+      album: normalizeTrackAlbum(track.album),
+      coverImgUrl: normalizeCoverImgUrl(track.coverImgUrl),
+      category: normalizeMusicCategory(track.category),
+      tags: normalizeTrackTags(track.tags),
+      duration: sanitizeTrackDuration(track.duration),
+      favorite: track.favorite,
+      playCount: sanitizePlayCount(track.playCount),
+      lastPlayedAt: normalizeTrackDate(track.lastPlayedAt),
+      playHistory: normalizeTrackHistory(track.playHistory),
+    }))
+}
+
+function serializeMusicPlaylists(): StoredMusicPlaylist[] {
+  return customPlaylists.value.map((playlist) => ({
+    id: playlist.id,
+    name: normalizePlaylistName(playlist.name),
+    trackIds: normalizePlaylistTrackIds(playlist.trackIds),
+    createdAt: normalizeTrackDate(playlist.createdAt) || new Date().toISOString(),
+    updatedAt: normalizeTrackDate(playlist.updatedAt) || new Date().toISOString(),
+  }))
+}
+
+function createMusicLibraryState(): MusicLibraryState {
+  return {
+    version: 1,
+    settings: serializeMusicSettings(),
+    tracks: serializeMusicTracks(),
+    playlists: serializeMusicPlaylists(),
+    savedAt: new Date().toISOString(),
+  }
+}
+
+function scheduleMusicLibrarySave() {
+  if (!musicLibraryRestored || musicLibraryPersistenceBlocked) {
+    return
+  }
+
+  clearMusicLibrarySaveTimer()
+  musicLibrarySaveTimer = window.setTimeout(() => {
+    musicLibrarySaveTimer = null
+    void persistMusicLibraryNow()
+  }, 260)
+}
+
+function clearMusicLibrarySaveTimer() {
+  if (musicLibrarySaveTimer !== null) {
+    window.clearTimeout(musicLibrarySaveTimer)
+    musicLibrarySaveTimer = null
+  }
+}
+
+async function persistMusicLibraryNow() {
+  if (!musicLibraryRestored || musicLibraryPersistenceBlocked) {
+    return
+  }
+
+  clearMusicLibrarySaveTimer()
+  if (musicLibrarySavePromise) {
+    musicLibrarySaveQueued = true
+    return musicLibrarySavePromise
+  }
+
+  musicLibrarySavePromise = (async () => {
+    do {
+      musicLibrarySaveQueued = false
+      try {
+        await invoke('save_music_library_state', { state: createMusicLibraryState() })
+        localStorage.removeItem(TRACKS_STORAGE_KEY)
+        localStorage.removeItem(SETTINGS_STORAGE_KEY)
+        localStorage.removeItem(PLAYLISTS_STORAGE_KEY)
+      } catch (err) {
+        console.warn('music library state save failed:', err)
+        break
+      }
+    } while (musicLibrarySaveQueued)
+  })()
+
+  try {
+    await musicLibrarySavePromise
+  } finally {
+    musicLibrarySavePromise = null
+    if (musicLibrarySaveQueued) {
+      musicLibrarySaveQueued = false
+      await persistMusicLibraryNow()
+    }
+  }
 }
 
 async function loadTheme() {
   try {
-    const config = await invoke<PetDrawerConfig>('get_config')
+    const config = await invoke<PetDrawerConfig>('get_public_config')
     drawerTheme.value = normalizeDrawerTheme(config.drawer.theme)
     musicImmersiveThemePreference.value = normalizeMusicImmersiveTheme(config.drawer.musicImmersiveTheme)
   } catch {
@@ -3104,9 +3469,6 @@ function currentOnlinePlaybackQualityPlatform(): OnlinePlaybackQualityPlatform {
   }
   if (activePanelView.value === 'netease' || activePanelView.value === 'kugou') {
     return activePanelView.value
-  }
-  if (immersivePlaylistSource.value === 'netease' || immersivePlaylistSource.value === 'kugou') {
-    return immersivePlaylistSource.value
   }
   return 'general'
 }
@@ -3711,10 +4073,30 @@ async function chooseMusicFiles() {
   }
 }
 
-function showMusicSettings() {
+async function showMusicSettings() {
+  musicSettingsReturnFocus = currentFocusableElement()
   settingsVisible.value = true
   playerError.value = ''
   playerStatus.value = ''
+  await nextTick()
+  musicSettingsCloseButtonRef.value?.focus()
+}
+
+function closeMusicSettings() {
+  settingsVisible.value = false
+  const returnFocus = musicSettingsReturnFocus
+  musicSettingsReturnFocus = null
+  void restoreDialogFocus(returnFocus)
+}
+
+function handleMusicSettingsKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeMusicSettings()
+    return
+  }
+  trapDialogFocus(event, musicSettingsDialogRef.value)
 }
 
 async function chooseMusicFolder() {
@@ -3822,6 +4204,12 @@ async function chooseImmersiveVideoWallpaper() {
 function handleImmersiveWallpaperVideoReady() {
   const video = immersiveWallpaperVideoRef.value
   if (!video || !immersiveWallpaperVideoOptimizationActive.value) {
+    return
+  }
+
+  if (!musicWindowDocumentVisible.value) {
+    video.pause()
+    stopImmersiveWallpaperVideoQualityMonitor()
     return
   }
 
@@ -3937,7 +4325,11 @@ function sampleImmersiveWallpaperVideoQuality() {
 
 function startImmersiveWallpaperVideoQualityMonitor() {
   const video = immersiveWallpaperVideoRef.value
-  if (!video || !immersiveWallpaperVideoOptimizationActive.value) {
+  if (
+    !video ||
+    !immersiveWallpaperVideoOptimizationActive.value ||
+    !musicWindowDocumentVisible.value
+  ) {
     return
   }
 
@@ -4421,12 +4813,12 @@ function canPlayImmersiveSearchResult(item: ImmersiveSearchResultItem) {
 
 async function playImmersiveSearchResult(item: ImmersiveSearchResultItem) {
   if (item.platform === 'netease') {
-    immersivePlaylistSource.value = 'netease'
+    immersivePlaylistSource.value = 'current'
     await playNeteaseTrack(item.track, immersiveNeteaseSearchTracks.value)
     return
   }
 
-  immersivePlaylistSource.value = 'kugou'
+  immersivePlaylistSource.value = 'current'
   await playKugouTrack(item.track, immersiveKugouSearchTracks.value)
 }
 
@@ -4473,7 +4865,7 @@ async function searchNeteaseSongs(loadMore = false) {
       neteaseSearchResult.value.total,
     )
     if (immersiveMode.value) {
-      immersivePlaylistSource.value = 'netease'
+      immersivePlaylistSource.value = 'current'
     }
   } catch (err) {
     if (!loadMore) {
@@ -4492,6 +4884,8 @@ async function refreshNeteasePlaylists(showStatus = true) {
     return
   }
 
+  const selectedPlaylistId = neteaseSelectedPlaylistId.value
+  const expandedPlaylistId = immersiveExpandedNeteasePlaylistId.value
   neteasePlaylistsLoading.value = true
   neteasePlaylistError.value = ''
   if (showStatus) {
@@ -4500,12 +4894,22 @@ async function refreshNeteasePlaylists(showStatus = true) {
 
   try {
     const playlists = await invoke<NeteasePlaylistSummary[]>('list_netease_playlists')
+    const expandedPlaylist = expandedPlaylistId === null
+      ? null
+      : playlists.find((playlist) => playlist.id === expandedPlaylistId) ?? null
+    const selectedPlaylist =
+      expandedPlaylist ??
+      playlists.find((playlist) => playlist.id === selectedPlaylistId) ??
+      playlists[0] ??
+      null
     neteasePlaylists.value = playlists
     neteasePlaylistDetail.value = null
     neteasePlaylistDetailPage.value = 0
-    neteaseSelectedPlaylistId.value = playlists[0]?.id ?? null
-    if (playlists[0]) {
-      await loadNeteasePlaylistDetail(playlists[0], false)
+    neteasePlaylistDetailKey.value = null
+    immersiveExpandedNeteasePlaylistId.value = expandedPlaylist?.id ?? null
+    neteaseSelectedPlaylistId.value = selectedPlaylist?.id ?? null
+    if (selectedPlaylist) {
+      await loadNeteasePlaylistDetail(selectedPlaylist, false)
     }
     if (showStatus) {
       neteaseLoginNotice.value =
@@ -4523,7 +4927,9 @@ async function loadNeteasePlaylistDetail(
   showStatus = true,
   loadMore = false,
 ) {
-  const isSamePlaylist = neteasePlaylistDetail.value?.playlist.id === playlist.id
+  const playlistKey = playlist.id
+  const isSamePlaylist =
+    Boolean(neteasePlaylistDetail.value) && neteasePlaylistDetailKey.value === playlistKey
   const nextPage = loadMore && isSamePlaylist ? neteasePlaylistDetailPage.value + 1 : 1
   neteaseSelectedPlaylistId.value = playlist.id
   neteasePlaylistDetailLoading.value = true
@@ -4531,6 +4937,7 @@ async function loadNeteasePlaylistDetail(
   if (!loadMore || !isSamePlaylist) {
     neteasePlaylistDetail.value = null
     neteasePlaylistDetailPage.value = 0
+    neteasePlaylistDetailKey.value = null
   }
   if (showStatus) {
     neteaseLoginNotice.value = loadMore
@@ -4577,6 +4984,7 @@ async function loadNeteasePlaylistDetail(
       }
     }
     neteasePlaylistDetailPage.value = nextPage
+    neteasePlaylistDetailKey.value = playlistKey
     if (showStatus) {
       neteaseLoginNotice.value = neteasePlaylistDetail.value.message
     }
@@ -4584,6 +4992,7 @@ async function loadNeteasePlaylistDetail(
     if (!loadMore) {
       neteasePlaylistDetail.value = null
       neteasePlaylistDetailPage.value = 0
+      neteasePlaylistDetailKey.value = null
     }
     neteasePlaylistError.value = `网易云歌单歌曲读取失败：${String(err)}`
   } finally {
@@ -4608,6 +5017,34 @@ async function openNeteaseLoginFromLeft() {
 async function refreshNeteasePlaylistsFromLeft() {
   activePanelView.value = 'netease'
   await refreshNeteasePlaylists(true)
+}
+
+async function refreshNeteasePlaylistsFromImmersive() {
+  await withImmersivePlaylistScrollPreserved(() => refreshNeteasePlaylists(true))
+}
+
+async function withImmersivePlaylistScrollPreserved(operation: () => Promise<void>) {
+  const rack = immersivePlaylistRackRef.value
+  const scrollTop = rack?.scrollTop ?? null
+  const restorePlaylistSource = immersiveMode.value && immersivePlaylistSource.value === 'playlists'
+  try {
+    await operation()
+  } finally {
+    if (restorePlaylistSource) {
+      immersivePlaylistSource.value = 'playlists'
+    }
+    await nextTick()
+    const restoredRack = immersivePlaylistRackRef.value
+    if (restoredRack && scrollTop !== null) {
+      restoredRack.scrollTop = scrollTop
+      window.requestAnimationFrame(() => {
+        const settledRack = immersivePlaylistRackRef.value
+        if (settledRack && immersivePlaylistSource.value === 'playlists') {
+          settledRack.scrollTop = scrollTop
+        }
+      })
+    }
+  }
 }
 
 function scrollElementIntoView(element: HTMLElement | null) {
@@ -4644,6 +5081,36 @@ async function openNeteasePlaylistFromLeft(playlist: NeteasePlaylistSummary) {
   activePanelView.value = 'netease'
   await loadNeteasePlaylistDetail(playlist)
   await scrollPlaylistDetailIntoView('netease')
+}
+
+async function openNeteasePlaylistFromImmersive(playlist: NeteasePlaylistSummary) {
+  if (
+    immersiveExpandedNeteasePlaylistId.value === playlist.id &&
+    neteasePlaylistDetailKey.value === playlist.id &&
+    neteasePlaylistDetail.value
+  ) {
+    immersiveExpandedNeteasePlaylistId.value = null
+    return
+  }
+
+  await expandNeteasePlaylistFromImmersive(playlist)
+}
+
+async function expandNeteasePlaylistFromImmersive(playlist: NeteasePlaylistSummary) {
+  await withImmersivePlaylistScrollPreserved(async () => {
+    activePanelView.value = 'netease'
+    immersiveExpandedLocalPlaylistId.value = ''
+    immersiveExpandedKugouPlaylistKey.value = ''
+    immersiveExpandedNeteasePlaylistId.value = playlist.id
+    await loadNeteasePlaylistDetail(playlist)
+    immersivePlaylistSource.value = 'playlists'
+  })
+}
+
+async function openNeteaseLoginFromImmersive() {
+  activePanelView.value = 'netease'
+  await setImmersiveMode(false)
+  await startNeteaseQrLogin()
 }
 
 function readOnlinePlaybackCache<T, K>(
@@ -5204,8 +5671,8 @@ async function playNeteaseTrack(
     currentIndex.value = -1
     neteaseCurrentTrack.value = onlineTrack
     playbackContext.value = { source: 'netease', tracks: sourceTracks }
-    if (immersiveMode.value) {
-      immersivePlaylistSource.value = 'netease'
+    if (immersiveMode.value && !options.preserveImmersivePlaylistSource) {
+      immersivePlaylistSource.value = 'current'
     }
     currentTime.value = 0
     visualPlaybackTime.value = 0
@@ -5216,7 +5683,9 @@ async function playNeteaseTrack(
       playerStatus.value = cached
         ? `正在在线播放网易云《${track.name}》，已复用预取播放地址。`
         : `正在在线播放网易云《${track.name}》。`
-      void showNeteaseLyrics(track, false)
+      if (!immersiveMode.value) {
+        void showNeteaseLyrics(track, false)
+      }
       scheduleOnlinePlaybackPrefetch()
     }
   } catch (err) {
@@ -5274,6 +5743,8 @@ function resetNeteasePlaylistState() {
   neteaseSelectedPlaylistId.value = null
   neteasePlaylistDetail.value = null
   neteasePlaylistDetailPage.value = 0
+  neteasePlaylistDetailKey.value = null
+  immersiveExpandedNeteasePlaylistId.value = null
   neteasePlaylistsLoading.value = false
   neteasePlaylistDetailLoading.value = false
   neteasePlaylistError.value = ''
@@ -5434,6 +5905,8 @@ async function refreshKugouPlaylists(showStatus = true) {
     return
   }
 
+  const selectedPlaylistId = kugouSelectedPlaylistId.value
+  const expandedPlaylistKey = immersiveExpandedKugouPlaylistKey.value
   kugouPlaylistsLoading.value = true
   kugouPlaylistError.value = ''
   if (showStatus) {
@@ -5442,13 +5915,27 @@ async function refreshKugouPlaylists(showStatus = true) {
 
   try {
     const playlists = await invoke<KugouPlaylistSummary[]>('list_kugou_playlists')
+    const expandedPlaylist = expandedPlaylistKey
+      ? playlists.find(
+          (playlist) => kugouPlaylistSelectionKey(playlist, 'personal') === expandedPlaylistKey,
+        ) ?? null
+      : null
+    const selectedPlaylist =
+      expandedPlaylist ??
+      playlists.find((playlist) => playlist.listId === selectedPlaylistId) ??
+      playlists[0] ??
+      null
     kugouPlaylists.value = playlists
     kugouPlaylistDetail.value = null
     kugouPlaylistDetailPage.value = 0
-    kugouSelectedPlaylistId.value = playlists[0]?.listId ?? ''
-    kugouSelectedContentSource.value = playlists[0] ? 'personal' : kugouSelectedContentSource.value
-    if (playlists[0]) {
-      await loadKugouPlaylistDetail(playlists[0], false, false, 'personal')
+    kugouPlaylistDetailKey.value = ''
+    immersiveExpandedKugouPlaylistKey.value = expandedPlaylist
+      ? kugouPlaylistSelectionKey(expandedPlaylist, 'personal')
+      : ''
+    kugouSelectedPlaylistId.value = selectedPlaylist?.listId ?? ''
+    kugouSelectedContentSource.value = selectedPlaylist ? 'personal' : kugouSelectedContentSource.value
+    if (selectedPlaylist) {
+      await loadKugouPlaylistDetail(selectedPlaylist, false, false, 'personal')
     }
     if (showStatus) {
       kugouLoginNotice.value =
@@ -5468,11 +5955,11 @@ async function loadKugouPlaylistDetail(
   source: Exclude<KugouContentSource, ''> = 'personal',
 ) {
   const playlistKey = kugouPlaylistKey(playlist)
-  const currentDetailKey = kugouPlaylistDetail.value
-    ? kugouPlaylistKey(kugouPlaylistDetail.value.playlist)
-    : ''
+  const detailKey = kugouPlaylistSelectionKey(playlist, source)
   const isSamePlaylist =
-    kugouSelectedContentSource.value === source && currentDetailKey === playlistKey
+    Boolean(kugouPlaylistDetail.value) &&
+    detailKey !== '' &&
+    kugouPlaylistDetailKey.value === detailKey
   const nextPage = loadMore && isSamePlaylist ? kugouPlaylistDetailPage.value + 1 : 1
   kugouSelectedContentSource.value = source
   if (source === 'recommended') {
@@ -5485,6 +5972,7 @@ async function loadKugouPlaylistDetail(
   if (!loadMore || !isSamePlaylist) {
     kugouPlaylistDetail.value = null
     kugouPlaylistDetailPage.value = 0
+    kugouPlaylistDetailKey.value = ''
   }
   if (showStatus) {
     kugouLoginNotice.value = loadMore
@@ -5535,16 +6023,18 @@ async function loadKugouPlaylistDetail(
       }
     }
     kugouPlaylistDetailPage.value = nextPage
+    kugouPlaylistDetailKey.value = detailKey
     if (showStatus) {
       kugouLoginNotice.value = kugouPlaylistDetail.value.message
     }
-    if (immersiveMode.value) {
-      immersivePlaylistSource.value = 'kugou'
+    if (immersiveMode.value && immersivePlaylistSource.value !== 'playlists') {
+      immersivePlaylistSource.value = 'current'
     }
   } catch (err) {
     if (!loadMore) {
       kugouPlaylistDetail.value = null
       kugouPlaylistDetailPage.value = 0
+      kugouPlaylistDetailKey.value = ''
     }
     kugouPlaylistError.value = `酷狗歌单歌曲读取失败：${String(err)}`
   } finally {
@@ -5572,10 +6062,47 @@ async function refreshKugouPlaylistsFromLeft() {
   await refreshKugouPlaylists(true)
 }
 
+async function refreshKugouPlaylistsFromImmersive() {
+  await withImmersivePlaylistScrollPreserved(() => refreshKugouPlaylists(true))
+}
+
 async function openKugouPlaylistFromLeft(playlist: KugouPlaylistSummary) {
   activePanelView.value = 'kugou'
   await loadKugouPlaylistDetail(playlist, true, false, 'personal')
   await scrollPlaylistDetailIntoView('kugou')
+}
+
+async function openKugouPlaylistFromImmersive(playlist: KugouPlaylistSummary) {
+  const detailKey = kugouPlaylistSelectionKey(playlist, 'personal')
+  if (
+    detailKey &&
+    immersiveExpandedKugouPlaylistKey.value === detailKey &&
+    kugouPlaylistDetailKey.value === detailKey &&
+    kugouPlaylistDetail.value
+  ) {
+    immersiveExpandedKugouPlaylistKey.value = ''
+    return
+  }
+
+  await expandKugouPlaylistFromImmersive(playlist)
+}
+
+async function expandKugouPlaylistFromImmersive(playlist: KugouPlaylistSummary) {
+  await withImmersivePlaylistScrollPreserved(async () => {
+    const detailKey = kugouPlaylistSelectionKey(playlist, 'personal')
+    activePanelView.value = 'kugou'
+    immersiveExpandedLocalPlaylistId.value = ''
+    immersiveExpandedNeteasePlaylistId.value = null
+    immersiveExpandedKugouPlaylistKey.value = detailKey
+    await loadKugouPlaylistDetail(playlist, true, false, 'personal')
+    immersivePlaylistSource.value = 'playlists'
+  })
+}
+
+async function openKugouLoginFromImmersive() {
+  activePanelView.value = 'kugou'
+  await setImmersiveMode(false)
+  await startKugouQrLogin()
 }
 
 async function refreshKugouRecommendedPlaylists(showStatus = true, loadMore = false) {
@@ -5645,7 +6172,7 @@ async function loadKugouDailyRecommendations(showStatus = true) {
     kugouDailyRecommendation.value = result
     kugouDailyRecommendationNotice.value = result.message
     if (immersiveMode.value) {
-      immersivePlaylistSource.value = 'kugou'
+      immersivePlaylistSource.value = 'current'
     }
   } catch (err) {
     kugouDailyRecommendationError.value = `酷狗每日推荐读取失败：${String(err)}`
@@ -5658,10 +6185,12 @@ function resetKugouPlaylistState() {
   const keepRecommendedDetail = kugouSelectedContentSource.value === 'recommended'
   kugouPlaylists.value = []
   kugouSelectedPlaylistId.value = ''
+  immersiveExpandedKugouPlaylistKey.value = ''
   if (!keepRecommendedDetail) {
     kugouSelectedContentSource.value = ''
     kugouPlaylistDetail.value = null
     kugouPlaylistDetailPage.value = 0
+    kugouPlaylistDetailKey.value = ''
   }
   kugouPlaylistsLoading.value = false
   kugouPlaylistDetailLoading.value = false
@@ -5715,7 +6244,7 @@ async function searchKugouSongs(loadMore = false) {
       kugouSearchResult.value.total,
     )
     if (immersiveMode.value) {
-      immersivePlaylistSource.value = 'kugou'
+      immersivePlaylistSource.value = 'current'
     }
   } catch (err) {
     if (!loadMore) {
@@ -5748,8 +6277,8 @@ async function playKugouTrack(
     currentIndex.value = -1
     neteaseCurrentTrack.value = onlineTrack
     playbackContext.value = { source: 'kugou', tracks: sourceTracks }
-    if (immersiveMode.value) {
-      immersivePlaylistSource.value = 'kugou'
+    if (immersiveMode.value && !options.preserveImmersivePlaylistSource) {
+      immersivePlaylistSource.value = 'current'
     }
     currentTime.value = 0
     visualPlaybackTime.value = 0
@@ -5761,7 +6290,9 @@ async function playKugouTrack(
       playerStatus.value = cached
         ? `正在通过已预取的本机代理播放酷狗《${track.name}》。${proxyDetail}`
         : `正在通过本机代理播放酷狗《${track.name}》。${proxyDetail}`
-      void showKugouLyrics(track, false)
+      if (!immersiveMode.value) {
+        void showKugouLyrics(track, false)
+      }
       scheduleOnlinePlaybackPrefetch()
     }
   } catch (err) {
@@ -5946,7 +6477,7 @@ async function importMusicPaths(paths: string[], category: string) {
     metadataAppliedCount > 0
       ? `已添加 ${newTracks.length} 首音乐，其中 ${metadataAppliedCount} 首优先使用 metadata。`
       : `已添加 ${newTracks.length} 首音乐。`
-  settingsVisible.value = false
+  closeMusicSettings()
 
   if (currentIndex.value < 0) {
     await playTrack(firstNewIndex)
@@ -6228,7 +6759,7 @@ function normalizeQueueIds(value?: string[]) {
 }
 
 function normalizePlaylistTrackIds(value?: string[]) {
-  const validTrackIds = new Set(tracks.value.map((track) => track.id))
+  const validTrackIds = validLocalTrackIds.value
   const seenTrackIds = new Set<string>()
 
   return normalizeQueueIds(value).filter((trackId) => {
@@ -6267,7 +6798,7 @@ function normalizeCustomPlaylist(
 }
 
 function sanitizeQueueIds(value: string[]) {
-  const validTrackIds = new Set(tracks.value.map((track) => track.id))
+  const validTrackIds = validLocalTrackIds.value
   const seenTrackIds = new Set<string>()
   return normalizeQueueIds(value).filter((trackId) => {
     if (!validTrackIds.has(trackId) || seenTrackIds.has(trackId)) {
@@ -6314,7 +6845,11 @@ function syncCustomPlaylists() {
 }
 
 function trackById(trackId: string) {
-  return tracks.value.find((track) => track.id === trackId) ?? null
+  return trackByIdLookup.value.get(trackId) ?? null
+}
+
+function trackIndexById(trackId: string) {
+  return trackIndexByIdLookup.value.get(trackId) ?? -1
 }
 
 function playedAtTime(value?: string | null) {
@@ -6500,6 +7035,17 @@ function uniqueKugouPlaybackTracks(trackList: KugouSearchTrack[]) {
 
 function kugouPlaylistKey(playlist: KugouPlaylistSummary) {
   return String(playlist.globalCollectionId || playlist.id || playlist.listId || '').trim()
+}
+
+function kugouPlaylistSelectionKey(
+  playlist: KugouPlaylistSummary,
+  source: Exclude<KugouContentSource, ''>,
+) {
+  const rawKey =
+    source === 'personal'
+      ? String(playlist.listId || kugouPlaylistKey(playlist)).trim()
+      : String(kugouPlaylistKey(playlist) || playlist.listId).trim()
+  return rawKey ? `${source}:${rawKey}` : ''
 }
 
 function mergeKugouPlaylists(
@@ -7320,7 +7866,7 @@ async function playTrack(index: number, contextTrackIds?: string[]) {
 }
 
 async function playTrackById(trackId: string) {
-  const index = tracks.value.findIndex((track) => track.id === trackId)
+  const index = trackIndexById(trackId)
   if (index >= 0) {
     const contextTrackIds = resolveLocalPlaybackTrackIds(trackId)
     if (activeLibraryView.value === 'queue') {
@@ -7332,6 +7878,35 @@ async function playTrackById(trackId: string) {
 
 function immersiveTrackActive(track: MusicTrack) {
   return currentTrack.value?.id === track.id
+}
+
+function setImmersivePlaylistFilter(filter: ImmersivePlaylistFilter) {
+  immersivePlaylistFilter.value = filter
+  immersivePlaylistSource.value = 'playlists'
+}
+
+function immersivePlaylistFilterVisible(source: Exclude<ImmersivePlaylistFilter, 'all'>) {
+  return immersivePlaylistFilter.value === 'all' || immersivePlaylistFilter.value === source
+}
+
+function immersiveCustomPlaylistExpanded(playlist: MusicPlaylist) {
+  return immersiveExpandedLocalPlaylistId.value === playlist.id
+}
+
+function customPlaylistCoverImgUrl(playlist: MusicPlaylist) {
+  return customPlaylistTracks(playlist).find((track) => Boolean(track.coverImgUrl))?.coverImgUrl ?? ''
+}
+
+function openCustomPlaylistFromImmersive(playlist: MusicPlaylist) {
+  if (immersiveCustomPlaylistExpanded(playlist)) {
+    immersiveExpandedLocalPlaylistId.value = ''
+    return
+  }
+
+  immersiveExpandedLocalPlaylistId.value = playlist.id
+  immersiveExpandedNeteasePlaylistId.value = null
+  immersiveExpandedKugouPlaylistKey.value = ''
+  immersivePlaylistSource.value = 'playlists'
 }
 
 function immersiveNeteaseTrackActive(track: NeteasePlaylistTrack) {
@@ -7354,13 +7929,57 @@ function canPlayImmersiveKugouTrack(track: KugouSearchTrack) {
   return !immersiveKugouTrackActive(track) && kugouTrackActionHash.value !== track.hash
 }
 
+function immersiveNeteasePlaylistExpanded(playlist: NeteasePlaylistSummary) {
+  return immersiveExpandedNeteasePlaylistId.value === playlist.id
+}
+
+function immersiveExpandedNeteasePlaylistTracks(playlist: NeteasePlaylistSummary) {
+  if (!immersiveNeteasePlaylistExpanded(playlist) || neteasePlaylistDetailKey.value !== playlist.id) {
+    return []
+  }
+
+  return uniqueNeteasePlaybackTracks(neteasePlaylistDetail.value?.tracks ?? [])
+}
+
+function immersiveNeteasePlaylistHasMore(playlist: NeteasePlaylistSummary) {
+  return immersiveNeteasePlaylistExpanded(playlist) &&
+    neteasePlaylistDetailKey.value === playlist.id &&
+    neteasePlaylistHasMore.value
+}
+
+function immersiveKugouPlaylistExpanded(playlist: KugouPlaylistSummary) {
+  const detailKey = kugouPlaylistSelectionKey(playlist, 'personal')
+  return Boolean(detailKey) && immersiveExpandedKugouPlaylistKey.value === detailKey
+}
+
+function immersiveExpandedKugouPlaylistTracks(playlist: KugouPlaylistSummary) {
+  const detailKey = kugouPlaylistSelectionKey(playlist, 'personal')
+  if (
+    !detailKey ||
+    !immersiveKugouPlaylistExpanded(playlist) ||
+    kugouPlaylistDetailKey.value !== detailKey
+  ) {
+    return []
+  }
+
+  return uniqueKugouPlaybackTracks(kugouPlaylistDetail.value?.tracks ?? [])
+}
+
+function immersiveKugouPlaylistHasMore(playlist: KugouPlaylistSummary) {
+  const detailKey = kugouPlaylistSelectionKey(playlist, 'personal')
+  return Boolean(detailKey) &&
+    immersiveKugouPlaylistExpanded(playlist) &&
+    kugouPlaylistDetailKey.value === detailKey &&
+    kugouPlaylistHasMore.value
+}
+
 async function playImmersiveTrack(track: MusicTrack) {
   if (!canPlayImmersiveTrack(track)) {
     return
   }
 
-  immersivePlaylistSource.value = 'local'
-  const trackIndex = tracks.value.findIndex((candidate) => candidate.id === track.id)
+  immersivePlaylistSource.value = 'current'
+  const trackIndex = trackIndexById(track.id)
   if (trackIndex < 0) {
     return
   }
@@ -7376,7 +7995,7 @@ async function playImmersiveNeteaseTrack(track: NeteasePlaylistTrack) {
     return
   }
 
-  immersivePlaylistSource.value = 'netease'
+  immersivePlaylistSource.value = 'current'
   await playNeteaseTrack(track, currentNeteaseImmersiveSourceTracks())
 }
 
@@ -7385,8 +8004,125 @@ async function playImmersiveKugouTrack(track: KugouSearchTrack) {
     return
   }
 
-  immersivePlaylistSource.value = 'kugou'
+  immersivePlaylistSource.value = 'current'
   await playKugouTrack(track, currentKugouImmersiveSourceTracks())
+}
+
+async function playImmersiveNeteasePlaylistTrack(
+  playlist: NeteasePlaylistSummary,
+  track: NeteasePlaylistTrack,
+) {
+  if (!canPlayImmersiveNeteaseTrack(track)) {
+    return
+  }
+
+  await playNeteaseTrack(track, immersiveExpandedNeteasePlaylistTracks(playlist), {
+    preserveImmersivePlaylistSource: true,
+  })
+  immersiveExpandedNeteasePlaylistId.value = playlist.id
+  immersivePlaylistSource.value = 'playlists'
+}
+
+async function playImmersiveKugouPlaylistTrack(
+  playlist: KugouPlaylistSummary,
+  track: KugouSearchTrack,
+) {
+  if (!canPlayImmersiveKugouTrack(track)) {
+    return
+  }
+
+  await playKugouTrack(track, immersiveExpandedKugouPlaylistTracks(playlist), {
+    preserveImmersivePlaylistSource: true,
+  })
+  immersiveExpandedKugouPlaylistKey.value = kugouPlaylistSelectionKey(playlist, 'personal')
+  immersivePlaylistSource.value = 'playlists'
+}
+
+async function playImmersiveCustomPlaylistTrack(playlist: MusicPlaylist, trackId: string) {
+  await playCustomPlaylistTrack(playlist, trackId)
+  immersiveExpandedLocalPlaylistId.value = playlist.id
+  immersivePlaylistSource.value = 'playlists'
+}
+
+async function playImmersiveExpandedNeteasePlaylist(playlist: NeteasePlaylistSummary) {
+  if (!immersiveNeteasePlaylistExpanded(playlist) || neteasePlaylistDetailKey.value !== playlist.id) {
+    await expandNeteasePlaylistFromImmersive(playlist)
+  }
+
+  const playlistTracks = immersiveExpandedNeteasePlaylistTracks(playlist)
+  const [firstTrack] = playlistTracks
+  if (!firstTrack) {
+    playerError.value = '这个网易云歌单还没有可展示的歌曲。'
+    return
+  }
+
+  const currentSongId =
+    currentTrack.value?.source === 'netease' ? currentTrack.value.neteaseSongId : undefined
+  const currentPlaylistTrack = playlistTracks.find((track) => track.id === currentSongId)
+  if (currentPlaylistTrack) {
+    playbackContext.value = { source: 'netease', tracks: playlistTracks }
+    playerError.value = ''
+    if (!playing.value) {
+      await playCurrent()
+    }
+    playerStatus.value = `已从当前位置继续播放网易云歌单「${playlist.name}」。`
+  } else {
+    await playNeteaseTrack(firstTrack, playlistTracks, {
+      preserveImmersivePlaylistSource: true,
+    })
+  }
+  immersiveExpandedNeteasePlaylistId.value = playlist.id
+  immersivePlaylistSource.value = 'playlists'
+}
+
+async function playImmersiveExpandedKugouPlaylist(playlist: KugouPlaylistSummary) {
+  const detailKey = kugouPlaylistSelectionKey(playlist, 'personal')
+  if (
+    !detailKey ||
+    !immersiveKugouPlaylistExpanded(playlist) ||
+    kugouPlaylistDetailKey.value !== detailKey
+  ) {
+    await expandKugouPlaylistFromImmersive(playlist)
+  }
+
+  const playlistTracks = immersiveExpandedKugouPlaylistTracks(playlist)
+  const [firstTrack] = playlistTracks
+  if (!firstTrack) {
+    playerError.value = '这个酷狗歌单还没有可展示的歌曲。'
+    return
+  }
+
+  const currentHash =
+    currentTrack.value?.source === 'kugou' ? currentTrack.value.kugouSongHash : undefined
+  const currentPlaylistTrack = playlistTracks.find((track) => track.hash === currentHash)
+  if (currentPlaylistTrack) {
+    playbackContext.value = { source: 'kugou', tracks: playlistTracks }
+    playerError.value = ''
+    if (!playing.value) {
+      await playCurrent()
+    }
+    playerStatus.value = `已从当前位置继续播放酷狗歌单「${playlist.name}」。`
+  } else {
+    await playKugouTrack(firstTrack, playlistTracks, {
+      preserveImmersivePlaylistSource: true,
+    })
+  }
+  immersiveExpandedKugouPlaylistKey.value = kugouPlaylistSelectionKey(playlist, 'personal')
+  immersivePlaylistSource.value = 'playlists'
+}
+
+async function loadMoreNeteasePlaylistTracksFromImmersive() {
+  await withImmersivePlaylistScrollPreserved(async () => {
+    await loadMoreNeteasePlaylistTracks()
+    immersivePlaylistSource.value = 'playlists'
+  })
+}
+
+async function loadMoreKugouPlaylistTracksFromImmersive() {
+  await withImmersivePlaylistScrollPreserved(async () => {
+    await loadMoreKugouPlaylistTracks()
+    immersivePlaylistSource.value = 'playlists'
+  })
 }
 
 function toggleImmersivePlaylistVisible() {
@@ -7640,7 +8376,7 @@ function previousLocalPlaybackTarget() {
   const targetListIndex = previousPlaybackListIndex(currentListIndex, contextTrackIds.length)
   const targetTrackId = targetListIndex >= 0 ? contextTrackIds[targetListIndex] : ''
   return {
-    index: tracks.value.findIndex((track) => track.id === targetTrackId),
+    index: trackIndexById(targetTrackId),
     contextTrackIds,
   }
 }
@@ -7663,7 +8399,7 @@ function nextLocalPlaybackTarget(manual: boolean) {
   const targetListIndex = nextPlaybackListIndex(currentListIndex, contextTrackIds.length, manual)
   const targetTrackId = targetListIndex >= 0 ? contextTrackIds[targetListIndex] : ''
   return {
-    index: tracks.value.findIndex((track) => track.id === targetTrackId),
+    index: trackIndexById(targetTrackId),
     contextTrackIds,
   }
 }
@@ -7726,7 +8462,7 @@ function dequeueNextTrackIndex() {
   while (playQueue.value.length > 0) {
     const [nextTrackId, ...remainingQueue] = playQueue.value
     playQueue.value = remainingQueue
-    const queuedIndex = tracks.value.findIndex((track) => track.id === nextTrackId)
+    const queuedIndex = trackIndexById(nextTrackId)
     if (queuedIndex >= 0) {
       return queuedIndex
     }
@@ -8192,35 +8928,91 @@ async function prepareImmersiveContent() {
 }
 
 function startVisualClock() {
-  if (visualClockFrameId !== null) {
+  if (
+    visualClockFrameId !== null ||
+    visualClockTimerId !== null ||
+    !musicWindowDocumentVisible.value ||
+    !immersiveMode.value ||
+    !playing.value
+  ) {
     return
   }
 
-  lastVisualClockUpdate = 0
   lastLyricMusicEnvelopeUpdate = 0
+  syncVisualPlaybackTime()
+  scheduleVisualClockTick()
+}
 
-  const tick = (timestamp: number) => {
-    visualClockFrameId = window.requestAnimationFrame(tick)
-    if (!immersiveMode.value || !playing.value) {
-      return
-    }
-
-    if (timestamp - lastVisualClockUpdate < 1000 / 30) {
-      return
-    }
-
-    lastVisualClockUpdate = timestamp
-    syncVisualPlaybackTime()
-    updateLyricMusicEnvelope(timestamp)
+function scheduleVisualClockTick() {
+  if (
+    visualClockFrameId !== null ||
+    visualClockTimerId !== null ||
+    !musicWindowDocumentVisible.value ||
+    !immersiveMode.value ||
+    !playing.value
+  ) {
+    return
   }
 
-  visualClockFrameId = window.requestAnimationFrame(tick)
+  const delay = visualReducedMotion.value ? 84 : 16
+  visualClockTimerId = window.setTimeout(() => {
+    visualClockTimerId = null
+    if (musicWindowDocumentVisible.value && immersiveMode.value && playing.value) {
+      visualClockFrameId = window.requestAnimationFrame(runVisualClockTick)
+    }
+  }, delay)
+}
+
+function runVisualClockTick(timestamp: number) {
+  visualClockFrameId = null
+  if (!musicWindowDocumentVisible.value || !immersiveMode.value || !playing.value) {
+    return
+  }
+
+  syncVisualPlaybackTime()
+  if (!visualReducedMotion.value) {
+    updateLyricMusicEnvelope(timestamp)
+  }
+  scheduleVisualClockTick()
 }
 
 function stopVisualClock() {
   if (visualClockFrameId !== null) {
     window.cancelAnimationFrame(visualClockFrameId)
     visualClockFrameId = null
+  }
+  if (visualClockTimerId !== null) {
+    window.clearTimeout(visualClockTimerId)
+    visualClockTimerId = null
+  }
+}
+
+function handleMusicWindowVisibilityChange() {
+  musicWindowDocumentVisible.value = document.visibilityState !== 'hidden'
+  if (!musicWindowDocumentVisible.value) {
+    stopVisualClock()
+    stopImmersiveWallpaperVideoQualityMonitor()
+    immersiveWallpaperVideoRef.value?.pause()
+    clearImmersiveStageMomentum()
+    clearImmersiveFreeCameraFrame()
+    return
+  }
+
+  if (immersiveMode.value && playing.value) {
+    startVisualClock()
+  }
+  if (immersiveWallpaperVideoOptimizationActive.value) {
+    handleImmersiveWallpaperVideoReady()
+  }
+  if (immersiveFreeCameraResetting.value || immersiveFreeCameraActive.value) {
+    scheduleImmersiveFreeCameraFrame()
+  }
+  if (
+    !visualReducedMotion.value &&
+    (Math.abs(immersiveStageVelocityYaw.value) >= 0.015 ||
+      Math.abs(immersiveStageVelocityPitch.value) >= 0.015)
+  ) {
+    startImmersiveStageMomentum()
   }
 }
 
@@ -8347,7 +9139,7 @@ function toggleRepeatMode() {
 }
 
 async function removeTrack(trackId: string) {
-  const index = tracks.value.findIndex((track) => track.id === trackId)
+  const index = trackIndexById(trackId)
   if (index < 0) {
     return
   }
@@ -8380,7 +9172,7 @@ async function removeTrack(trackId: string) {
 }
 
 function trackNumber(trackId: string) {
-  const index = tracks.value.findIndex((track) => track.id === trackId)
+  const index = trackIndexById(trackId)
   return index >= 0 ? index + 1 : 0
 }
 
@@ -8428,6 +9220,80 @@ function inputEventValue(event: Event) {
   return event.target instanceof HTMLInputElement ? event.target.value : ''
 }
 
+function currentFocusableElement() {
+  return document.activeElement instanceof HTMLElement ? document.activeElement : null
+}
+
+function currentTrackActionReturnFocus() {
+  const activeElement = currentFocusableElement()
+  return (
+    activeElement
+      ?.closest<HTMLElement>('.music-track-row')
+      ?.querySelector<HTMLElement>('.music-track-more') ?? activeElement
+  )
+}
+
+async function restoreDialogFocus(element: HTMLElement | null) {
+  await nextTick()
+  if (element?.isConnected) {
+    element.focus()
+  }
+}
+
+function trapDialogFocus(event: KeyboardEvent, dialog: HTMLElement | null) {
+  if (event.key !== 'Tab' || !dialog) {
+    return
+  }
+
+  const focusable = Array.from(
+    dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((element) => !element.hasAttribute('hidden') && element.getAttribute('aria-hidden') !== 'true')
+  if (focusable.length === 0) {
+    event.preventDefault()
+    dialog.focus()
+    return
+  }
+
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+async function focusTrackDialog() {
+  await nextTick()
+  trackDialogRef.value
+    ?.querySelector<HTMLElement>('[data-dialog-initial-focus]')
+    ?.focus()
+}
+
+function handleTrackDialogKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closeTrackDialog()
+    return
+  }
+  trapDialogFocus(event, trackDialogRef.value)
+}
+
+function handlePlaylistTrackPickerKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopPropagation()
+    closePlaylistTrackPicker()
+    return
+  }
+  trapDialogFocus(event, playlistTrackPickerDialogRef.value)
+}
+
 function updateTrackIdentity(track: MusicTrack) {
   const inferredIdentity = inferTrackIdentity(trackTitleFromPath(track.sourcePath || track.path))
   track.title = track.title.trim() || inferredIdentity.title
@@ -8437,27 +9303,44 @@ function updateTrackIdentity(track: MusicTrack) {
 }
 
 function toggleTrackEditor(trackId: string) {
-  editingTrackId.value = editingTrackId.value === trackId ? null : trackId
+  if (editingTrackId.value === trackId) {
+    closeTrackDialog()
+    return
+  }
+
+  trackDialogReturnFocus = currentTrackActionReturnFocus()
+  editingTrackId.value = trackId
   activeTrackActionsId.value = null
   recognitionCandidate.value = null
   playerError.value = ''
   playerStatus.value = ''
+  void focusTrackDialog()
 }
 
 function closeTrackDialog() {
   editingTrackId.value = null
   recognitionCandidate.value = null
+  const returnFocus = trackDialogReturnFocus
+  trackDialogReturnFocus = null
+  void restoreDialogFocus(returnFocus)
+}
+
+function restoreTrackActionFocusWithoutDialog() {
+  const returnFocus = trackDialogReturnFocus
+  trackDialogReturnFocus = null
+  void restoreDialogFocus(returnFocus)
 }
 
 function finishTrackIdentityEdit(track: MusicTrack) {
   updateTrackIdentity(track)
-  editingTrackId.value = null
+  closeTrackDialog()
   activeTrackActionsId.value = null
   playerError.value = ''
   playerStatus.value = `已更新《${track.title}》的歌曲信息。`
 }
 
 async function recognizeTrackMetadata(track: MusicTrack) {
+  trackDialogReturnFocus = currentTrackActionReturnFocus()
   activeTrackActionsId.value = null
   editingTrackId.value = null
   recognitionCandidate.value = null
@@ -8469,6 +9352,7 @@ async function recognizeTrackMetadata(track: MusicTrack) {
     const metadata = await invoke<MusicMetadataResult>('read_music_metadata', { path: track.path })
     const candidate = createRecognitionCandidate(track, metadata)
     if (!candidate.title && !candidate.artist && !candidate.album && !candidate.duration) {
+      restoreTrackActionFocusWithoutDialog()
       playerStatus.value = ''
       playerError.value = 'metadata 中没有可用的歌名或歌手信息，请手动编辑歌曲信息。'
       return
@@ -8476,7 +9360,9 @@ async function recognizeTrackMetadata(track: MusicTrack) {
 
     recognitionCandidate.value = candidate
     playerStatus.value = '已读取 metadata 标签，请确认是否应用到歌曲信息。'
+    void focusTrackDialog()
   } catch (err) {
+    restoreTrackActionFocusWithoutDialog()
     playerStatus.value = ''
     playerError.value = `metadata 读取失败：${String(err)}`
   } finally {
@@ -8509,7 +9395,7 @@ function applyRecognitionCandidate() {
   const candidate = recognitionCandidate.value
   const track = trackById(candidate.trackId)
   if (!track) {
-    recognitionCandidate.value = null
+    closeTrackDialog()
     return
   }
 
@@ -8529,14 +9415,14 @@ function applyRecognitionCandidate() {
     track.duration = candidate.duration
   }
 
-  recognitionCandidate.value = null
+  closeTrackDialog()
   playerError.value = ''
   playerStatus.value = `已应用《${track.title}》的识别结果。`
 }
 
 function dismissRecognitionCandidate() {
-  recognitionCandidate.value = null
   playerStatus.value = ''
+  closeTrackDialog()
 }
 
 function toggleTrackFavorite(track: MusicTrack) {
@@ -8574,7 +9460,7 @@ function insertTrackIntoQueue(trackId: string, index: number) {
 }
 
 function removeTrackFromQueue(trackId: string) {
-  if (!playQueue.value.includes(trackId)) {
+  if (!queuedTrackIds.value.has(trackId)) {
     return
   }
 
@@ -8604,12 +9490,11 @@ function clearCurrentList() {
 }
 
 function isTrackQueued(trackId: string) {
-  return playQueue.value.includes(trackId)
+  return queuedTrackIds.value.has(trackId)
 }
 
 function queuePosition(trackId: string) {
-  const index = playQueue.value.findIndex((queuedTrackId) => queuedTrackId === trackId)
-  return index >= 0 ? index + 1 : 0
+  return queuePositionByTrackId.value.get(trackId) ?? 0
 }
 
 function startQueueDrag(trackId: string, event: DragEvent) {
@@ -8747,9 +9632,7 @@ function deleteCustomPlaylist(playlistId: string) {
 }
 
 function customPlaylistTracks(playlist: MusicPlaylist) {
-  return normalizePlaylistTrackIds(playlist.trackIds)
-    .map((trackId) => trackById(trackId))
-    .filter((track): track is MusicTrack => Boolean(track))
+  return customPlaylistTracksByPlaylist.value.get(playlist) ?? []
 }
 
 function playlistTrackCountLabel(playlist: MusicPlaylist) {
@@ -8769,7 +9652,8 @@ function playlistPreviewLabel(playlist: MusicPlaylist) {
     .join(' / ')
 }
 
-function openPlaylistTrackPicker(playlist: MusicPlaylist) {
+async function openPlaylistTrackPicker(playlist: MusicPlaylist) {
+  playlistTrackPickerReturnFocus = currentFocusableElement()
   activeCustomPlaylistId.value = playlist.id
   playlistTrackPickerPlaylistId.value = playlist.id
   playlistTrackPickerQuery.value = ''
@@ -8777,6 +9661,8 @@ function openPlaylistTrackPicker(playlist: MusicPlaylist) {
   playlistTrackPickerVisible.value = true
   playerError.value = ''
   playerStatus.value = ''
+  await nextTick()
+  playlistTrackPickerSearchRef.value?.focus()
 }
 
 function closePlaylistTrackPicker() {
@@ -8784,10 +9670,17 @@ function closePlaylistTrackPicker() {
   playlistTrackPickerPlaylistId.value = ''
   playlistTrackPickerQuery.value = ''
   playlistTrackPickerSelectedIds.value = []
+  const returnFocus = playlistTrackPickerReturnFocus
+  playlistTrackPickerReturnFocus = null
+  void restoreDialogFocus(returnFocus)
+}
+
+function isPlaylistTrackPickerSelected(trackId: string) {
+  return playlistTrackPickerSelectedIdSet.value.has(trackId)
 }
 
 function togglePlaylistTrackPickerSelection(trackId: string) {
-  if (playlistTrackPickerSelectedIds.value.includes(trackId)) {
+  if (playlistTrackPickerSelectedIdSet.value.has(trackId)) {
     playlistTrackPickerSelectedIds.value = playlistTrackPickerSelectedIds.value.filter(
       (item) => item !== trackId,
     )
@@ -8804,8 +9697,9 @@ function addPickedTracksToPlaylist() {
     return
   }
 
+  const existingTrackIds = new Set(playlist.trackIds)
   const trackIds = playlistTrackPickerSelectedIds.value.filter(
-    (trackId) => trackById(trackId) && !playlist.trackIds.includes(trackId),
+    (trackId) => trackById(trackId) && !existingTrackIds.has(trackId),
   )
   if (trackIds.length === 0) {
     playerError.value = '请先选择要加入歌单的歌曲。'
@@ -8836,13 +9730,45 @@ async function playCustomPlaylistTrack(playlist: MusicPlaylist, trackId: string)
     return
   }
 
-  const index = tracks.value.findIndex((track) => track.id === trackId)
+  const index = trackIndexById(trackId)
   if (index < 0) {
     playerError.value = '这首歌曲已经不在本地音乐库中。'
     return
   }
 
   await playTrack(index, trackIds)
+}
+
+async function playCustomPlaylist(
+  playlist: MusicPlaylist,
+  preserveImmersivePlaylistSource = false,
+) {
+  const playlistTracks = customPlaylistTracks(playlist)
+  const [firstTrack] = playlistTracks
+  if (!firstTrack) {
+    playerError.value = '这个歌单还没有歌曲。'
+    return
+  }
+
+  const currentPlaylistTrack =
+    currentTrack.value?.source !== 'netease' && currentTrack.value?.source !== 'kugou'
+      ? playlistTracks.find((track) => track.id === currentTrack.value?.id)
+      : undefined
+  if (currentPlaylistTrack) {
+    setLocalPlaybackContext(
+      currentPlaylistTrack.id,
+      playlistTracks.map((track) => track.id),
+    )
+    playerError.value = ''
+    if (!playing.value) {
+      await playCurrent()
+    }
+    playerStatus.value = `已从当前位置继续播放歌单「${playlist.name}」。`
+  } else {
+    await playCustomPlaylistTrack(playlist, firstTrack.id)
+  }
+  immersiveExpandedLocalPlaylistId.value = preserveImmersivePlaylistSource ? playlist.id : ''
+  immersivePlaylistSource.value = preserveImmersivePlaylistSource ? 'playlists' : 'current'
 }
 
 function queueCustomPlaylist(playlist: MusicPlaylist) {
@@ -8852,7 +9778,8 @@ function queueCustomPlaylist(playlist: MusicPlaylist) {
     return
   }
 
-  const nextQueue = playQueue.value.filter((trackId) => !trackIds.includes(trackId))
+  const playlistTrackIds = new Set(trackIds)
+  const nextQueue = playQueue.value.filter((trackId) => !playlistTrackIds.has(trackId))
   playQueue.value = [...nextQueue, ...trackIds]
   playerError.value = ''
   playerStatus.value = `已将「${playlist.name}」加入播放队列。`
@@ -9138,7 +10065,11 @@ function setImmersiveFreeCameraDefaultPose() {
 }
 
 function scheduleImmersiveFreeCameraFrame() {
-  if (immersiveFreeCameraFrameId !== null) {
+  if (
+    immersiveFreeCameraFrameId !== null ||
+    !musicWindowDocumentVisible.value ||
+    !immersiveFreeCameraNeedsFrame()
+  ) {
     return
   }
 
@@ -9166,11 +10097,24 @@ function stepImmersiveFreeCameraFrame(timestamp: number) {
     updateImmersiveFreeCameraMotion(deltaSeconds)
   }
 
-  if (immersiveFreeCameraResetting.value || immersiveFreeCameraActive.value) {
+  if (immersiveFreeCameraNeedsFrame()) {
     scheduleImmersiveFreeCameraFrame()
   } else {
     immersiveFreeCameraLastFrame = 0
   }
+}
+
+function immersiveFreeCameraNeedsFrame() {
+  return (
+    immersiveFreeCameraResetting.value ||
+    (immersiveFreeCameraActive.value &&
+      (immersiveFreeCameraKeys.size > 0 ||
+        Math.hypot(
+          immersiveFreeCameraVelocityX,
+          immersiveFreeCameraVelocityY,
+          immersiveFreeCameraVelocityZ,
+        ) >= 0.02))
+  )
 }
 
 function updateImmersiveFreeCameraReset(timestamp: number) {
@@ -9853,12 +10797,13 @@ async function setImmersiveMode(nextImmersiveMode: boolean) {
   if (nextImmersiveMode) {
     await clearMiniEdgeDockState(true)
     miniPlayerMode.value = false
-    settingsVisible.value = false
+    closeMusicSettings()
     activeTrackActionsId.value = null
     editingTrackId.value = null
     recognitionCandidate.value = null
     await nextTick()
     syncVisualPlaybackTime()
+    void loadCurrentTrackLyrics()
     void prepareImmersiveVisualization()
     await applyMusicWindowDisplayMode('immersive')
   } else {
@@ -9902,7 +10847,7 @@ async function setMiniPlayerMode(nextMiniMode: boolean) {
     lyricsRequestedTrackId = ''
     resetLyrics()
   }
-  settingsVisible.value = false
+  closeMusicSettings()
   activeTrackActionsId.value = null
   editingTrackId.value = null
   recognitionCandidate.value = null
@@ -9936,6 +10881,7 @@ async function toggleMiniPlayerMode() {
 }
 
 async function hideMusicPlayer() {
+  await persistMusicLibraryNow()
   if (miniPlayerMode.value) {
     await clearMiniEdgeDockState(true)
   }
@@ -10816,6 +11762,7 @@ function clamp(value: number, min: number, max: number) {
             :reduced-motion="visualReducedMotion"
             :theme="resolvedImmersiveTheme"
             :disable-foreground="canvasForegroundDisabled"
+            :active="!webglStarfieldActive"
           />
           <div
             v-if="immersiveWallpaperVisible && !immersiveWallpaperIsVideo"
@@ -11137,7 +12084,7 @@ function clamp(value: number, min: number, max: number) {
         <div class="music-immersive-playlist-heading">
           <div class="music-immersive-card-header">
             <div class="music-immersive-playlist-title">
-              <strong>播放列表</strong>
+              <strong>{{ immersivePlaylistSource === 'playlists' ? '我的歌单' : '当前列表' }}</strong>
               <span>{{ immersivePlaylistCountLabel }}</span>
             </div>
             <button
@@ -11158,39 +12105,34 @@ function clamp(value: number, min: number, max: number) {
               <span class="music-icon-only-label">隐藏播放列表</span>
             </button>
           </div>
-          <div class="music-immersive-playlist-source" role="tablist" aria-label="播放列表来源">
+          <div class="music-immersive-playlist-source" role="tablist" aria-label="沉浸模式播放列表">
             <button
               type="button"
-              :class="{ active: immersivePlaylistSource === 'local' }"
+              :class="{ active: immersivePlaylistSource === 'current' }"
               role="tab"
-              :aria-selected="immersivePlaylistSource === 'local'"
-              @click="immersivePlaylistSource = 'local'"
+              :aria-selected="immersivePlaylistSource === 'current'"
+              @click="immersivePlaylistSource = 'current'"
             >
-              本地
+              当前列表
             </button>
             <button
               type="button"
-              :class="{ active: immersivePlaylistSource === 'netease' }"
+              :class="{ active: immersivePlaylistSource === 'playlists' }"
               role="tab"
-              :aria-selected="immersivePlaylistSource === 'netease'"
-              @click="immersivePlaylistSource = 'netease'"
+              :aria-selected="immersivePlaylistSource === 'playlists'"
+              @click="immersivePlaylistSource = 'playlists'"
             >
-              网易云
-            </button>
-            <button
-              type="button"
-              :class="{ active: immersivePlaylistSource === 'kugou' }"
-              role="tab"
-              :aria-selected="immersivePlaylistSource === 'kugou'"
-              @click="immersivePlaylistSource = 'kugou'"
-            >
-              酷狗
+              我的歌单
             </button>
           </div>
         </div>
 
         <div
-          v-if="immersivePlaylistSource === 'local' && immersiveLocalPlaylistTracks.length > 0"
+          v-if="
+            immersivePlaylistSource === 'current' &&
+            immersiveCurrentPlaylistKind === 'local' &&
+            immersiveLocalPlaylistTracks.length > 0
+          "
           class="music-immersive-playlist-list"
           role="list"
           aria-label="沉浸模式本地播放列表"
@@ -11223,7 +12165,11 @@ function clamp(value: number, min: number, max: number) {
         </div>
 
         <div
-          v-else-if="immersivePlaylistSource === 'netease' && immersiveNeteasePlaylistTracks.length > 0"
+          v-else-if="
+            immersivePlaylistSource === 'current' &&
+            immersiveCurrentPlaylistKind === 'netease' &&
+            immersiveNeteasePlaylistTracks.length > 0
+          "
           class="music-immersive-playlist-list"
           role="list"
           aria-label="沉浸模式网易云播放列表"
@@ -11266,7 +12212,11 @@ function clamp(value: number, min: number, max: number) {
         </div>
 
         <div
-          v-else-if="immersivePlaylistSource === 'kugou' && immersiveKugouPlaylistTracks.length > 0"
+          v-else-if="
+            immersivePlaylistSource === 'current' &&
+            immersiveCurrentPlaylistKind === 'kugou' &&
+            immersiveKugouPlaylistTracks.length > 0
+          "
           class="music-immersive-playlist-list"
           role="list"
           aria-label="沉浸模式酷狗播放列表"
@@ -11306,6 +12256,526 @@ function clamp(value: number, min: number, max: number) {
               {{ kugouTrackUnavailableReason(track) ? '不可播' : immersiveKugouTrackDurationLabel(track) }}
             </span>
           </button>
+        </div>
+
+        <div
+          v-else-if="immersivePlaylistSource === 'playlists'"
+          ref="immersivePlaylistRackRef"
+          class="music-immersive-playlist-list music-immersive-playlist-rack"
+          role="list"
+          aria-label="沉浸模式我的歌单"
+        >
+          <div
+            class="music-immersive-playlist-filter"
+            role="tablist"
+            aria-label="筛选歌单来源"
+          >
+            <button
+              v-for="option in immersivePlaylistFilterOptions"
+              :key="option.value"
+              type="button"
+              role="tab"
+              :class="{ active: immersivePlaylistFilter === option.value }"
+              :aria-selected="immersivePlaylistFilter === option.value"
+              @click="setImmersivePlaylistFilter(option.value)"
+            >
+              <span>{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+          </div>
+
+          <section
+            v-if="
+              immersivePlaylistFilterVisible('local') &&
+              (customPlaylists.length > 0 || immersivePlaylistFilter === 'local')
+            "
+            class="music-immersive-playlist-platform"
+            aria-label="沉浸模式本地歌单"
+          >
+            <header class="music-immersive-playlist-platform-header">
+              <div>
+                <strong>本地歌单</strong>
+                <span>{{ leftLocalPlaylistStatusLabel }}</span>
+              </div>
+            </header>
+
+            <section
+              v-for="playlist in customPlaylists"
+              :key="`immersive-playlist-${playlist.id}`"
+              class="music-immersive-playlist-group"
+              :class="{ active: immersiveCustomPlaylistExpanded(playlist) }"
+            >
+              <button
+                type="button"
+                class="music-immersive-playlist-row playlist"
+                :class="{ active: immersiveCustomPlaylistExpanded(playlist) }"
+                :aria-expanded="immersiveCustomPlaylistExpanded(playlist)"
+                :title="playlist.name"
+                @click="openCustomPlaylistFromImmersive(playlist)"
+              >
+                <img
+                  v-if="customPlaylistCoverImgUrl(playlist)"
+                  class="music-immersive-playlist-cover"
+                  :src="customPlaylistCoverImgUrl(playlist)"
+                  alt=""
+                />
+                <span v-else class="music-immersive-playlist-index">本</span>
+                <span class="music-immersive-playlist-main">
+                  <strong>{{ playlist.name }}</strong>
+                  <small>
+                    <span class="music-immersive-playlist-source-badge local">本地</span>
+                    {{ playlistPreviewLabel(playlist) }}
+                  </small>
+                </span>
+                <span class="music-immersive-playlist-duration">
+                  {{ immersiveCustomPlaylistExpanded(playlist) ? '收起' : playlistTrackCountLabel(playlist) }}
+                </span>
+              </button>
+              <div
+                v-if="immersiveCustomPlaylistExpanded(playlist)"
+                class="music-immersive-playlist-group-detail"
+              >
+                <div class="music-immersive-playlist-detail-sticky">
+                  <div class="music-immersive-playlist-detail-summary">
+                    <img
+                      v-if="customPlaylistCoverImgUrl(playlist)"
+                      class="music-immersive-playlist-detail-cover"
+                      :src="customPlaylistCoverImgUrl(playlist)"
+                      alt=""
+                    />
+                    <span v-else class="music-immersive-playlist-detail-cover placeholder">本</span>
+                    <span>
+                      <strong>{{ playlist.name }}</strong>
+                      <small>{{ playlistTrackCountLabel(playlist) }} · 本机保存</small>
+                    </span>
+                  </div>
+                  <div class="music-immersive-playlist-group-actions">
+                    <button
+                      type="button"
+                      :disabled="customPlaylistTracks(playlist).length === 0"
+                      @click="playCustomPlaylist(playlist, true)"
+                    >
+                      播放歌单
+                    </button>
+                    <button
+                      type="button"
+                      :disabled="customPlaylistTracks(playlist).length === 0"
+                      @click="queueCustomPlaylist(playlist)"
+                    >
+                      加入队列
+                    </button>
+                  </div>
+                </div>
+                <button
+                  v-for="track in customPlaylistTracks(playlist)"
+                  :key="`immersive-playlist-track-${playlist.id}-${track.id}`"
+                  type="button"
+                  class="music-immersive-playlist-row compact"
+                  :class="{ active: immersiveTrackActive(track) }"
+                  :aria-current="immersiveTrackActive(track) ? 'true' : undefined"
+                  :title="track.title"
+                  @click="playImmersiveCustomPlaylistTrack(playlist, track.id)"
+                >
+                  <img
+                    v-if="track.coverImgUrl"
+                    class="music-immersive-playlist-track-cover"
+                    :src="track.coverImgUrl"
+                    alt=""
+                  />
+                  <span v-else class="music-immersive-playlist-index">
+                    {{ immersiveTrackActive(track) ? '▶' : '♪' }}
+                  </span>
+                  <span class="music-immersive-playlist-main">
+                    <strong>{{ track.title }}</strong>
+                    <small>{{ trackArtistLabel(track) }}</small>
+                  </span>
+                  <span class="music-immersive-playlist-duration">
+                    {{ immersiveTrackDurationLabel(track) }}
+                  </span>
+                </button>
+                <p v-if="customPlaylistTracks(playlist).length === 0" class="music-immersive-playlist-empty">
+                  这个歌单还没有歌曲
+                </p>
+              </div>
+            </section>
+
+            <p v-if="customPlaylists.length === 0" class="music-immersive-playlist-empty">
+              还没有本地歌单
+            </p>
+          </section>
+
+          <section
+            v-if="
+              immersivePlaylistFilterVisible('netease') &&
+              (neteasePlaylists.length > 0 || immersivePlaylistFilter === 'netease')
+            "
+            class="music-immersive-playlist-platform"
+            aria-label="沉浸模式网易云歌单"
+          >
+            <header class="music-immersive-playlist-platform-header">
+              <div>
+                <strong>网易云歌单</strong>
+                <span>{{ leftNeteasePlaylistStatusLabel }}</span>
+              </div>
+              <div class="music-immersive-playlist-platform-actions">
+                <button
+                  v-if="neteaseLoggedIn"
+                  type="button"
+                  :disabled="neteasePlaylistsLoading || neteasePlaylistDetailLoading"
+                  @click="refreshNeteasePlaylistsFromImmersive"
+                >
+                  {{ neteasePlaylistsLoading ? '读取中' : '刷新' }}
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  :disabled="neteaseLoginBusy"
+                  @click="openNeteaseLoginFromImmersive"
+                >
+                  登录
+                </button>
+              </div>
+            </header>
+
+            <template v-if="neteaseLoggedIn && neteasePlaylists.length > 0">
+              <section
+                v-for="playlist in neteasePlaylists"
+                :key="`immersive-netease-playlist-${playlist.id}`"
+                class="music-immersive-playlist-group"
+                :class="{ active: immersiveNeteasePlaylistExpanded(playlist) }"
+              >
+                <button
+                  type="button"
+                  class="music-immersive-playlist-row playlist online"
+                  :class="{ active: immersiveNeteasePlaylistExpanded(playlist) }"
+                  :disabled="neteasePlaylistDetailLoading"
+                  :aria-expanded="immersiveNeteasePlaylistExpanded(playlist)"
+                  :title="playlist.name"
+                  @click="openNeteasePlaylistFromImmersive(playlist)"
+                >
+                  <img
+                    v-if="playlist.coverImgUrl"
+                    class="music-immersive-playlist-cover"
+                    :src="playlist.coverImgUrl"
+                    alt=""
+                    referrerpolicy="no-referrer"
+                  />
+                  <span v-else class="music-immersive-playlist-index">云</span>
+                  <span class="music-immersive-playlist-main">
+                    <strong>{{ playlist.name }}</strong>
+                    <small>
+                      <span class="music-immersive-playlist-source-badge netease">网易云</span>
+                      {{ formatNeteasePlaylistMeta(playlist) }}
+                    </small>
+                  </span>
+                  <span class="music-immersive-playlist-duration">
+                    {{
+                      immersiveNeteasePlaylistExpanded(playlist)
+                        ? neteasePlaylistDetailLoading
+                          ? '读取中'
+                          : '收起'
+                        : '展开'
+                    }}
+                  </span>
+                </button>
+                <div
+                  v-if="immersiveNeteasePlaylistExpanded(playlist)"
+                  class="music-immersive-playlist-group-detail"
+                >
+                  <div class="music-immersive-playlist-detail-sticky">
+                    <div class="music-immersive-playlist-detail-summary">
+                      <img
+                        v-if="playlist.coverImgUrl"
+                        class="music-immersive-playlist-detail-cover"
+                        :src="playlist.coverImgUrl"
+                        alt=""
+                        referrerpolicy="no-referrer"
+                      />
+                      <span v-else class="music-immersive-playlist-detail-cover placeholder">云</span>
+                      <span>
+                        <strong>{{ playlist.name }}</strong>
+                        <small>{{ formatNeteasePlaylistMeta(playlist) }}</small>
+                      </span>
+                    </div>
+                    <div class="music-immersive-playlist-group-actions">
+                      <button
+                        type="button"
+                        :disabled="
+                          neteasePlaylistDetailLoading ||
+                          immersiveExpandedNeteasePlaylistTracks(playlist).length === 0
+                        "
+                        @click="playImmersiveExpandedNeteasePlaylist(playlist)"
+                      >
+                        播放歌单
+                      </button>
+                      <button
+                        v-if="immersiveNeteasePlaylistHasMore(playlist)"
+                        type="button"
+                        :disabled="neteasePlaylistDetailLoading"
+                        @click="loadMoreNeteasePlaylistTracksFromImmersive"
+                      >
+                        {{ neteasePlaylistDetailLoading ? '加载中' : '加载更多' }}
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    v-for="track in immersiveExpandedNeteasePlaylistTracks(playlist)"
+                    :key="`immersive-netease-playlist-track-${playlist.id}-${track.id}`"
+                    type="button"
+                    class="music-immersive-playlist-row compact online"
+                    :class="{
+                      active: immersiveNeteaseTrackActive(track),
+                      unavailable: Boolean(neteaseTrackUnavailableReason(track)),
+                    }"
+                    :disabled="!canPlayImmersiveNeteaseTrack(track)"
+                    :aria-current="immersiveNeteaseTrackActive(track) ? 'true' : undefined"
+                    :title="
+                      neteaseTrackUnavailableReason(track)
+                        ? playbackFailureDetailTitle(neteaseTrackUnavailableReason(track))
+                        : `${track.name} - ${formatNeteaseTrackArtists(track)}`
+                    "
+                    @click="playImmersiveNeteasePlaylistTrack(playlist, track)"
+                  >
+                    <img
+                      v-if="track.coverImgUrl"
+                      class="music-immersive-playlist-track-cover"
+                      :src="track.coverImgUrl"
+                      alt=""
+                      referrerpolicy="no-referrer"
+                    />
+                    <span v-else class="music-immersive-playlist-index">
+                      {{ immersiveNeteaseTrackActive(track) ? '▶' : '♪' }}
+                    </span>
+                    <span class="music-immersive-playlist-main">
+                      <strong>{{ track.name }}</strong>
+                      <small>
+                        {{
+                          neteaseTrackUnavailableReason(track)
+                            ? compactPlaybackFailureReason(neteaseTrackUnavailableReason(track))
+                            : formatNeteaseTrackArtists(track)
+                        }}
+                      </small>
+                    </span>
+                    <span class="music-immersive-playlist-duration">
+                      {{ neteaseTrackUnavailableReason(track) ? '不可播' : immersiveNeteaseTrackDurationLabel(track) }}
+                    </span>
+                  </button>
+                  <p
+                    v-if="
+                      !neteasePlaylistDetailLoading &&
+                      immersiveExpandedNeteasePlaylistTracks(playlist).length === 0
+                    "
+                    class="music-immersive-playlist-empty"
+                  >
+                    当前歌单没有返回可展示的歌曲
+                  </p>
+                  <p
+                    v-else-if="
+                      neteasePlaylistDetailLoading &&
+                      immersiveExpandedNeteasePlaylistTracks(playlist).length === 0
+                    "
+                    class="music-immersive-playlist-empty"
+                  >
+                    正在读取歌曲摘要
+                  </p>
+                </div>
+              </section>
+            </template>
+
+            <p v-else class="music-immersive-playlist-empty">
+              {{ neteaseLoggedIn ? '点击刷新读取网易云我的歌单' : '登录后显示网易云我的歌单' }}
+            </p>
+          </section>
+
+          <section
+            v-if="
+              immersivePlaylistFilterVisible('kugou') &&
+              (kugouPlaylists.length > 0 || immersivePlaylistFilter === 'kugou')
+            "
+            class="music-immersive-playlist-platform"
+            aria-label="沉浸模式酷狗歌单"
+          >
+            <header class="music-immersive-playlist-platform-header">
+              <div>
+                <strong>酷狗歌单</strong>
+                <span>{{ leftKugouPlaylistStatusLabel }}</span>
+              </div>
+              <div class="music-immersive-playlist-platform-actions">
+                <button
+                  v-if="kugouLoggedIn"
+                  type="button"
+                  :disabled="kugouPlaylistsLoading || kugouPlaylistDetailLoading"
+                  @click="refreshKugouPlaylistsFromImmersive"
+                >
+                  {{ kugouPlaylistsLoading ? '读取中' : '刷新' }}
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  :disabled="kugouLoginBusy"
+                  @click="openKugouLoginFromImmersive"
+                >
+                  登录
+                </button>
+              </div>
+            </header>
+
+            <template v-if="kugouLoggedIn && kugouPlaylists.length > 0">
+              <section
+                v-for="playlist in kugouPlaylists"
+                :key="`immersive-kugou-playlist-${playlist.listId}`"
+                class="music-immersive-playlist-group"
+                :class="{ active: immersiveKugouPlaylistExpanded(playlist) }"
+              >
+                <button
+                  type="button"
+                  class="music-immersive-playlist-row playlist online"
+                  :class="{ active: immersiveKugouPlaylistExpanded(playlist) }"
+                  :disabled="kugouPlaylistDetailLoading"
+                  :aria-expanded="immersiveKugouPlaylistExpanded(playlist)"
+                  :title="playlist.name"
+                  @click="openKugouPlaylistFromImmersive(playlist)"
+                >
+                  <img
+                    v-if="playlist.coverImgUrl"
+                    class="music-immersive-playlist-cover"
+                    :src="playlist.coverImgUrl"
+                    alt=""
+                    referrerpolicy="no-referrer"
+                  />
+                  <span v-else class="music-immersive-playlist-index">酷</span>
+                  <span class="music-immersive-playlist-main">
+                    <strong>{{ playlist.name }}</strong>
+                    <small>
+                      <span class="music-immersive-playlist-source-badge kugou">酷狗</span>
+                      {{ formatKugouPlaylistMeta(playlist) }}
+                    </small>
+                  </span>
+                  <span class="music-immersive-playlist-duration">
+                    {{
+                      immersiveKugouPlaylistExpanded(playlist)
+                        ? kugouPlaylistDetailLoading
+                          ? '读取中'
+                          : '收起'
+                        : '展开'
+                    }}
+                  </span>
+                </button>
+                <div
+                  v-if="immersiveKugouPlaylistExpanded(playlist)"
+                  class="music-immersive-playlist-group-detail"
+                >
+                  <div class="music-immersive-playlist-detail-sticky">
+                    <div class="music-immersive-playlist-detail-summary">
+                      <img
+                        v-if="playlist.coverImgUrl"
+                        class="music-immersive-playlist-detail-cover"
+                        :src="playlist.coverImgUrl"
+                        alt=""
+                        referrerpolicy="no-referrer"
+                      />
+                      <span v-else class="music-immersive-playlist-detail-cover placeholder">酷</span>
+                      <span>
+                        <strong>{{ playlist.name }}</strong>
+                        <small>{{ formatKugouPlaylistMeta(playlist) }}</small>
+                      </span>
+                    </div>
+                    <div class="music-immersive-playlist-group-actions">
+                      <button
+                        type="button"
+                        :disabled="
+                          kugouPlaylistDetailLoading ||
+                          immersiveExpandedKugouPlaylistTracks(playlist).length === 0
+                        "
+                        @click="playImmersiveExpandedKugouPlaylist(playlist)"
+                      >
+                        播放歌单
+                      </button>
+                      <button
+                        v-if="immersiveKugouPlaylistHasMore(playlist)"
+                        type="button"
+                        :disabled="kugouPlaylistDetailLoading"
+                        @click="loadMoreKugouPlaylistTracksFromImmersive"
+                      >
+                        {{ kugouPlaylistDetailLoading ? '加载中' : '加载更多' }}
+                      </button>
+                    </div>
+                  </div>
+                  <button
+                    v-for="track in immersiveExpandedKugouPlaylistTracks(playlist)"
+                    :key="`immersive-kugou-playlist-track-${playlist.listId}-${track.hash}`"
+                    type="button"
+                    class="music-immersive-playlist-row compact online"
+                    :class="{
+                      active: immersiveKugouTrackActive(track),
+                      unavailable: Boolean(kugouTrackUnavailableReason(track)),
+                    }"
+                    :disabled="!canPlayImmersiveKugouTrack(track)"
+                    :aria-current="immersiveKugouTrackActive(track) ? 'true' : undefined"
+                    :title="
+                      kugouTrackUnavailableReason(track)
+                        ? playbackFailureDetailTitle(kugouTrackUnavailableReason(track))
+                        : `${track.name} - ${formatKugouTrackArtists(track)}`
+                    "
+                    @click="playImmersiveKugouPlaylistTrack(playlist, track)"
+                  >
+                    <img
+                      v-if="track.coverImgUrl"
+                      class="music-immersive-playlist-track-cover"
+                      :src="track.coverImgUrl"
+                      alt=""
+                      referrerpolicy="no-referrer"
+                    />
+                    <span v-else class="music-immersive-playlist-index">
+                      {{ immersiveKugouTrackActive(track) ? '▶' : '♪' }}
+                    </span>
+                    <span class="music-immersive-playlist-main">
+                      <strong>{{ track.name }}</strong>
+                      <small>
+                        {{
+                          kugouTrackUnavailableReason(track)
+                            ? compactPlaybackFailureReason(kugouTrackUnavailableReason(track))
+                            : formatKugouTrackArtists(track)
+                        }}
+                      </small>
+                    </span>
+                    <span class="music-immersive-playlist-duration">
+                      {{ kugouTrackUnavailableReason(track) ? '不可播' : immersiveKugouTrackDurationLabel(track) }}
+                    </span>
+                  </button>
+                  <p
+                    v-if="
+                      !kugouPlaylistDetailLoading &&
+                      immersiveExpandedKugouPlaylistTracks(playlist).length === 0
+                    "
+                    class="music-immersive-playlist-empty"
+                  >
+                    当前歌单没有返回可展示的歌曲
+                  </p>
+                  <p
+                    v-else-if="
+                      kugouPlaylistDetailLoading &&
+                      immersiveExpandedKugouPlaylistTracks(playlist).length === 0
+                    "
+                    class="music-immersive-playlist-empty"
+                  >
+                    正在读取歌曲摘要
+                  </p>
+                </div>
+              </section>
+            </template>
+
+            <p v-else class="music-immersive-playlist-empty">
+              {{ kugouLoggedIn ? '点击刷新读取酷狗我的歌单' : '登录后显示酷狗我的歌单' }}
+            </p>
+          </section>
+
+          <p
+            v-if="immersivePlaylistFilter === 'all' && immersiveFilteredPlaylistCount === 0"
+            class="music-immersive-playlist-empty music-immersive-playlist-empty-overview"
+          >
+            {{ immersivePlaylistFilterEmptyLabel }}
+          </p>
         </div>
 
         <div v-else class="music-immersive-playlist-empty">
@@ -13419,17 +14889,29 @@ function clamp(value: number, min: number, max: number) {
     >
       <section
         v-if="editingTrack"
+        ref="trackDialogRef"
         class="music-editor-panel music-track-editor"
         role="dialog"
         aria-modal="true"
-        aria-label="编辑歌曲信息和标签"
+        aria-labelledby="music-track-editor-title"
+        aria-describedby="music-track-editor-description"
+        tabindex="-1"
+        @keydown="handleTrackDialogKeydown"
       >
         <header>
           <div>
-            <h2>编辑歌曲</h2>
-            <p>{{ editingTrack.title }} · {{ trackArtistLabel(editingTrack) }}</p>
+            <h2 id="music-track-editor-title">编辑歌曲</h2>
+            <p id="music-track-editor-description">
+              {{ editingTrack.title }} · {{ trackArtistLabel(editingTrack) }}
+            </p>
           </div>
-          <button type="button" class="window-close" title="关闭编辑" @click="closeTrackDialog">
+          <button
+            type="button"
+            class="window-close"
+            title="关闭编辑"
+            aria-label="关闭歌曲编辑"
+            @click="closeTrackDialog"
+          >
             ×
           </button>
         </header>
@@ -13438,6 +14920,7 @@ function clamp(value: number, min: number, max: number) {
           <label>
             歌名
             <input
+              data-dialog-initial-focus
               v-model="editingTrack.title"
               autocomplete="off"
               placeholder="歌曲名"
@@ -13509,21 +14992,31 @@ function clamp(value: number, min: number, max: number) {
 
       <section
         v-else-if="recognitionCandidate"
+        ref="trackDialogRef"
         class="music-editor-panel music-recognition-panel"
         role="dialog"
         aria-modal="true"
-        aria-label="metadata 标签结果"
+        aria-labelledby="music-metadata-result-title"
+        aria-describedby="music-metadata-result-description"
+        tabindex="-1"
+        @keydown="handleTrackDialogKeydown"
       >
         <header>
           <div>
-            <h2>metadata 标签结果</h2>
-            <p>
+            <h2 id="music-metadata-result-title">metadata 标签结果</h2>
+            <p id="music-metadata-result-description">
               来源：{{ recognitionSourceLabel(recognitionCandidate.source) }} · 置信度：{{
                 recognitionConfidenceLabel(recognitionCandidate)
               }}
             </p>
           </div>
-          <button type="button" class="window-close" title="关闭标签结果" @click="dismissRecognitionCandidate">
+          <button
+            type="button"
+            class="window-close"
+            title="关闭标签结果"
+            aria-label="关闭 metadata 标签结果"
+            @click="dismissRecognitionCandidate"
+          >
             ×
           </button>
         </header>
@@ -13551,7 +15044,7 @@ function clamp(value: number, min: number, max: number) {
           {{ recognitionCandidate.warnings.join('；') }}
         </p>
         <footer class="music-dialog-actions">
-          <button type="button" @click="applyRecognitionCandidate">应用结果</button>
+          <button type="button" data-dialog-initial-focus @click="applyRecognitionCandidate">应用结果</button>
           <button type="button" @click="dismissRecognitionCandidate">忽略</button>
         </footer>
       </section>
@@ -13563,20 +15056,27 @@ function clamp(value: number, min: number, max: number) {
       @click.self="closePlaylistTrackPicker"
     >
       <section
+        ref="playlistTrackPickerDialogRef"
         class="music-editor-panel music-playlist-picker"
         role="dialog"
         aria-modal="true"
-        aria-label="向歌单添加歌曲"
+        aria-labelledby="music-playlist-picker-title"
+        aria-describedby="music-playlist-picker-description"
+        tabindex="-1"
+        @keydown="handlePlaylistTrackPickerKeydown"
       >
         <header>
           <div>
-            <h2>添加到歌单</h2>
-            <p>{{ playlistTrackPickerTarget?.name || '选择歌曲' }}</p>
+            <h2 id="music-playlist-picker-title">添加到歌单</h2>
+            <p id="music-playlist-picker-description">
+              {{ playlistTrackPickerTarget?.name || '选择歌曲' }}
+            </p>
           </div>
           <button
             type="button"
             class="window-close"
             title="关闭添加歌曲"
+            aria-label="关闭歌单选歌"
             @click="closePlaylistTrackPicker"
           >
             ×
@@ -13586,6 +15086,7 @@ function clamp(value: number, min: number, max: number) {
         <label class="music-field music-playlist-picker-search">
           搜索
           <input
+            ref="playlistTrackPickerSearchRef"
             v-model="playlistTrackPickerQuery"
             autocomplete="off"
             placeholder="搜索歌名或歌手"
@@ -13597,11 +15098,11 @@ function clamp(value: number, min: number, max: number) {
             v-for="track in playlistTrackPickerAvailableTracks"
             :key="track.id"
             class="music-playlist-picker-row"
-            :class="{ active: playlistTrackPickerSelectedIds.includes(track.id) }"
+            :class="{ active: isPlaylistTrackPickerSelected(track.id) }"
           >
             <input
               type="checkbox"
-              :checked="playlistTrackPickerSelectedIds.includes(track.id)"
+              :checked="isPlaylistTrackPickerSelected(track.id)"
               @change="togglePlaylistTrackPickerSelection(track.id)"
             />
             <span>{{ track.title }}</span>
@@ -13627,14 +15128,32 @@ function clamp(value: number, min: number, max: number) {
       </section>
     </div>
 
-    <div v-if="settingsVisible" class="music-settings-backdrop" @click.self="settingsVisible = false">
-      <section class="music-settings-panel" role="dialog" aria-modal="true">
+    <div v-if="settingsVisible" class="music-settings-backdrop" @click.self="closeMusicSettings">
+      <section
+        ref="musicSettingsDialogRef"
+        class="music-settings-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="music-settings-title"
+        aria-describedby="music-settings-description"
+        tabindex="-1"
+        @keydown="handleMusicSettingsKeydown"
+      >
         <header>
           <div>
-            <h2>音乐设置</h2>
-            <p>添加歌曲、批量导入文件夹，并设置后续歌曲的本机存储目录。</p>
+            <h2 id="music-settings-title">音乐设置</h2>
+            <p id="music-settings-description">
+              添加歌曲、批量导入文件夹，并设置后续歌曲的本机存储目录。
+            </p>
           </div>
-          <button type="button" class="window-close" title="关闭设置" @click="settingsVisible = false">
+          <button
+            ref="musicSettingsCloseButtonRef"
+            type="button"
+            class="window-close"
+            title="关闭设置"
+            aria-label="关闭音乐设置"
+            @click="closeMusicSettings"
+          >
             ×
           </button>
         </header>
@@ -13677,8 +15196,18 @@ function clamp(value: number, min: number, max: number) {
           <small>{{ onlinePlaybackQualityStatusHint }}</small>
         </div>
 
+        <label class="music-storage-field music-storage-field-readonly">
+          <span>音乐库索引</span>
+          <input
+            readonly
+            :value="musicLibraryStorageLabel"
+            :title="musicLibraryStorageLabel"
+          />
+          <small>保存歌曲列表、歌单、队列和播放器设置；位置跟随应用本机数据目录。</small>
+        </label>
+
         <label class="music-storage-field">
-          <span>存储目录</span>
+          <span>歌曲文件存储目录</span>
           <input
             readonly
             :value="musicStorageDir || '未设置，直接播放歌曲原始位置'"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { MusicImmersiveTheme, MusicLineStyle, MusicRippleStyle, MusicSpectrumStyle } from '../types/app'
 import type { MusicEnergyFrame } from '../composables/useMusicAudioAnalyzer'
 
@@ -19,6 +19,7 @@ const props = withDefaults(
     reducedMotion: boolean
     theme: MusicImmersiveTheme | string
     disableForeground: boolean
+    active: boolean
   }>(),
   {
     frequencyData: null,
@@ -30,15 +31,20 @@ const props = withDefaults(
     reducedMotion: false,
     theme: 'light',
     disableForeground: false,
+    active: true,
   },
 )
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 
 let animationFrameId: number | null = null
+let animationTimerId: number | null = null
 let resizeObserver: ResizeObserver | null = null
 let canvasWidth = 1
 let canvasHeight = 1
+let documentVisible = true
+
+const REDUCED_MOTION_FRAME_DELAY_MS = 100
 
 onMounted(() => {
   const element = canvas.value
@@ -46,19 +52,55 @@ onMounted(() => {
     return
   }
 
-  resizeObserver = new ResizeObserver(() => resizeCanvas())
+  resizeObserver = new ResizeObserver(() => {
+    resizeCanvas()
+    if (!props.playing && canRender()) {
+      renderFrame(performance.now())
+    }
+  })
   resizeObserver.observe(element)
+  documentVisible = document.visibilityState !== 'hidden'
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   resizeCanvas()
-  render(0)
+  syncRenderLoop(true)
 })
 
 onBeforeUnmount(() => {
-  if (animationFrameId !== null) {
-    window.cancelAnimationFrame(animationFrameId)
-    animationFrameId = null
-  }
+  stopRenderLoop()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   resizeObserver?.disconnect()
 })
+
+watch(
+  () => [
+    props.active,
+    props.playing,
+    props.reducedMotion,
+    props.mode,
+    props.spectrumStyle,
+    props.lineStyle,
+    props.rippleStyle,
+    props.intensity,
+    props.theme,
+    props.disableForeground,
+  ] as const,
+  () => syncRenderLoop(true),
+)
+
+watch(
+  () => [
+    props.energy.bass,
+    props.energy.mid,
+    props.energy.treble,
+    props.energy.beat,
+    props.energy.volume,
+  ] as const,
+  () => {
+    if (!props.playing && canRender()) {
+      renderFrame(performance.now())
+    }
+  },
+)
 
 function resizeCanvas() {
   const element = canvas.value
@@ -77,8 +119,71 @@ function resizeCanvas() {
   }
 }
 
-function render(time: number) {
-  animationFrameId = window.requestAnimationFrame(render)
+function handleVisibilityChange() {
+  documentVisible = document.visibilityState !== 'hidden'
+  syncRenderLoop(documentVisible)
+}
+
+function canRender() {
+  return props.active && documentVisible && Boolean(canvas.value)
+}
+
+function shouldAnimate() {
+  return canRender() && props.playing
+}
+
+function stopRenderLoop() {
+  if (animationFrameId !== null) {
+    window.cancelAnimationFrame(animationFrameId)
+    animationFrameId = null
+  }
+  if (animationTimerId !== null) {
+    window.clearTimeout(animationTimerId)
+    animationTimerId = null
+  }
+}
+
+function syncRenderLoop(renderStaticFrame = false) {
+  stopRenderLoop()
+  if (!canRender()) {
+    return
+  }
+
+  if (renderStaticFrame) {
+    renderFrame(performance.now())
+  }
+  scheduleNextFrame()
+}
+
+function scheduleNextFrame() {
+  if (!shouldAnimate() || animationFrameId !== null || animationTimerId !== null) {
+    return
+  }
+
+  if (props.reducedMotion) {
+    animationTimerId = window.setTimeout(() => {
+      animationTimerId = null
+      if (shouldAnimate()) {
+        animationFrameId = window.requestAnimationFrame(renderLoopFrame)
+      }
+    }, REDUCED_MOTION_FRAME_DELAY_MS)
+    return
+  }
+
+  animationFrameId = window.requestAnimationFrame(renderLoopFrame)
+}
+
+function renderLoopFrame(time: number) {
+  animationFrameId = null
+  if (!shouldAnimate()) {
+    return
+  }
+
+  renderFrame(time)
+  scheduleNextFrame()
+}
+
+function renderFrame(time: number) {
 
   const element = canvas.value
   const context = element?.getContext('2d')
