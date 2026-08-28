@@ -1,0 +1,85 @@
+name: Quality baseline
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Frontend, Rust and privacy checks
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Install Rust quality components
+        run: rustup component add rustfmt clippy
+
+      - name: Check local privacy data and strong secret signatures
+        run: npm run check:privacy
+
+      - name: Verify repository-controlled application icons
+        run: npm run check:icons
+
+      - name: Type-check Vue and TypeScript
+        run: npm run typecheck
+
+      - name: Run frontend component tests
+        run: npm run test:frontend
+
+      - name: Build frontend
+        run: npm run build:frontend
+
+      - name: Check Rust formatting
+        run: npm run check:rust:fmt
+
+      - name: Check Rust targets
+        run: npm run check:rust
+
+      - name: Run Rust tests
+        run: npm run test:rust
+
+      - name: Run Rust Clippy with warnings as errors
+        run: npm run lint:rust
+
+      - name: Audit production npm dependencies
+        run: npm audit --omit=dev
+
+  windows-package-smoke:
+    name: Windows Tauri package smoke
+    needs: quality
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Use stable Rust toolchain
+        run: rustup default stable
+
+      - name: Build and package the Windows application
+        run: npm run tauri:build

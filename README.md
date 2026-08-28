@@ -57,6 +57,7 @@ PetDrawer 是一个基于 **Tauri v2 + Vue 3 + TypeScript + Rust** 的桌面宠�
 PetDrawer 默认把个人数据当作本机运行时数据处理：
 
 - AI API Key、Base URL、模型配置和聊天规则只保存到本机 `config.json`。
+- 使用 AI 聊天、故事或翻译时，相关文本会按用户操作发送到已配置的 AI 服务；界面会显示发送提示，本地音乐文件、歌曲路径和音频指纹不会随之上传。
 - 快捷入口、软件路径、文件夹路径、网站、打开历史和图标只保存到本机 `apps.json`、`icons/` 等目录。
 - 聊天记录、长期记忆、短期摘要和好感度记录保存在本机 `pet-memory.db`。
 - 本机音乐路径、分类、播放列表、导入资源、壁纸、宠物素材和平台凭据不写入源码或文档示例。
@@ -150,7 +151,13 @@ src-tauri\target\release\pet_drawer.exe
 - 音乐需求：[docs/music-feature-requirements.md](docs/music-feature-requirements.md)
 - AI 宠物素材计划：[docs/ai-pet-material-generation-requirements.md](docs/ai-pet-material-generation-requirements.md)
 - Windows 图标提取说明：[docs/windows-executable-icon-extraction-method.md](docs/windows-executable-icon-extraction-method.md)
+- 第三方许可与素材审计：[docs/third-party-license-and-assets-audit.md](docs/third-party-license-and-assets-audit.md)
+- 发行版第三方声明：[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 - 版本记录：[docs/releases](docs/releases)
+
+### 许可状态
+
+PetDrawer 项目自身许可证尚待项目所有者确认；仓库可见不代表已经授权复制、修改或再分发。Twemoji 等第三方材料继续按各自许可证分发，详见上述审计和 notices。
 
 ### 项目状态
 
@@ -276,7 +283,13 @@ Do not use a standalone `cargo build --release` as the full UI packaging flow; i
 - Music requirements: [docs/music-feature-requirements.md](docs/music-feature-requirements.md)
 - AI pet asset plan: [docs/ai-pet-material-generation-requirements.md](docs/ai-pet-material-generation-requirements.md)
 - Windows icon extraction: [docs/windows-executable-icon-extraction-method.md](docs/windows-executable-icon-extraction-method.md)
+- Third-party license and asset audit: [docs/third-party-license-and-assets-audit.md](docs/third-party-license-and-assets-audit.md)
+- Distribution notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 - Release notes: [docs/releases](docs/releases)
+
+### License Status
+
+PetDrawer's project license has not yet been selected by the project owner. A visible repository does not by itself grant permission to copy, modify, or redistribute it. Third-party materials such as Twemoji remain subject to their respective licenses; see the audit and notices above.
 
 ### Roadmap
 

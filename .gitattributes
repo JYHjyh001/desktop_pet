@@ -1,0 +1,33 @@
+* text=auto
+
+*.css text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.avif binary
+*.bmp binary
+*.gif binary
+*.icns binary
+*.ico binary
+*.jpeg binary
+*.jpg binary
+*.mp3 binary
+*.mp4 binary
+*.ogg binary
+*.png binary
+*.sqlite binary
+*.svg text eol=lf
+*.wav binary
+*.webm binary
+*.webp binary

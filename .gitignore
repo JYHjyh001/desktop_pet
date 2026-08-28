@@ -41,8 +41,10 @@ prompt.md
 petdrawer-openclaw*.cmd
 
 # Local app data that may contain private software paths, usage history, or user assets
-/apps.json
-/config.json
+# These names can also appear below a user-selected/custom data directory.
+apps.json
+config.json
+storage.json
 /pet-memory.json
 pet-memory*.json
 /story-saves.json
@@ -54,6 +56,11 @@ memory-export*.json
 /memory.json
 /memories.json
 /chat-history.json
+/music-library.json
+music-library*.json
+music-platforms/
+netease-cloud*.json
+kugou*.json
 /PetDrawer/
 /app-data/
 /data/
