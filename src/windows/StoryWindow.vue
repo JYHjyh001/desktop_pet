@@ -26,6 +26,7 @@ const storyLoading = ref(false)
 const sending = ref(false)
 const storyFullscreen = ref(false)
 const storyLogRef = ref<HTMLElement | null>(null)
+const storyModeOptions: StoryMode[] = ['random', 'custom']
 const storyDraft = ref({
   mode: 'random' as StoryMode,
   storyType: '随机',
@@ -118,7 +119,7 @@ async function refreshStoryWindow() {
 
 async function loadConfig() {
   try {
-    config.value = await invoke<PetDrawerConfig>('get_config')
+    config.value = await invoke<PetDrawerConfig>('get_public_config')
   } catch (err) {
     errorMessage.value = String(err)
   }
@@ -344,6 +345,27 @@ function scrollStoryToBottom() {
   }
 }
 
+function handleStoryModeKeydown(event: KeyboardEvent, currentMode: StoryMode) {
+  const currentIndex = storyModeOptions.indexOf(currentMode)
+  let nextIndex = currentIndex
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+    nextIndex = (currentIndex + 1) % storyModeOptions.length
+  } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+    nextIndex = (currentIndex - 1 + storyModeOptions.length) % storyModeOptions.length
+  } else if (event.key === 'Home') {
+    nextIndex = 0
+  } else if (event.key === 'End') {
+    nextIndex = storyModeOptions.length - 1
+  } else {
+    return
+  }
+
+  event.preventDefault()
+  storyDraft.value.mode = storyModeOptions[nextIndex]
+  const radioGroup = (event.currentTarget as HTMLElement).closest('[role="radiogroup"]')
+  radioGroup?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIndex]?.focus()
+}
+
 function providerLabel(provider?: string) {
   const labels: Record<string, string> = {
     openai: 'OpenAI 兼容',
@@ -407,7 +429,7 @@ function storyTimeText(timestamp: number) {
       </div>
     </header>
 
-    <section v-if="!aiEnabled" class="story-notice">
+    <section v-if="!aiEnabled" class="story-notice" role="status" aria-live="polite">
       <strong>需要先配置 AI 接口</strong>
       <span>故事模式独立使用 AI 配置。打开抽屉设置，在“AI 接口”中启用并填写服务商、模型和 API Key。</span>
       <div>
@@ -415,8 +437,12 @@ function storyTimeText(timestamp: number) {
         <button type="button" @click="loadConfig">刷新配置</button>
       </div>
     </section>
+    <section v-else class="story-notice" role="note" aria-label="AI 数据发送提示">
+      <strong>在线处理提示</strong>
+      <span>生成或续写故事时，故事设定、角色信息和必要上下文会发送到你配置的 AI 服务；请勿填写不希望交给该服务处理的隐私信息。</span>
+    </section>
 
-    <p v-if="errorMessage" class="story-error">{{ errorMessage }}</p>
+    <p v-if="errorMessage" class="story-error" role="alert" aria-live="assertive">{{ errorMessage }}</p>
 
     <section class="story-layout">
       <aside class="story-panel story-create-panel">
@@ -426,10 +452,26 @@ function storyTimeText(timestamp: number) {
         </header>
 
         <div class="story-mode-row" role="radiogroup" aria-label="故事创建方式">
-          <button type="button" :class="{ active: storyDraft.mode === 'random' }" @click="storyDraft.mode = 'random'">
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="storyDraft.mode === 'random'"
+            :tabindex="storyDraft.mode === 'random' ? 0 : -1"
+            :class="{ active: storyDraft.mode === 'random' }"
+            @click="storyDraft.mode = 'random'"
+            @keydown="handleStoryModeKeydown($event, 'random')"
+          >
             随机
           </button>
-          <button type="button" :class="{ active: storyDraft.mode === 'custom' }" @click="storyDraft.mode = 'custom'">
+          <button
+            type="button"
+            role="radio"
+            :aria-checked="storyDraft.mode === 'custom'"
+            :tabindex="storyDraft.mode === 'custom' ? 0 : -1"
+            :class="{ active: storyDraft.mode === 'custom' }"
+            @click="storyDraft.mode = 'custom'"
+            @keydown="handleStoryModeKeydown($event, 'custom')"
+          >
             自定义
           </button>
         </div>

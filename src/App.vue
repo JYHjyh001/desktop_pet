@@ -1,24 +1,23 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { defineAsyncComponent } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import DrawerWindow from './windows/DrawerWindow.vue'
-import MusicWindow from './windows/MusicWindow.vue'
-import PetBubbleWindow from './windows/PetBubbleWindow.vue'
-import PetChatWindow from './windows/PetChatWindow.vue'
-import PetMenuWindow from './windows/PetMenuWindow.vue'
-import PetWindow from './windows/PetWindow.vue'
-import StoryWindow from './windows/StoryWindow.vue'
-import TranslatorWindow from './windows/TranslatorWindow.vue'
 
-const windowLabel = ref('drawer')
+const DrawerWindow = defineAsyncComponent(() => import('./windows/DrawerWindow.vue'))
+const MusicWindow = defineAsyncComponent(() => import('./windows/MusicWindow.vue'))
+const PetBubbleWindow = defineAsyncComponent(() => import('./windows/PetBubbleWindow.vue'))
+const PetChatWindow = defineAsyncComponent(() => import('./windows/PetChatWindow.vue'))
+const PetMenuWindow = defineAsyncComponent(() => import('./windows/PetMenuWindow.vue'))
+const PetWindow = defineAsyncComponent(() => import('./windows/PetWindow.vue'))
+const StoryWindow = defineAsyncComponent(() => import('./windows/StoryWindow.vue'))
+const TranslatorWindow = defineAsyncComponent(() => import('./windows/TranslatorWindow.vue'))
 
-onMounted(() => {
+const windowLabel = (() => {
   try {
-    windowLabel.value = getCurrentWindow().label
+    return getCurrentWindow().label
   } catch {
-    windowLabel.value = 'drawer'
+    return 'drawer'
   }
-})
+})()
 </script>
 
 <template>

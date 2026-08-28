@@ -12,7 +12,7 @@ let unlistenThemeChanged: (() => void) | null = null
 
 onMounted(async () => {
   try {
-    const config = await invoke<PetDrawerConfig>('get_config')
+    const config = await invoke<PetDrawerConfig>('get_public_config')
     drawerTheme.value = config.drawer.theme === 'animal-island' ? 'animal-island' : 'light'
   } catch {
     drawerTheme.value = 'light'

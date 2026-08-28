@@ -154,6 +154,47 @@ export function useAppStore() {
     apps.value = apps.value.filter((app) => app.id !== appId)
   }
 
+  async function reorderApps(sourceId: string, targetId: string) {
+    if (sourceId === targetId) {
+      return
+    }
+
+    const visibleIds = filteredApps.value.map((app) => app.id)
+    const sourceIndex = visibleIds.indexOf(sourceId)
+    const targetIndex = visibleIds.indexOf(targetId)
+
+    if (sourceIndex < 0 || targetIndex < 0) {
+      throw new Error('拖拽的快捷入口已不在当前列表中')
+    }
+
+    const reorderedVisibleIds = [...visibleIds]
+    const [movedId] = reorderedVisibleIds.splice(sourceIndex, 1)
+    reorderedVisibleIds.splice(targetIndex, 0, movedId)
+
+    const previousApps = [...apps.value]
+    const appById = new Map(previousApps.map((app) => [app.id, app]))
+    const visibleIdSet = new Set(visibleIds)
+    let visibleIndex = 0
+    const reorderedApps = previousApps.map((app) => {
+      if (!visibleIdSet.has(app.id)) {
+        return app
+      }
+
+      const replacement = appById.get(reorderedVisibleIds[visibleIndex])
+      visibleIndex += 1
+      return replacement ?? app
+    })
+
+    apps.value = reorderedApps
+
+    try {
+      await invoke('reorder_apps', { appIds: reorderedApps.map((app) => app.id) })
+    } catch (err) {
+      apps.value = previousApps
+      throw err
+    }
+  }
+
   function setItemKindFilters(filters: AppItemKind[]) {
     const validKinds = new Set(
       itemKindOptions.map((option) => option.value).filter((value) => value !== 'all'),
@@ -203,6 +244,7 @@ export function useAppStore() {
     upsertApp,
     setAppRunAsAdmin,
     removeApp,
+    reorderApps,
     launchApp,
     openAppDirectory,
     setConfiguredCategories,

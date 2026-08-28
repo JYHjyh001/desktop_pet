@@ -10,6 +10,9 @@ const fileDefaultIcon = new URL('../assets/icons/default-file.svg', import.meta.
 const props = defineProps<{
   app: PetApp
   tagDisplayMode: 'compact' | 'detailed'
+  sortable?: boolean
+  dragging?: boolean
+  dragOver?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -18,6 +21,10 @@ const emit = defineEmits<{
   remove: [app: PetApp]
   'open-dir': [app: PetApp]
   'toggle-admin': [app: PetApp, runAsAdmin: boolean]
+  'drag-start': [app: PetApp, event: DragEvent]
+  'drag-over': [app: PetApp, event: DragEvent]
+  drop: [app: PetApp, event: DragEvent]
+  'drag-end': []
 }>()
 
 const initials = computed(() => props.app.name.slice(0, 2).toUpperCase())
@@ -87,7 +94,19 @@ function onAdminToggle(event: Event) {
 </script>
 
 <template>
-  <article class="app-card" :class="[{ compact: isCompact }, `kind-${app.itemKind}`]">
+  <article
+    class="app-card"
+    :class="[
+      { compact: isCompact, 'is-dragging': dragging, 'is-drag-over': dragOver },
+      `kind-${app.itemKind}`,
+    ]"
+    :draggable="sortable"
+    :title="sortable ? `拖动调整 ${app.name} 的位置` : undefined"
+    @dragstart="emit('drag-start', app, $event)"
+    @dragover.prevent="emit('drag-over', app, $event)"
+    @drop.prevent="emit('drop', app, $event)"
+    @dragend="emit('drag-end')"
+  >
     <template v-if="isCompact">
       <button
         class="app-compact-main"

@@ -96,6 +96,8 @@ interface MusicIntentContext {
   availableTags: string[]
 }
 
+type MusicLibrarySummary = Omit<MusicIntentContext, 'hasTracks'>
+
 interface MusicIntentReply {
   type: 'music_action' | 'chat_only'
   action?: MusicActionType | null
@@ -107,7 +109,6 @@ interface MusicIntentReply {
 }
 
 const WECHAT_INTEGRATION_ENABLED: boolean = false
-const MUSIC_TRACKS_STORAGE_KEY = 'pet-drawer-music-tracks'
 const MUSIC_INTENT_TAGS = [
   '开心',
   '难过',
@@ -146,6 +147,10 @@ const messages = ref<ChatMessage[]>([
   },
 ])
 const inputRef = ref<HTMLTextAreaElement | null>(null)
+const deleteCancelButtonRef = ref<HTMLButtonElement | null>(null)
+const characterCloseButtonRef = ref<HTMLButtonElement | null>(null)
+const logsCloseButtonRef = ref<HTMLButtonElement | null>(null)
+const chatSettingsCloseButtonRef = ref<HTMLButtonElement | null>(null)
 const inputText = ref('')
 const emojiPickerVisible = ref(false)
 const chatSettingsVisible = ref(false)
@@ -185,6 +190,7 @@ let unlistenChatMusicLinkChanged: (() => void) | null = null
 let unlistenCompanionChanged: (() => void) | null = null
 let typewriterTimer: number | null = null
 let activeTypewriterMessageId: string | null = null
+let dialogReturnFocus: HTMLElement | null = null
 
 const typewriterBaseDelayMs = 18
 const typewriterMaxSteps = 260
@@ -307,7 +313,7 @@ watch(
 
 async function loadConfig() {
   try {
-    config.value = await invoke<PetDrawerConfig>('get_config')
+    config.value = await invoke<PetDrawerConfig>('get_public_config')
   } catch (err) {
     errorMessage.value = String(err)
   }
@@ -430,17 +436,40 @@ function syncChatSettingsDraft() {
   }
 }
 
+function rememberDialogTrigger() {
+  dialogReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+}
+
+async function focusDialogControl(resolveControl: () => HTMLElement | null) {
+  await nextTick()
+  resolveControl()?.focus()
+}
+
+async function restoreDialogFocus() {
+  const returnFocus = dialogReturnFocus
+  dialogReturnFocus = null
+  await nextTick()
+  if (returnFocus?.isConnected) {
+    returnFocus.focus()
+  } else {
+    inputRef.value?.focus()
+  }
+}
+
 function openChatSettings() {
+  rememberDialogTrigger()
   finishTypewriter()
   closeFloatingPanels()
   syncChatSettingsDraft()
   chatSettingsError.value = ''
   chatSettingsVisible.value = true
+  void focusDialogControl(() => chatSettingsCloseButtonRef.value)
 }
 
 function closeChatSettings() {
   if (!chatSettingsSaving.value) {
     chatSettingsVisible.value = false
+    void restoreDialogFocus()
   }
 }
 
@@ -461,6 +490,7 @@ async function saveChatSettings() {
       emitEvent('ui-chat-music-link-changed', updatedConfig.drawer.chatMusicLinkEnabled ?? true),
     ])
     chatSettingsVisible.value = false
+    void restoreDialogFocus()
   } catch (err) {
     chatSettingsError.value = String(err)
   } finally {
@@ -498,25 +528,31 @@ async function openCharacterContextMenu(event: MouseEvent) {
 }
 
 async function openCharacterStatus() {
+  rememberDialogTrigger()
   closeCharacterContextMenu()
   manualFavorabilityVisible.value = false
   await loadCompanionStatus()
   characterStatusVisible.value = true
+  void focusDialogControl(() => characterCloseButtonRef.value)
 }
 
 function closeCharacterStatus() {
   characterStatusVisible.value = false
   manualFavorabilityVisible.value = false
+  void restoreDialogFocus()
 }
 
 async function openFavorabilityLogs() {
+  rememberDialogTrigger()
   closeCharacterContextMenu()
   favorabilityLogsVisible.value = true
+  void focusDialogControl(() => logsCloseButtonRef.value)
   await loadFavorabilityLogs()
 }
 
 function closeFavorabilityLogs() {
   favorabilityLogsVisible.value = false
+  void restoreDialogFocus()
 }
 
 async function loadFavorabilityLogs() {
@@ -532,10 +568,14 @@ async function loadFavorabilityLogs() {
 }
 
 function showManualFavorability() {
+  if (!characterStatusVisible.value) {
+    rememberDialogTrigger()
+  }
   closeCharacterContextMenu()
   manualFavorabilityDraft.value = companionStatus.value?.favorability ?? 0
   characterStatusVisible.value = true
   manualFavorabilityVisible.value = true
+  void focusDialogControl(() => characterCloseButtonRef.value)
 }
 
 async function setManualFavorability() {
@@ -632,6 +672,7 @@ function requestDeleteMessages(messageIds: number[]) {
     return
   }
 
+  rememberDialogTrigger()
   closeMessageContextMenu()
   deleteRequest.value = {
     messageIds: uniqueIds,
@@ -640,6 +681,7 @@ function requestDeleteMessages(messageIds: number[]) {
         ? '确定删除这条聊天消息吗？删除后它不会再参与后续对话。'
         : `确定删除已选择的 ${uniqueIds.length} 条聊天消息吗？删除后它们不会再参与后续对话。`,
   }
+  void focusDialogControl(() => deleteCancelButtonRef.value)
 }
 
 function requestContextMessageDelete() {
@@ -656,6 +698,7 @@ function requestSelectedMessagesDelete() {
 function cancelDeleteMessages() {
   if (!deletingMessages.value) {
     deleteRequest.value = null
+    void restoreDialogFocus()
   }
 }
 
@@ -670,6 +713,7 @@ async function confirmDeleteMessages() {
   try {
     await invoke<number>('delete_companion_messages', { messageIds: request.messageIds })
     deleteRequest.value = null
+    void restoreDialogFocus()
     leaveSelectionMode()
     await loadConversation()
   } catch (err) {
@@ -893,7 +937,7 @@ function shouldForwardWechatClawbot(role: WechatForwardRole) {
   }
 
   const settings = config.value?.wechatClawbot
-  if (!settings?.enabled || !settings.target?.trim()) {
+  if (!settings?.enabled) {
     return false
   }
 
@@ -1118,7 +1162,7 @@ async function musicChatIntentFromAi(input: string): Promise<MusicChatIntent | n
   try {
     const result = await invoke<MusicIntentReply>('classify_music_intent', {
       userInput: input,
-      context: buildMusicIntentContext(),
+      context: await buildMusicIntentContext(),
     })
     if (result.type !== 'music_action' || !isMusicActionType(result.action)) {
       return null
@@ -1144,42 +1188,29 @@ async function musicChatIntentFromAi(input: string): Promise<MusicChatIntent | n
   }
 }
 
-function buildMusicIntentContext(): MusicIntentContext {
-  const storedTracks = readStoredMusicTracks()
+async function buildMusicIntentContext(): Promise<MusicIntentContext> {
+  let summary: MusicLibrarySummary = {
+    trackCount: 0,
+    favoriteCount: 0,
+    recentCount: 0,
+    availableTags: [],
+  }
+  try {
+    summary = await invoke<MusicLibrarySummary>('get_music_library_summary')
+  } catch (err) {
+    console.warn('music library summary read failed:', err)
+  }
   const availableTags = normalizeMusicIntentTags([
     ...MUSIC_INTENT_TAGS,
-    ...storedTracks.flatMap((track) => normalizeMusicIntentTags(track.tags)),
+    ...normalizeMusicIntentTags(summary.availableTags),
   ])
 
   return {
-    hasTracks: storedTracks.length > 0,
-    trackCount: storedTracks.length,
-    favoriteCount: storedTracks.filter((track) => Boolean(track.favorite)).length,
-    recentCount: storedTracks.filter((track) => typeof track.lastPlayedAt === 'string' && track.lastPlayedAt).length,
+    hasTracks: summary.trackCount > 0,
+    trackCount: summary.trackCount,
+    favoriteCount: summary.favoriteCount,
+    recentCount: summary.recentCount,
     availableTags,
-  }
-}
-
-function readStoredMusicTracks() {
-  try {
-    const raw = localStorage.getItem(MUSIC_TRACKS_STORAGE_KEY)
-    if (!raw) {
-      return []
-    }
-
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed)
-        ? parsed.map((track) => ({
-          title: typeof track?.title === 'string' ? track.title : '',
-          artist: typeof track?.artist === 'string' ? track.artist : '',
-          album: typeof track?.album === 'string' ? track.album : '',
-          tags: Array.isArray(track?.tags) ? track.tags : [],
-          favorite: Boolean(track?.favorite),
-          lastPlayedAt: typeof track?.lastPlayedAt === 'string' ? track.lastPlayedAt : '',
-        }))
-      : []
-  } catch {
-    return []
   }
 }
 
@@ -1391,13 +1422,17 @@ async function insertTwemoji(item: TwemojiItem) {
       </div>
     </header>
 
-    <section v-if="!aiEnabled" class="pet-chat-notice">
+    <section v-if="!aiEnabled" class="pet-chat-notice" role="status" aria-live="polite">
       <strong>需要先配置 AI 接口</strong>
       <span>打开抽屉设置，在“AI 接口”中启用并填写服务商、模型和 API Key。</span>
       <div>
         <button type="button" @click="openDrawer">打开抽屉</button>
         <button type="button" @click="loadConfig">刷新配置</button>
       </div>
+    </section>
+    <section v-else class="pet-chat-notice">
+      <strong>在线 AI 隐私提示</strong>
+      <span>发送消息会将文本及必要对话上下文发往你配置的 AI 服务，请勿发送不希望交给服务商处理的隐私信息。</span>
     </section>
 
     <section v-if="selectionMode" class="pet-chat-selection-toolbar" @click.stop>
@@ -1523,7 +1558,7 @@ async function insertTwemoji(item: TwemojiItem) {
           </div>
         </article>
       </template>
-      <article v-if="sending" class="pet-chat-message assistant">
+      <article v-if="sending" class="pet-chat-message assistant" role="status" aria-live="polite">
         <div class="pet-chat-message-row">
           <button
             class="pet-chat-avatar-button"
@@ -1542,7 +1577,7 @@ async function insertTwemoji(item: TwemojiItem) {
       </article>
     </section>
 
-    <p v-if="errorMessage" class="pet-chat-error">{{ errorMessage }}</p>
+    <p v-if="errorMessage" class="pet-chat-error" role="alert" aria-live="assertive">{{ errorMessage }}</p>
 
     <form class="pet-chat-input" @submit.prevent="sendMessage" @click.stop>
       <textarea
@@ -1613,12 +1648,19 @@ async function insertTwemoji(item: TwemojiItem) {
       class="pet-chat-delete-backdrop"
       role="presentation"
       @click.self="cancelDeleteMessages"
+      @keydown.esc.stop.prevent="cancelDeleteMessages"
     >
-      <section class="pet-chat-delete-dialog" role="alertdialog" aria-modal="true">
-        <h2>删除聊天记录</h2>
-        <p>{{ deleteRequest.summary }}</p>
+      <section
+        class="pet-chat-delete-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="pet-chat-delete-title"
+        aria-describedby="pet-chat-delete-description"
+      >
+        <h2 id="pet-chat-delete-title">删除聊天记录</h2>
+        <p id="pet-chat-delete-description">{{ deleteRequest.summary }}</p>
         <footer>
-          <button type="button" :disabled="deletingMessages" @click="cancelDeleteMessages">取消</button>
+          <button ref="deleteCancelButtonRef" type="button" :disabled="deletingMessages" @click="cancelDeleteMessages">取消</button>
           <button
             class="danger-button"
             type="button"
@@ -1636,17 +1678,24 @@ async function insertTwemoji(item: TwemojiItem) {
       class="pet-chat-settings-backdrop"
       role="presentation"
       @click.self="closeCharacterStatus"
+      @keydown.esc.stop.prevent="closeCharacterStatus"
     >
-      <section class="pet-chat-character-dialog" role="dialog" aria-modal="true" @click.stop>
+      <section
+        class="pet-chat-character-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pet-chat-character-title"
+        @click.stop
+      >
         <header>
           <div class="pet-chat-character-heading">
             <img :src="companionAvatarSrc" :alt="currentCompanion?.name || '宠物'" draggable="false" />
             <div>
-              <h2>{{ currentCompanion?.name || '宠物' }}</h2>
+              <h2 id="pet-chat-character-title">{{ currentCompanion?.name || '宠物' }}</h2>
               <p>{{ favorabilitySummary }}</p>
             </div>
           </div>
-          <button type="button" title="关闭状态" @click="closeCharacterStatus">×</button>
+          <button ref="characterCloseButtonRef" type="button" title="关闭状态" aria-label="关闭角色状态" @click="closeCharacterStatus">×</button>
         </header>
 
         <div v-if="companionStatus" class="pet-chat-status-grid">
@@ -1696,7 +1745,7 @@ async function insertTwemoji(item: TwemojiItem) {
           </button>
         </div>
 
-        <p v-if="companionStatusError" class="pet-chat-error in-dialog">{{ companionStatusError }}</p>
+        <p v-if="companionStatusError" class="pet-chat-error in-dialog" role="alert" aria-live="assertive">{{ companionStatusError }}</p>
 
         <footer>
           <button type="button" :disabled="companionStatusLoading" @click="toggleFavorabilityEnabled">
@@ -1717,16 +1766,23 @@ async function insertTwemoji(item: TwemojiItem) {
       class="pet-chat-settings-backdrop"
       role="presentation"
       @click.self="closeFavorabilityLogs"
+      @keydown.esc.stop.prevent="closeFavorabilityLogs"
     >
-      <section class="pet-chat-character-dialog pet-chat-log-dialog" role="dialog" aria-modal="true" @click.stop>
+      <section
+        class="pet-chat-character-dialog pet-chat-log-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pet-chat-logs-title"
+        @click.stop
+      >
         <header>
           <div>
-            <h2>关系变化记录</h2>
+            <h2 id="pet-chat-logs-title">关系变化记录</h2>
             <p>{{ currentCompanion?.name || '宠物' }} 的最近好感度日志</p>
           </div>
-          <button type="button" title="关闭记录" @click="closeFavorabilityLogs">×</button>
+          <button ref="logsCloseButtonRef" type="button" title="关闭记录" aria-label="关闭关系变化记录" @click="closeFavorabilityLogs">×</button>
         </header>
-        <div v-if="favorabilityLogsLoading" class="pet-chat-log-empty">正在读取...</div>
+        <div v-if="favorabilityLogsLoading" class="pet-chat-log-empty" role="status" aria-live="polite">正在读取...</div>
         <div v-else-if="favorabilityLogs.length === 0" class="pet-chat-log-empty">
           暂无关系变化记录。
         </div>
@@ -1743,7 +1799,7 @@ async function insertTwemoji(item: TwemojiItem) {
             <small>{{ log.reason || '无原因说明' }}</small>
           </article>
         </div>
-        <p v-if="companionStatusError" class="pet-chat-error in-dialog">{{ companionStatusError }}</p>
+        <p v-if="companionStatusError" class="pet-chat-error in-dialog" role="alert" aria-live="assertive">{{ companionStatusError }}</p>
         <footer>
           <button type="button" :disabled="favorabilityLogsLoading" @click="loadFavorabilityLogs">
             刷新
@@ -1758,14 +1814,20 @@ async function insertTwemoji(item: TwemojiItem) {
       class="pet-chat-settings-backdrop"
       role="presentation"
       @click.self="closeChatSettings"
+      @keydown.esc.stop.prevent="closeChatSettings"
     >
-      <section class="pet-chat-settings-dialog" role="dialog" aria-modal="true">
+      <section
+        class="pet-chat-settings-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="pet-chat-settings-title"
+      >
         <header>
           <div>
-            <h2>对话设置</h2>
+            <h2 id="pet-chat-settings-title">对话设置</h2>
             <p>这些设置只影响聊天窗口的本机显示和联动行为。</p>
           </div>
-          <button type="button" title="关闭设置" @click="closeChatSettings">×</button>
+          <button ref="chatSettingsCloseButtonRef" type="button" title="关闭设置" aria-label="关闭对话设置" @click="closeChatSettings">×</button>
         </header>
         <label class="pet-chat-settings-toggle">
           <span>
@@ -1788,7 +1850,7 @@ async function insertTwemoji(item: TwemojiItem) {
           </span>
           <input v-model="chatSettingsDraft.musicLinkEnabled" type="checkbox" />
         </label>
-        <p v-if="chatSettingsError" class="pet-chat-error">{{ chatSettingsError }}</p>
+        <p v-if="chatSettingsError" class="pet-chat-error" role="alert" aria-live="assertive">{{ chatSettingsError }}</p>
         <footer>
           <button type="button" :disabled="chatSettingsSaving" @click="closeChatSettings">取消</button>
           <button

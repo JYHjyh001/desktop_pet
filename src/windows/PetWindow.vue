@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { emit, listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -131,7 +131,9 @@ let unlistenPetBubbleAction: (() => void) | null = null
 let unlistenPetBubbleHover: (() => void) | null = null
 let registeredTranslateSelectionShortcut: string | null = null
 let selectionTranslationRunning = false
-let preloadedPetMedia: Array<HTMLImageElement | HTMLVideoElement> = []
+let preloadedPetMedia = new Map<string, HTMLImageElement | HTMLVideoElement>()
+
+const MAX_PRELOADED_PET_MEDIA = 2
 
 const appWindow = getCurrentWindow()
 const themeClass = computed(() => `theme-${drawerTheme.value}`)
@@ -224,12 +226,15 @@ const currentPetImage = computed<string | undefined>(() => {
   return animations[petState.value] || animations.idle || undefined
 })
 
+watch(petState, (state) => {
+  syncPetMediaPreload(currentPetSkin.value, state)
+})
+
 async function loadTheme() {
   try {
-    const config = await invoke<PetDrawerConfig>('get_config')
+    const config = await invoke<PetDrawerConfig>('get_public_config')
     drawerTheme.value = normalizeDrawerTheme(config.drawer.theme)
     syncPetActionBindings(config.shortcut)
-    void syncTranslateSelectionShortcut(config.shortcut?.translateSelection)
   } catch {
     drawerTheme.value = 'light'
     petActionBindings.value = defaultPetActionBindings()
@@ -255,11 +260,14 @@ function syncPetActionBindings(shortcut?: PetDrawerConfig['shortcut'] | null) {
     petDoubleClick: normalizePetActionBinding(shortcut?.petDoubleClick, 'toggleDrawer'),
     petRightClick: normalizePetActionBinding(shortcut?.petRightClick, 'petMenu'),
   }
-  void syncTranslateSelectionShortcut(shortcut?.translateSelection)
+  void syncTranslateSelectionShortcut(
+    shortcut?.translateSelection,
+    shortcut?.translateSelectionConsent,
+  )
 }
 
-async function syncTranslateSelectionShortcut(value?: string | null) {
-  const shortcut = normalizeGlobalShortcut(value || 'Ctrl+Alt+T')
+async function syncTranslateSelectionShortcut(value?: string | null, consent?: boolean) {
+  const shortcut = consent === true ? normalizeGlobalShortcut(value || '') : ''
   if (!shortcut) {
     await unregisterTranslateSelectionShortcut()
     return
@@ -410,7 +418,7 @@ async function loadPetSkin() {
   try {
     const skin = await invoke<PetSkinSummary>('get_current_pet_skin')
     currentPetSkin.value = skin
-    preloadPetSkinAnimations(skin)
+    syncPetMediaPreload(skin, petState.value)
   } catch (err) {
     console.error(err)
     currentPetSkin.value = null
@@ -422,40 +430,99 @@ function isVideoSource(source: string) {
   return /^data:video\//i.test(source) || /\.(webm|mp4)(?:[?#].*)?$/i.test(source)
 }
 
-function preloadPetSkinAnimations(skin: PetSkinSummary | null) {
-  clearPreloadedPetMedia()
-  const animations = resolvePetSkinAnimations(skin)
-  const sources = Array.from(
-    new Set(Object.values(animations).filter((source): source is string => Boolean(source))),
-  )
+function syncPetMediaPreload(skin: PetSkinSummary | null, state: PetAnimationKey) {
+  if (!skin) {
+    clearPreloadedPetMedia()
+    return
+  }
 
-  preloadedPetMedia = sources.map((source) => {
-    if (isVideoSource(source)) {
-      const video = document.createElement('video')
-      video.preload = 'auto'
-      video.muted = true
-      video.playsInline = true
-      video.src = source
-      video.load()
-      return video
+  const animations = resolvePetSkinAnimations(skin)
+  const currentSource = animations[state] || animations.idle
+  const sources = Array.from(
+    new Set(
+      petMediaPreloadCandidates(state)
+        .map((candidate) => animations[candidate])
+        .filter((source): source is string => Boolean(source) && source !== currentSource),
+    ),
+  ).slice(0, MAX_PRELOADED_PET_MEDIA)
+  const desiredSources = new Set(sources)
+
+  for (const [source, media] of preloadedPetMedia) {
+    if (!desiredSources.has(source)) {
+      releasePreloadedPetMedia(media)
+      preloadedPetMedia.delete(source)
+    }
+  }
+
+  for (const source of sources) {
+    if (preloadedPetMedia.has(source)) {
+      continue
     }
 
-    const image = new Image()
-    image.decoding = 'async'
-    image.src = source
-    return image
+    preloadedPetMedia.set(source, createPreloadedPetMedia(source))
+  }
+}
+
+function petMediaPreloadCandidates(state: PetAnimationKey): PetAnimationKey[] {
+  switch (state) {
+    case 'idle':
+      return ['hover', 'click']
+    case 'hover':
+      return ['idle', 'click']
+    case 'click':
+      return ['idle', 'hover']
+    case 'dragging':
+      return ['idle', dragDirection.value === 'left' ? 'draggingLeft' : 'draggingRight']
+    case 'draggingLeft':
+      return ['draggingRight', 'idle']
+    case 'draggingRight':
+      return ['draggingLeft', 'idle']
+    case 'running':
+      return ['waiting', 'idle']
+    case 'waiting':
+      return ['running', 'idle']
+    case 'review':
+      return ['running', 'idle']
+    case 'waving':
+    case 'jumping':
+    case 'failed':
+      return ['idle', 'hover']
+  }
+}
+
+function createPreloadedPetMedia(source: string) {
+  if (isVideoSource(source)) {
+    const video = document.createElement('video')
+    video.preload = 'metadata'
+    video.muted = true
+    video.playsInline = true
+    video.src = source
+    video.load()
+    return video
+  }
+
+  const image = new Image()
+  image.decoding = 'async'
+  image.src = source
+  void image.decode().catch(() => {
+    // decode() is best-effort; keeping the image object still warms the browser cache.
   })
+  return image
+}
+
+function releasePreloadedPetMedia(media: HTMLImageElement | HTMLVideoElement) {
+  if (media instanceof HTMLVideoElement) {
+    media.pause()
+    media.removeAttribute('src')
+    media.load()
+  }
 }
 
 function clearPreloadedPetMedia() {
-  for (const media of preloadedPetMedia) {
-    if (media instanceof HTMLVideoElement) {
-      media.pause()
-      media.removeAttribute('src')
-      media.load()
-    }
+  for (const media of preloadedPetMedia.values()) {
+    releasePreloadedPetMedia(media)
   }
-  preloadedPetMedia = []
+  preloadedPetMedia.clear()
 }
 
 function handleCodexStatus(status: CodexAppServerStatus) {

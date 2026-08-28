@@ -77,6 +77,26 @@ const aiSummary = computed(() => {
 
   return `${providerLabel(ai.provider)} / ${ai.model || '未设置模型'}`
 })
+const aiDataDestination = computed(() => {
+  const ai = config.value?.ai
+  if (!ai?.enabled) {
+    return '当前 AI 服务'
+  }
+
+  const baseUrl = ai.baseUrl?.trim()
+  if (baseUrl) {
+    try {
+      const parsed = new URL(baseUrl)
+      if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.host) {
+        return parsed.host
+      }
+    } catch {
+      // 自定义地址可能不是完整 URL；避免在提示中暴露路径、查询参数或密钥。
+    }
+  }
+
+  return providerLabel(ai.provider)
+})
 const sourceCount = computed(() => sourceText.value.trim().length)
 const canTranslate = computed(() => aiEnabled.value && sourceCount.value > 0 && !translating.value)
 const currentSourceLabel = computed(() => languageLabel(sourceLanguage.value))
@@ -108,7 +128,7 @@ onBeforeUnmount(() => {
 
 async function loadConfig() {
   try {
-    config.value = await invoke<PetDrawerConfig>('get_config')
+    config.value = await invoke<PetDrawerConfig>('get_public_config')
   } catch (err) {
     errorMessage.value = String(err)
   }
@@ -278,9 +298,13 @@ function providerLabel(provider: string) {
       </div>
     </header>
 
-    <section v-if="!aiEnabled" class="translator-notice">
+    <section v-if="!aiEnabled" class="translator-notice" role="status" aria-live="polite">
       <strong>AI 接口未启用</strong>
       <span>请先在抽屉设置中启用 AI 接口。</span>
+    </section>
+    <section v-else class="translator-notice" role="note" aria-label="AI 数据发送提示">
+      <strong>在线处理提示</strong>
+      <span>点击翻译后，原文会发送到 {{ aiDataDestination }}；请勿输入不希望交给该服务处理的隐私信息。</span>
     </section>
 
     <section class="translator-language-bar" aria-label="翻译语言">
@@ -330,11 +354,11 @@ function providerLabel(provider: string) {
         <div class="translator-output" :class="{ empty: !translatedText }">
           {{ translatedText || '等待翻译' }}
         </div>
-        <small>{{ statusMessage || '准备就绪' }}</small>
+        <small role="status" aria-live="polite">{{ statusMessage || '准备就绪' }}</small>
       </section>
     </section>
 
-    <p v-if="errorMessage" class="translator-error">{{ errorMessage }}</p>
+    <p v-if="errorMessage" class="translator-error" role="alert" aria-live="assertive">{{ errorMessage }}</p>
 
     <footer class="translator-actions">
       <button type="button" class="translator-ghost-button" :disabled="translating || (!sourceText && !translatedText)" @click="clearText">
