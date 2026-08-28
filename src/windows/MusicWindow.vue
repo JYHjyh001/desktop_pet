@@ -14,6 +14,15 @@ import { useMusicBeatMapAnalyzer } from '../composables/useMusicBeatMapAnalyzer'
 import { useMusicLyrics } from '../composables/useMusicLyrics'
 import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import { DEFAULT_MUSIC_STAGE_TUNING } from '../types/app'
+import {
+  normalizeMusicPlaylist,
+  normalizePlaylistName,
+  normalizeQueueIds,
+  normalizeTrackDate,
+  normalizeTrackId,
+  normalizeValidTrackIds,
+  type MusicPlaylist,
+} from '../utils/musicLibraryModel'
 import type {
   DrawerTheme,
   MusicImmersiveTheme,
@@ -198,14 +207,6 @@ interface MusicRecognitionCandidate {
   source: string
   confidence: number
   warnings: string[]
-}
-
-interface MusicPlaylist {
-  id: string
-  name: string
-  trackIds: string[]
-  createdAt: string
-  updatedAt: string
 }
 
 interface StoredMusicSettings {
@@ -3359,10 +3360,6 @@ function createTrackId() {
   }
 
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`
-}
-
-function normalizeTrackId(value?: string | null) {
-  return value?.trim() ?? ''
 }
 
 function normalizeOnlinePlaybackQuality(value?: string | null): OnlinePlaybackQuality {
@@ -6729,14 +6726,6 @@ function sanitizeTrackDuration(value?: number | null) {
   return Math.round(value)
 }
 
-function normalizeTrackDate(value?: string | null) {
-  if (!value || Number.isNaN(Date.parse(value))) {
-    return null
-  }
-
-  return value
-}
-
 function normalizeTrackHistory(history?: string[]) {
   if (!Array.isArray(history)) {
     return []
@@ -6745,31 +6734,8 @@ function normalizeTrackHistory(history?: string[]) {
   return history.filter((item) => normalizeTrackDate(item)).slice(0, MAX_PLAY_HISTORY_PER_TRACK)
 }
 
-function normalizePlaylistName(value?: string | null) {
-  const name = value?.trim() ?? ''
-  return name.slice(0, 32)
-}
-
-function normalizeQueueIds(value?: string[]) {
-  if (!Array.isArray(value)) {
-    return []
-  }
-
-  return value.map(normalizeTrackId).filter(Boolean)
-}
-
 function normalizePlaylistTrackIds(value?: string[]) {
-  const validTrackIds = validLocalTrackIds.value
-  const seenTrackIds = new Set<string>()
-
-  return normalizeQueueIds(value).filter((trackId) => {
-    if (!validTrackIds.has(trackId) || seenTrackIds.has(trackId)) {
-      return false
-    }
-
-    seenTrackIds.add(trackId)
-    return true
-  })
+  return normalizeValidTrackIds(value, validLocalTrackIds.value)
 }
 
 function normalizeCustomPlaylist(
@@ -6781,33 +6747,11 @@ function normalizeCustomPlaylist(
     updatedAt?: string
   },
 ): MusicPlaylist | null {
-  const id = normalizeTrackId(playlist.id)
-  const name = normalizePlaylistName(playlist.name)
-  if (!id || !name) {
-    return null
-  }
-
-  const now = new Date().toISOString()
-  return {
-    id,
-    name,
-    trackIds: normalizePlaylistTrackIds(playlist.trackIds),
-    createdAt: normalizeTrackDate(playlist.createdAt) || now,
-    updatedAt: normalizeTrackDate(playlist.updatedAt) || now,
-  }
+  return normalizeMusicPlaylist(playlist, validLocalTrackIds.value)
 }
 
 function sanitizeQueueIds(value: string[]) {
-  const validTrackIds = validLocalTrackIds.value
-  const seenTrackIds = new Set<string>()
-  return normalizeQueueIds(value).filter((trackId) => {
-    if (!validTrackIds.has(trackId) || seenTrackIds.has(trackId)) {
-      return false
-    }
-
-    seenTrackIds.add(trackId)
-    return true
-  })
+  return normalizeValidTrackIds(value, validLocalTrackIds.value)
 }
 
 function syncPlaybackQueue() {

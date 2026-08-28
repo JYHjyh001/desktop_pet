@@ -39,7 +39,6 @@
 
 ## P1：工程维护优化
 
-- [ ] 完成本轮工作区分批保存、生产依赖审计一致性、`MusicWindow.vue` 渐进拆分和宠物窗口生命周期测试，计划见 `docs/working-tree-stabilization-and-modularization-requirements.md`。
 - [ ] 继续拆分 `src/windows/MusicWindow.vue`，优先把在线平台、沉浸模式、迷你播放器和本地库逻辑拆成 composable 或子组件。
 - [ ] 继续拆分 `src-tauri/src/kugou_music.rs`、`src-tauri/src/ai_chat.rs` 和 `src/windows/DrawerWindow.vue` 等超大文件，降低单文件维护成本。
 - [ ] 复查注册但没有直接字面量 `invoke` 的 Tauri 命令，确认是否属于动态调用、托盘调用、保留兼容或可删除接口。

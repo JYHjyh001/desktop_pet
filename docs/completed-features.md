@@ -116,6 +116,7 @@
 
 ## 工程维护与文档
 
+- [x] 当前跨模块工作区已按发布工程、后端安全、桌宠交互和音乐沉浸体验分批保存；生产依赖审计已修复并统一到本地/CI 的 `audit:prod`；`MusicWindow.vue` 已开始把音乐库模型拆为独立可测试模块，宠物窗口生命周期、双主题资源清理及隐藏气泡策略已有自动化回归，计划见 `docs/working-tree-stabilization-and-modularization-requirements.md`。
 - [x] 版本发布记录已按版本保存在 `docs/releases/`。
 - [x] 当前后续开发优先级和阶段路线记录在 `docs/next-development-plan.md`。
 - [x] 本轮项目扫描、已清理代码和后续技术债记录在 `docs/project-code-audit-2026-07-07.md`。

@@ -347,7 +347,7 @@ pub fn show_pet_bubble(app: &AppHandle, payload: PetBubblePayload) -> Result<(),
         .get_webview_window("pet-bubble")
         .ok_or_else(|| "未找到宠物气泡窗口".to_string())?;
 
-    if !pet.is_visible().map_err(|err| err.to_string())? {
+    if !pet_window_allows_bubble(pet.is_visible().map_err(|err| err.to_string())?) {
         if bubble.is_visible().unwrap_or(false) {
             hide_pet_bubble(app)?;
         }
@@ -389,6 +389,10 @@ pub fn show_pet_bubble(app: &AppHandle, payload: PetBubblePayload) -> Result<(),
         .map_err(|err| err.to_string())?;
     show_window_with_open_animation(&bubble, "bubble", false)?;
     raise_pet_bubble_window(app, &bubble)
+}
+
+fn pet_window_allows_bubble(pet_visible: bool) -> bool {
+    pet_visible
 }
 
 pub fn hide_pet_bubble(app: &AppHandle) -> Result<(), String> {
@@ -1262,5 +1266,20 @@ fn clamp_to_screen(
     PhysicalPosition {
         x: x.max(min_x).min(max_x),
         y: y.max(min_y).min(max_y),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pet_window_allows_bubble;
+
+    #[test]
+    fn hidden_pet_never_allows_a_bubble_window() {
+        assert!(!pet_window_allows_bubble(false));
+    }
+
+    #[test]
+    fn visible_pet_allows_a_bubble_window() {
+        assert!(pet_window_allows_bubble(true));
     }
 }
