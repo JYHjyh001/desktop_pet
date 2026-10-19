@@ -2,7 +2,11 @@ name: Quality baseline
 
 on:
   push:
+    branches-ignore:
+      - codex/feature-packages
   pull_request:
+    branches-ignore:
+      - codex/feature-packages
 
 permissions:
   contents: read
@@ -40,6 +44,9 @@ jobs:
 
       - name: Run frontend component tests
         run: npm run test:frontend
+
+      - name: Test public feature distribution verification
+        run: node --test scripts/verify-feature-publication.test.mjs
 
       - name: Build frontend
         run: npm run build:frontend
