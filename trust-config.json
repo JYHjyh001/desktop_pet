@@ -1,0 +1,9 @@
+{
+  "formatVersion": 1,
+  "keyId": "petdrawer-official-20261019",
+  "publicKey": "How5w249oJ9inuJWGrA9Onej84qqDLJ/LdHhvVc40yU=",
+  "allowedOrigins": [
+    "https://raw.githubusercontent.com"
+  ],
+  "catalogUrl": "https://raw.githubusercontent.com/JYHjyh001/desktop_pet/refs/heads/codex/feature-packages/catalog.json"
+}
