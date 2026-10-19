@@ -1336,20 +1336,22 @@ fn decode_clipboard_bytes(bytes: &[u8]) -> String {
 }
 
 fn looks_like_utf16le(bytes: &[u8]) -> bool {
-    let pairs = bytes.chunks_exact(2).take(64).collect::<Vec<_>>();
+    let pairs = bytes.as_chunks::<2>().0.iter().take(64).collect::<Vec<_>>();
     let sampled = pairs.len();
     sampled >= 4 && pairs.iter().filter(|pair| pair[1] == 0).count() * 2 >= sampled
 }
 
 fn looks_like_utf16be(bytes: &[u8]) -> bool {
-    let pairs = bytes.chunks_exact(2).take(64).collect::<Vec<_>>();
+    let pairs = bytes.as_chunks::<2>().0.iter().take(64).collect::<Vec<_>>();
     let sampled = pairs.len();
     sampled >= 4 && pairs.iter().filter(|pair| pair[0] == 0).count() * 2 >= sampled
 }
 
 fn decode_utf16_bytes(bytes: &[u8], little_endian: bool) -> String {
     let mut units = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|chunk| {
             if little_endian {
                 u16::from_le_bytes([chunk[0], chunk[1]])
@@ -4000,6 +4002,84 @@ mod tests {
             html_clipboard_to_text(&decoded).as_deref(),
             Some("Hello PDF")
         );
+    }
+
+    #[test]
+    fn utf16_detection_preserves_complete_pair_threshold_and_sample_limit() {
+        for little_endian in [true, false] {
+            let detect = |bytes: &[u8]| {
+                if little_endian {
+                    looks_like_utf16le(bytes)
+                } else {
+                    looks_like_utf16be(bytes)
+                }
+            };
+            let zero_pair = if little_endian { [b'A', 0] } else { [0, b'A'] };
+            let mut short = zero_pair.repeat(3);
+            short.push(0);
+            assert!(!detect(&short));
+            assert!(detect(&zero_pair.repeat(4)));
+            let mut half = zero_pair.repeat(32);
+            half.extend([1, 1].repeat(32));
+            half.extend([1, 1].repeat(64));
+            assert!(detect(&half));
+            let mut below_half = zero_pair.repeat(31);
+            below_half.extend([1, 1].repeat(33));
+            below_half.extend(zero_pair.repeat(64));
+            assert!(!detect(&below_half));
+        }
+    }
+
+    #[test]
+    fn utf16_decode_preserves_endianness_odd_tail_nul_and_replacement() {
+        for little_endian in [true, false] {
+            let encode = |units: &[u16]| {
+                units
+                    .iter()
+                    .flat_map(|unit| {
+                        if little_endian {
+                            unit.to_le_bytes()
+                        } else {
+                            unit.to_be_bytes()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut bytes = encode(&[0x0041, 0, 0x0042, 0xd83d, 0xde00, 0, 0]);
+            bytes.push(0xff);
+            assert_eq!(decode_utf16_bytes(&bytes, little_endian), "A\0B😀");
+            assert_eq!(
+                decode_utf16_bytes(&encode(&[0xd800, 0x0042, 0xdc00, 0]), little_endian),
+                "�B�"
+            );
+            assert_eq!(decode_utf16_bytes(&[0xff], little_endian), "");
+            assert_eq!(decode_utf16_bytes(&[], little_endian), "");
+        }
+    }
+
+    #[test]
+    fn utf16_clipboard_bom_and_heuristic_preserve_both_endiannesses() {
+        for little_endian in [true, false] {
+            let mut bytes = "Hello中😀\0"
+                .encode_utf16()
+                .flat_map(|unit| {
+                    if little_endian {
+                        unit.to_le_bytes()
+                    } else {
+                        unit.to_be_bytes()
+                    }
+                })
+                .collect::<Vec<_>>();
+            bytes.push(0xff);
+            assert_eq!(decode_clipboard_bytes(&bytes), "Hello中😀");
+            let mut with_bom = if little_endian {
+                vec![0xff, 0xfe]
+            } else {
+                vec![0xfe, 0xff]
+            };
+            with_bom.extend(bytes);
+            assert_eq!(decode_clipboard_bytes(&with_bom), "Hello中😀");
+        }
     }
 
     #[test]
