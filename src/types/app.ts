@@ -65,6 +65,19 @@ export interface PetSkinPackageDraft {
   animations: PetAnimationSet
 }
 
+export interface PetAtlasConversionDraft extends PetSkinPackageDraft {
+  sourceFormat: string
+  spriteVersionNumber: number
+  atlasWidth: number
+  atlasHeight: number
+  structuralCheckPassed: boolean
+  visualQaStatus: 'verified' | 'unverified' | 'legacy'
+  checks: string[]
+  warnings: string[]
+  previewDataUrl: string
+  temporaryDirectory: string
+}
+
 export interface UpdateCheckResult {
   currentVersion: string
   latestVersion?: string | null
@@ -171,6 +184,33 @@ export interface AiConnectionTestResult {
   provider: string
   model: string
   message: string
+}
+
+export interface TranslationServiceSummary {
+  useGlobalApi: boolean
+  enabled: boolean
+  provider: string
+  model: string
+  host: string
+  problem: string | null
+}
+
+export interface TranslationSettingsView {
+  useGlobalApi: boolean
+  provider: string
+  baseUrl: string
+  model: string
+  hasApiKey: boolean
+  effective: TranslationServiceSummary
+}
+
+export interface TranslationSettingsDraft {
+  useGlobalApi: boolean
+  provider: string
+  baseUrl: string
+  model: string
+  keyAction: 'keep' | 'replace' | 'clear'
+  apiKey: string
 }
 
 export interface WechatClawbotSettings {
@@ -509,6 +549,13 @@ export interface PetChatMessage {
   timeContext?: string
 }
 
+export interface CompanionMessagePage {
+  messages: Array<PetMemoryMessage & { contentDeferred?: boolean }>
+  nextBefore: number | null
+  hasMore: boolean
+  companionId: string
+}
+
 export interface PetMemoryMessage extends PetChatMessage {
   id: number
   companionId: string
@@ -558,6 +605,13 @@ export interface PetDrawerConfig {
     autoFavoriteEnabled: boolean
   }
   ai?: AiSettings
+  translation?: {
+    useGlobalApi: boolean
+    provider: string
+    baseUrl: string
+    model: string
+    apiKey: string
+  }
   wechatClawbot?: WechatClawbotSettings
   codexAppServer?: CodexAppServerSettings
   companions?: Companion[]

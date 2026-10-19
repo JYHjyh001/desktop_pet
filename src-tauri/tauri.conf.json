@@ -43,7 +43,8 @@
         "resizable": false,
         "visible": false,
         "alwaysOnTop": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "create": false
       },
       {
         "label": "drawer",
@@ -57,7 +58,8 @@
         "resizable": false,
         "visible": false,
         "alwaysOnTop": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "create": false
       },
       {
         "label": "pet-menu",
@@ -70,7 +72,8 @@
         "resizable": false,
         "visible": false,
         "alwaysOnTop": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "create": false
       },
       {
         "label": "pet-chat",
@@ -83,7 +86,8 @@
         "resizable": false,
         "visible": false,
         "alwaysOnTop": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "create": false
       },
       {
         "label": "story",
@@ -96,7 +100,8 @@
         "resizable": false,
         "visible": false,
         "alwaysOnTop": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "create": false
       },
       {
         "label": "translator",
@@ -109,7 +114,8 @@
         "resizable": false,
         "visible": false,
         "alwaysOnTop": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "create": false
       },
       {
         "label": "music",
@@ -122,7 +128,8 @@
         "resizable": false,
         "visible": false,
         "alwaysOnTop": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "create": false
       }
     ]
   },

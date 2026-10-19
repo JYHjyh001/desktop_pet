@@ -2,7 +2,8 @@
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { convertFileSrc, invoke } from '@tauri-apps/api/core'
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi'
-import { emit as emitEvent, listen } from '@tauri-apps/api/event'
+import { emit as emitEvent } from '@tauri-apps/api/event'
+import { useScopedListeners } from '../composables/useScopedListeners'
 import { currentMonitor, getCurrentWindow, primaryMonitor, type Monitor } from '@tauri-apps/api/window'
 import { open } from '@tauri-apps/plugin-dialog'
 import MusicVisualizerCanvas from '../components/MusicVisualizerCanvas.vue'
@@ -11,6 +12,7 @@ import {
   type MusicEnergyFrame,
 } from '../composables/useMusicAudioAnalyzer'
 import { useMusicBeatMapAnalyzer } from '../composables/useMusicBeatMapAnalyzer'
+import { createCoalescedPersistence } from '../utils/coalescedPersistence'
 import { useMusicLyrics } from '../composables/useMusicLyrics'
 import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import { DEFAULT_MUSIC_STAGE_TUNING } from '../types/app'
@@ -35,6 +37,8 @@ import type {
   PetDrawerConfig,
 } from '../types/app'
 
+const lifecycle = useScopedListeners()
+const { listen } = lifecycle
 const MusicWebglStarfield = defineAsyncComponent(() => import('../components/MusicWebglStarfield.vue'))
 
 type RepeatMode = 'none' | 'one' | 'all'
@@ -958,7 +962,7 @@ const miniPlayerElement = ref<HTMLElement | null>(null)
 const neteasePlaylistDetailSection = ref<HTMLElement | null>(null)
 const kugouPlaylistDetailSection = ref<HTMLElement | null>(null)
 const musicWindow = getCurrentWindow()
-const { windowOpenAnimationClass } = useWindowOpenAnimation('panel')
+const { windowOpenAnimationClass, markWindowReady } = useWindowOpenAnimation('panel')
 const immersiveScene = ref<HTMLElement | null>(null)
 const immersiveSearchRoot = ref<HTMLElement | null>(null)
 const immersiveSearchInput = ref<HTMLInputElement | null>(null)
@@ -2509,9 +2513,16 @@ let unlistenMusicLibraryFlushRequested: (() => void) | null = null
 let playlistsRestored = false
 let musicLibraryRestored = false
 let musicLibraryPersistenceBlocked = false
-let musicLibrarySaveTimer: number | null = null
-let musicLibrarySaveQueued = false
-let musicLibrarySavePromise: Promise<void> | null = null
+const libraryPersistence = createCoalescedPersistence({
+  enabled: () => musicLibraryRestored && !musicLibraryPersistenceBlocked,
+  save: async () => {
+    await invoke('save_music_library_state', { state: createMusicLibraryState() })
+    localStorage.removeItem(TRACKS_STORAGE_KEY)
+    localStorage.removeItem(SETTINGS_STORAGE_KEY)
+    localStorage.removeItem(PLAYLISTS_STORAGE_KEY)
+  },
+  onError: (error) => { console.warn('music library state save failed:', error) },
+})
 let beatMapRequestedTrackId = ''
 let lyricsRequestedTrackId = ''
 let visualClockFrameId: number | null = null
@@ -2563,9 +2574,11 @@ onMounted(async () => {
   musicWindowDocumentVisible.value = document.visibilityState !== 'hidden'
   document.addEventListener('visibilitychange', handleMusicWindowVisibilityChange)
   await restoreMusicLibrary()
+  if (lifecycle.disposed) return
   void loadMusicLibraryStorageInfo()
   syncAudioVolume()
   await loadTheme()
+  if (lifecycle.disposed) return
   void refreshNeteaseLoginStatus(false)
   void refreshKugouLoginStatus(false)
   window.addEventListener('keydown', handleImmersiveFreeCameraKeyDown, true)
@@ -2586,20 +2599,21 @@ onMounted(async () => {
     await emitEvent('music-library-flush-completed')
   })
   try {
-    unlistenMusicWindowMoved = await musicWindow.onMoved(() => {
+    unlistenMusicWindowMoved = await lifecycle.track(musicWindow.onMoved(() => {
       scheduleMiniEdgeDockCheck()
-    })
+    }))
   } catch {
     unlistenMusicWindowMoved = null
   }
   try {
-    unlistenMusicWindowCloseRequested = await musicWindow.onCloseRequested(async (event) => {
+    unlistenMusicWindowCloseRequested = await lifecycle.track(musicWindow.onCloseRequested(async (event) => {
       event.preventDefault()
       await hideMusicPlayer()
-    })
+    }))
   } catch {
     unlistenMusicWindowCloseRequested = null
   }
+  if (!lifecycle.disposed) await markWindowReady().catch(() => {})
 })
 
 onBeforeUnmount(() => {
@@ -2616,7 +2630,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', handleMusicWindowVisibilityChange)
   clearMiniEdgeTimers()
   clearMusicLibrarySaveTimer()
-  void persistMusicLibraryNow()
+  void persistMusicLibraryNow().finally(() => libraryPersistence.dispose())
   cancelMiniEdgeWindowMove()
   clearOnlinePlaybackPrefetchTimer()
   clearOnlineStallRecoveryTimer()
@@ -2845,6 +2859,7 @@ async function restoreMusicLibrary() {
 
   try {
     const state = await invoke<MusicLibraryState>('get_music_library_state')
+    if (lifecycle.disposed) return
     if (hasStoredMusicLibraryState(state)) {
       applyMusicLibraryState(state)
       restored = true
@@ -3183,61 +3198,9 @@ function createMusicLibraryState(): MusicLibraryState {
   }
 }
 
-function scheduleMusicLibrarySave() {
-  if (!musicLibraryRestored || musicLibraryPersistenceBlocked) {
-    return
-  }
-
-  clearMusicLibrarySaveTimer()
-  musicLibrarySaveTimer = window.setTimeout(() => {
-    musicLibrarySaveTimer = null
-    void persistMusicLibraryNow()
-  }, 260)
-}
-
-function clearMusicLibrarySaveTimer() {
-  if (musicLibrarySaveTimer !== null) {
-    window.clearTimeout(musicLibrarySaveTimer)
-    musicLibrarySaveTimer = null
-  }
-}
-
-async function persistMusicLibraryNow() {
-  if (!musicLibraryRestored || musicLibraryPersistenceBlocked) {
-    return
-  }
-
-  clearMusicLibrarySaveTimer()
-  if (musicLibrarySavePromise) {
-    musicLibrarySaveQueued = true
-    return musicLibrarySavePromise
-  }
-
-  musicLibrarySavePromise = (async () => {
-    do {
-      musicLibrarySaveQueued = false
-      try {
-        await invoke('save_music_library_state', { state: createMusicLibraryState() })
-        localStorage.removeItem(TRACKS_STORAGE_KEY)
-        localStorage.removeItem(SETTINGS_STORAGE_KEY)
-        localStorage.removeItem(PLAYLISTS_STORAGE_KEY)
-      } catch (err) {
-        console.warn('music library state save failed:', err)
-        break
-      }
-    } while (musicLibrarySaveQueued)
-  })()
-
-  try {
-    await musicLibrarySavePromise
-  } finally {
-    musicLibrarySavePromise = null
-    if (musicLibrarySaveQueued) {
-      musicLibrarySaveQueued = false
-      await persistMusicLibraryNow()
-    }
-  }
-}
+function scheduleMusicLibrarySave() { libraryPersistence.schedule() }
+function clearMusicLibrarySaveTimer() { libraryPersistence.clear() }
+async function persistMusicLibraryNow() { await libraryPersistence.flush() }
 
 async function loadTheme() {
   try {

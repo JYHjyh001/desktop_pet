@@ -1,5 +1,3 @@
-use std::process::Command;
-
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -125,6 +123,7 @@ pub struct TranslationReply {
     pub detected_language: Option<String>,
     pub provider: String,
     pub model: String,
+    pub service: crate::translation_api::TranslationServiceSummary,
 }
 
 #[derive(Debug, Deserialize)]
@@ -427,17 +426,22 @@ pub fn test_ai_connection(mut settings: AiSettings) -> Result<AiConnectionTestRe
 }
 
 pub fn translate_text(
-    app: &AppHandle,
+    config: app_data::PetDrawerConfig,
     request: TranslationRequest,
 ) -> Result<TranslationReply, String> {
-    let config = app_data::read_config(app)?;
-    let mut settings = config.ai;
-    if !settings.enabled {
-        return Err("请先在抽屉设置的“AI 接口”中启用翻译使用的 AI 接口。".to_string());
-    }
-    if settings.model.trim().is_empty() {
-        return Err("请先在“AI 接口”中填写模型名称。".to_string());
-    }
+    translate_with_sender(config, request, |settings, messages| {
+        send_chat_request(settings, messages, false)
+    })
+}
+
+fn translate_with_sender(
+    config: app_data::PetDrawerConfig,
+    request: TranslationRequest,
+    send: impl FnOnce(&AiSettings, &[PetChatMessageDraft]) -> Result<String, String>,
+) -> Result<TranslationReply, String> {
+    let mut settings = crate::translation_api::effective_settings(&config);
+    crate::translation_api::validate(&settings)?;
+    let service = crate::translation_api::summary(&config);
 
     let text = normalize_translation_text(&request.text)?;
     let source_language = normalize_translation_language(&request.source_language, true);
@@ -454,7 +458,13 @@ pub fn translate_text(
         created_at: String::new(),
         time_context: String::new(),
     }];
-    let raw_reply = send_chat_request(&settings, &messages, false)?;
+    let raw_reply = send(&settings, &messages).map_err(|error| {
+        if error == "AI 请求已取消。" {
+            "翻译请求已取消。".into()
+        } else {
+            crate::translation_api::safe_request_error(&service)
+        }
+    })?;
     let translated_text = clean_translation_reply(&raw_reply)?;
 
     Ok(TranslationReply {
@@ -465,15 +475,18 @@ pub fn translate_text(
         } else {
             Some(source_language)
         },
+        service,
         provider: settings.provider,
         model: settings.model,
     })
 }
 
-pub fn translate_selected_text(app: &AppHandle) -> Result<TranslationReply, String> {
+pub fn translate_selected_text(
+    config: app_data::PetDrawerConfig,
+) -> Result<TranslationReply, String> {
     let text = read_selected_text_from_clipboard()?;
     translate_text(
-        app,
+        config,
         TranslationRequest {
             source_language: "auto".to_string(),
             target_language: "zh".to_string(),
@@ -2151,7 +2164,11 @@ fn memory_extraction_request(user_input: &str, recent_messages: &[PetMemoryMessa
 }
 
 fn truncate_for_extraction(value: &str, max_chars: usize) -> String {
-    value.trim().chars().take(max_chars).collect()
+    crate::chat_images::text_context(value)
+        .trim()
+        .chars()
+        .take(max_chars)
+        .collect()
 }
 
 fn memory_drafts_with_fallback(
@@ -3104,6 +3121,18 @@ fn append_chat_output_context(
             .to_string(),
     );
     sections.push(chat_emoji_frequency_prompt(emoji_frequency));
+    sections.push(
+        r#"[图片回复与聊天连续性]
+发图是你与用户正在进行的聊天的一部分。发图前后、图片不可用或无法完成出图时，都继续遵循当前伴侣的人设、称呼习惯、关系阶段、情绪、表情频率与上下文，不突然切换成通用 AI 助手、客服或任务报告的口吻。
+用户没有明确要求只发图时，通常用一两句符合角色的自然话语接住用户刚才说的话，再顺势带出图片；需要时可以在图后轻轻延续话题，不机械地每次追问、解释或添加固定开场白。图片配文不要只放在动作旁白里，关闭旁白时也应保留聊天感。不要为了发图突然撒娇或提高亲密程度。
+避免“作为一个 AI”“作为语言模型”“根据您的要求已生成”“以下是生成结果”“希望这能满足您的需求”等例行自述和交付套话。用户主动询问真实身份、能力或失败原因时，仍应诚实、简短回答，不隐瞒限制。
+在已建立的虚拟伴侣聊天情境中，“发张自拍”“看看你在家里的样子”等请求是角色互动，不自动等同于用户在询问照片真伪或现实拍摄能力。正常回应时只说符合当前角色的聊天配文，不主动把请求改述为“给你一张居家自拍风的角色图”，不附加“不是真实自拍哦”“这是 AI 生成的”“仅供参考”“虚拟形象展示”等无关说明；图片标题和替代文本也避免这些制作标签。
+配文可以自然地说“给你看看，喜欢吗？”或“喏，给你看这张。”，这只是语气示例，应按当前人设与话题变化，不要固定复读，也不要编造“我刚用手机拍的”等现实拍摄经历。只有用户明确问“这是真人实拍吗”“是不是生成的”“你真的拍了吗”等来源或真实性问题时，才简短如实说明。不要把这条规则本身说给用户听。历史回复中出现过多余的真实性声明，也不要把它当作需要延续的人设或口头禅。
+只有实际获得可用图片时，才用 Markdown 图片语法返回 HTTPS 图片地址，图片放在旁白标记外；不要编造图片地址、把普通网页当成图片，或在没有图片时声称已生成、已发送。不能确认图片细节时，也不要假装看到了具体画面。
+若无法生成或获取图片，用当前角色自然、简短地说明这次没能完成，再根据上下文提出一个贴近用户想法的下一步。比如轻松角色可以说“这张我暂时还画不出来，不过可以陪你把画面里的细节想一想。”；这只是语气示例，不要照抄。除非用户在排查问题，不主动讲 API、模型协议、系统规则或配置步骤。
+结构化 JSON 回复时，将自然配文和图片语法一起放入 reply 字符串；保持相同的人设和聊天语气。"#
+            .to_string(),
+    );
     if use_json_output {
         sections.push(deepseek_json_output_prompt());
     }
@@ -3123,7 +3152,7 @@ fn chat_emoji_frequency_prompt(emoji_frequency: &str) -> String {
 
 fn deepseek_json_output_prompt() -> String {
     r#"[DeepSeek JSON Output]
-当前请求会启用 response_format json_object。你必须只输出一个 json 对象，不要输出 Markdown，不要输出额外解释。
+当前请求会启用 response_format json_object。你必须只输出一个 json 对象，不要用 Markdown 代码围栏包裹对象，不要在对象外输出额外解释。reply 字符串内允许图片 Markdown 语法，并遵循图片回复与聊天连续性要求。
 json 格式必须严格如下：
 {
   "reply": "伴侣真正说出口的话，不要包含 emoji，也不要包含内部时间标签",
@@ -3455,11 +3484,27 @@ fn build_request(
     validate_ai_transport(settings)?;
 
     let provider = settings.provider.trim().to_lowercase();
-    match provider.as_str() {
+    let mut request = match provider.as_str() {
         "anthropic" => build_anthropic_request(settings, messages),
         "gemini" => build_gemini_request(settings, messages),
         "ollama" => build_ollama_request(settings, messages),
         _ => build_openai_compatible_request(settings, messages),
+    }?;
+    // Stored images are display-only: never resend payloads or remote image URLs
+    // through chat history, summaries, memory extraction, or favorability scoring.
+    let mut body: Value =
+        serde_json::from_str(&request.body).map_err(|err| format!("AI 请求格式错误：{err}"))?;
+    strip_request_images(&mut body);
+    request.body = body.to_string();
+    Ok(request)
+}
+
+fn strip_request_images(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = crate::chat_images::text_context(text),
+        Value::Array(items) => items.iter_mut().for_each(strip_request_images),
+        Value::Object(items) => items.values_mut().for_each(strip_request_images),
+        _ => {}
     }
 }
 
@@ -3669,7 +3714,7 @@ fn gemini_generate_url(base_url: &str, model: &str) -> String {
     format!("{base_url}/v1beta/models/{}:generateContent", model.trim())
 }
 
-fn validate_ai_transport(settings: &AiSettings) -> Result<(), String> {
+pub(crate) fn validate_ai_transport(settings: &AiSettings) -> Result<(), String> {
     let parsed = reqwest::Url::parse(settings.base_url.trim())
         .map_err(|_| "AI Base URL 格式无效，请填写完整的 HTTP 或 HTTPS 地址。".to_string())?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -3708,168 +3753,158 @@ fn is_loopback_ai_url(url: &reqwest::Url) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
-#[cfg(target_os = "windows")]
 fn post_json(request: &AiHttpRequest) -> Result<String, String> {
-    use std::os::windows::process::CommandExt;
-
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    const SCRIPT: &str = r#"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$ProgressPreference = 'SilentlyContinue'
-Add-Type -AssemblyName System.Net.Http
-
-$Url = $env:PETDRAWER_AI_URL
-$Body = $env:PETDRAWER_AI_BODY
-$Provider = $env:PETDRAWER_AI_PROVIDER
-$ApiKey = $env:PETDRAWER_AI_API_KEY
-
-if ([string]::IsNullOrWhiteSpace($Url)) {
-  throw 'AI 请求地址为空'
-}
-
-$client = [System.Net.Http.HttpClient]::new()
-$client.Timeout = [TimeSpan]::FromSeconds(60)
-$client.DefaultRequestHeaders.UserAgent.ParseAdd('PetDrawer-AI')
-
-if ($Provider -eq 'anthropic') {
-  if (![string]::IsNullOrWhiteSpace($ApiKey)) {
-    $client.DefaultRequestHeaders.Add('x-api-key', $ApiKey)
-  }
-  $client.DefaultRequestHeaders.Add('anthropic-version', '2023-06-01')
-} elseif ($Provider -eq 'gemini') {
-  if (![string]::IsNullOrWhiteSpace($ApiKey)) {
-    $client.DefaultRequestHeaders.Add('x-goog-api-key', $ApiKey)
-  }
-} elseif (![string]::IsNullOrWhiteSpace($ApiKey)) {
-  $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $ApiKey)
-}
-
-$content = [System.Net.Http.StringContent]::new($Body, [System.Text.Encoding]::UTF8, 'application/json')
-$response = $client.PostAsync($Url, $content).GetAwaiter().GetResult()
-$text = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-
-if (-not $response.IsSuccessStatusCode) {
-  [Console]::Error.Write($text)
-  exit 1
-}
-
-[Console]::Out.Write($text)
-"#;
-
-    let output = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            SCRIPT,
-        ])
-        .env("PETDRAWER_AI_URL", &request.url)
-        .env("PETDRAWER_AI_BODY", &request.body)
-        .env("PETDRAWER_AI_PROVIDER", &request.provider)
-        .env("PETDRAWER_AI_API_KEY", &request.api_key)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|err| format!("无法启动 AI 请求：{err}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            "AI 请求失败，但服务没有返回错误内容。".to_string()
-        } else {
-            format!("AI 请求失败：{}", readable_api_error(&stderr))
-        });
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err("AI 服务返回了空内容。".to_string());
-    }
-
-    Ok(stdout)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn post_json(_request: &AiHttpRequest) -> Result<String, String> {
-    Err("当前宠物聊天 API 请求仅支持 Windows 版本。".to_string())
+    crate::ai_transport::post_json(
+        &request.provider,
+        &request.url,
+        &request.api_key,
+        &request.body,
+    )
 }
 
 fn parse_reply(provider: &str, response_text: &str) -> Result<String, String> {
+    if response_text.len() > crate::ai_transport::MAX_RESPONSE_BYTES {
+        return Err("AI 响应超过大小限制。".into());
+    }
     let value: Value = serde_json::from_str(response_text)
         .map_err(|err| format!("AI 返回内容不是有效 JSON：{err}"))?;
 
-    let message = match provider {
-        "anthropic" => parse_anthropic_reply(&value),
-        "gemini" => parse_gemini_reply(&value),
-        "ollama" => parse_ollama_reply(&value),
-        _ => parse_openai_compatible_reply(&value),
+    let message = crate::chat_images::parse_response(provider, &value);
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("AI 返回内容中没有可显示的回复。".to_string());
     }
-    .map(str::trim)
-    .filter(|content| !content.is_empty())
-    .map(str::to_string)
-    .ok_or_else(|| "AI 返回内容中没有可显示的回复。".to_string())?;
-
-    Ok(message)
-}
-
-fn parse_openai_compatible_reply(value: &Value) -> Option<&str> {
-    value
-        .get("choices")?
-        .as_array()?
-        .first()?
-        .get("message")?
-        .get("content")?
-        .as_str()
-}
-
-fn parse_anthropic_reply(value: &Value) -> Option<&str> {
-    value
-        .get("content")?
-        .as_array()?
-        .iter()
-        .find_map(|item| item.get("text")?.as_str())
-}
-
-fn parse_gemini_reply(value: &Value) -> Option<&str> {
-    value
-        .get("candidates")?
-        .as_array()?
-        .first()?
-        .get("content")?
-        .get("parts")?
-        .as_array()?
-        .iter()
-        .find_map(|item| item.get("text")?.as_str())
-}
-
-fn parse_ollama_reply(value: &Value) -> Option<&str> {
-    value
-        .get("message")
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_str)
-        .or_else(|| value.get("response").and_then(Value::as_str))
-}
-
-fn readable_api_error(stderr: &str) -> String {
-    serde_json::from_str::<Value>(stderr)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("error")
-                .and_then(|error| {
-                    error
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .or_else(|| error.as_str())
-                })
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| stderr.to_string())
+    if message.len() > crate::chat_images::MAX_MESSAGE_BYTES {
+        return Err("AI 返回的图文消息过大，请减少图片数量或尺寸。".to_string());
+    }
+    Ok(message.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn translation_test_config() -> app_data::PetDrawerConfig {
+        let mut config = app_data::PetDrawerConfig::default();
+        config.ai.enabled = true;
+        config.ai.provider = "custom".into();
+        config.ai.base_url = "https://global.example.test/v1".into();
+        config.ai.model = "global-test-model".into();
+        config.ai.system_prompt = "unrelated-persona".into();
+        config.translation = app_data::TranslationSettings {
+            use_global_api: false,
+            provider: "custom".into(),
+            base_url: "https://translation.example.test/v1".into(),
+            model: "translation-test-model".into(),
+            api_key: String::new(),
+        };
+        config
+    }
+
+    fn translation_test_request() -> TranslationRequest {
+        TranslationRequest {
+            text: "test input".into(),
+            source_language: "auto".into(),
+            target_language: "zh".into(),
+            mode: "plain".into(),
+        }
+    }
+
+    #[test]
+    fn translation_routes_global_or_independent_with_a_dedicated_prompt() {
+        for use_global_api in [true, false] {
+            let mut config = translation_test_config();
+            config.translation.use_global_api = use_global_api;
+            config.ai.enabled = use_global_api;
+            let expected = if use_global_api {
+                "https://global.example.test/v1"
+            } else {
+                "https://translation.example.test/v1"
+            };
+            let reply =
+                translate_with_sender(config, translation_test_request(), |settings, messages| {
+                    assert_eq!(settings.base_url, expected);
+                    assert!(!settings.system_prompt.contains("unrelated-persona"));
+                    assert!(!settings.memory_enabled);
+                    assert!(settings.profiles.is_empty());
+                    assert_eq!(messages.len(), 1);
+                    assert!(messages[0].content.contains("test input"));
+                    Ok("测试译文".into())
+                })
+                .unwrap();
+            assert_eq!(reply.service.use_global_api, use_global_api);
+            assert_eq!(reply.translated_text, "测试译文");
+        }
+    }
+
+    #[test]
+    fn independent_failure_never_falls_back_or_echoes_external_errors() {
+        let mut calls = 0;
+        let result = translate_with_sender(
+            translation_test_config(),
+            translation_test_request(),
+            |settings, _| {
+                calls += 1;
+                assert!(settings.base_url.contains("translation.example.test"));
+                Err("external-error-with-private-key-and-url".into())
+            },
+        );
+        assert_eq!(calls, 1);
+        let error = result.unwrap_err();
+        assert!(error.contains("未切换"));
+        assert!(!error.contains("private"));
+    }
+
+    #[test]
+    fn translation_request_retains_snapshot_when_settings_change() {
+        let mut live_config = translation_test_config();
+        let snapshot = live_config.clone();
+        let reply = translate_with_sender(snapshot, translation_test_request(), |settings, _| {
+            live_config.translation.use_global_api = true;
+            live_config.translation.model = "next-request-model".into();
+            assert_eq!(settings.model, "translation-test-model");
+            Ok("测试译文".into())
+        })
+        .unwrap();
+        assert!(!reply.service.use_global_api);
+        assert_eq!(reply.model, "translation-test-model");
+        assert!(live_config.translation.use_global_api);
+    }
+
+    #[test]
+    fn disabled_global_is_rejected_before_any_request() {
+        let mut config = translation_test_config();
+        config.translation.use_global_api = true;
+        config.ai.enabled = false;
+        let result = translate_with_sender(config, translation_test_request(), |_, _| {
+            panic!("must not send")
+        });
+        assert!(result.unwrap_err().contains("未启用"));
+    }
+
+    #[test]
+    fn image_history_never_enters_outgoing_context_or_summary() {
+        let content = format!(
+            "前文 ![图](data:image/png;base64,{}) 后文",
+            "A".repeat(2000)
+        );
+        assert_eq!(truncate_for_extraction(&content, 500), "前文 [图片] 后文");
+        let settings = AiSettings {
+            provider: "custom".to_string(),
+            base_url: "https://example.test/v1".to_string(),
+            system_prompt: content.clone(),
+            ..AiSettings::default()
+        };
+        let messages = vec![PetChatMessageDraft {
+            role: "assistant".to_string(),
+            content,
+            created_at: String::new(),
+            time_context: String::new(),
+        }];
+        let request = build_request(&settings, &messages).unwrap();
+        assert!(!request.body.contains("base64"));
+        assert!(request.body.contains("[图片]"));
+    }
 
     #[test]
     fn explicit_memory_request_uses_fallback_when_extractor_returns_no_memory() {

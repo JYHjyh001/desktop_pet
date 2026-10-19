@@ -59,6 +59,7 @@ memory-export*.json
 /music-library.json
 music-library*.json
 music-platforms/
+chat-attachments/
 netease-cloud*.json
 kugou*.json
 /PetDrawer/

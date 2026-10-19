@@ -9,6 +9,9 @@ edition = "2021"
 name = "pet_drawer_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+resource-validation = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -21,7 +24,8 @@ ecb = { version = "0.1", features = ["alloc"] }
 md-5 = "0.10"
 num-bigint = "0.4"
 qrcode = "0.14"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots", "system-proxy"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -30,6 +34,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 lofty = "0.24.0"
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+image = { version = "0.25", default-features = false, features = ["gif", "png", "webp", "jpeg"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_DataExchange", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

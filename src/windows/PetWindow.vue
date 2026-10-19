@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { emit, listen } from '@tauri-apps/api/event'
+import { emit } from '@tauri-apps/api/event'
+import { useScopedListeners } from '../composables/useScopedListeners'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import Pet from '../components/Pet.vue'
@@ -13,6 +14,7 @@ import type {
   PetAnimationKey,
   PetDrawerConfig,
   PetSkinSummary,
+  TranslationServiceSummary,
 } from '../types/app'
 import { petAnimationFields, resolvePetSkinAnimations } from '../utils/defaultPet'
 
@@ -60,6 +62,7 @@ interface TranslationReply {
   translatedText: string
   provider: string
   model: string
+  service?: TranslationServiceSummary
 }
 
 interface SelectionTranslationDetail {
@@ -67,6 +70,7 @@ interface SelectionTranslationDetail {
   translatedText: string
   provider: string
   model: string
+  service?: TranslationServiceSummary
 }
 
 interface PetActionBindings {
@@ -81,6 +85,8 @@ interface PetActionContext {
   playClick?: boolean
 }
 
+const lifecycle = useScopedListeners()
+const { listen } = lifecycle
 const petState = ref<PetAnimationKey>('idle')
 const { windowOpenAnimationClass } = useWindowOpenAnimation('pet')
 const currentPetSkin = ref<PetSkinSummary | null>(null)
@@ -147,7 +153,9 @@ const codexCompletionCounterLabel = computed(() => {
 
 onMounted(async () => {
   await loadTheme()
+  if (lifecycle.disposed) return
   await loadPetSkin()
+  if (lifecycle.disposed) return
   unlistenPetImage = await listen('pet-skin-updated', () => {
     void loadPetSkin()
   })
@@ -233,6 +241,7 @@ watch(petState, (state) => {
 async function loadTheme() {
   try {
     const config = await invoke<PetDrawerConfig>('get_public_config')
+    if (lifecycle.disposed) return
     drawerTheme.value = normalizeDrawerTheme(config.drawer.theme)
     syncPetActionBindings(config.shortcut)
   } catch {
@@ -267,6 +276,7 @@ function syncPetActionBindings(shortcut?: PetDrawerConfig['shortcut'] | null) {
 }
 
 async function syncTranslateSelectionShortcut(value?: string | null, consent?: boolean) {
+  if (lifecycle.disposed) return
   const shortcut = consent === true ? normalizeGlobalShortcut(value || '') : ''
   if (!shortcut) {
     await unregisterTranslateSelectionShortcut()
@@ -285,6 +295,7 @@ async function syncTranslateSelectionShortcut(value?: string | null, consent?: b
         scheduleTranslateCurrentSelection()
       }
     })
+    if (lifecycle.disposed) { await unregister(shortcut); return }
     registeredTranslateSelectionShortcut = shortcut
   } catch (err) {
     console.error('注册划选翻译快捷键失败', err)
@@ -369,6 +380,7 @@ async function translateCurrentSelection() {
       translatedText: reply.translatedText,
       provider: reply.provider,
       model: reply.model,
+      service: reply.service,
     }
     showTranslationBubble(compactTranslationBubble(reply.translatedText), 'completed', 9000)
   } catch (err) {
@@ -708,6 +720,7 @@ async function showFullSelectionTranslation() {
       translatedText: detail.translatedText,
       provider: detail.provider,
       model: detail.model,
+      service: detail.service,
       sourceLanguage: 'auto',
       targetLanguage: 'zh',
       mode: 'plain',

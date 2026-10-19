@@ -119,32 +119,31 @@ pub fn save_pet_position(app: &AppHandle, x: i32, y: i32) -> Result<(), String> 
 }
 
 pub fn toggle_drawer(app: &AppHandle) -> Result<(), String> {
-    let drawer = app
+    if app
         .get_webview_window("drawer")
-        .ok_or_else(|| "未找到抽屉窗口".to_string())?;
-
-    if drawer.is_visible().map_err(|err| err.to_string())? {
-        drawer.hide().map_err(|err| err.to_string())?;
-        prepare_window_open_animation(&drawer);
-        return Ok(());
+        .is_some_and(|drawer| drawer.is_visible().unwrap_or(false))
+    {
+        hide_drawer(app)
+    } else {
+        show_drawer(app)
     }
-
-    show_drawer(app)
 }
 
 pub fn show_drawer(app: &AppHandle) -> Result<(), String> {
-    let drawer = app
-        .get_webview_window("drawer")
-        .ok_or_else(|| "未找到抽屉窗口".to_string())?;
+    let drawer = crate::window_lifecycle::ensure(app, "drawer")?;
 
+    let config = app_data::read_config(app)?;
+    drawer
+        .set_always_on_top(config.drawer.always_on_top)
+        .map_err(|err| err.to_string())?;
     position_drawer(app)?;
     show_window_with_open_animation(&drawer, "drawer", true)
 }
 
 pub fn hide_drawer(app: &AppHandle) -> Result<(), String> {
-    let drawer = app
-        .get_webview_window("drawer")
-        .ok_or_else(|| "未找到抽屉窗口".to_string())?;
+    let Some(drawer) = app.get_webview_window("drawer") else {
+        return Ok(());
+    };
 
     drawer.hide().map_err(|err| err.to_string())?;
     prepare_window_open_animation(&drawer);
@@ -155,9 +154,7 @@ pub fn show_pet_menu(app: &AppHandle, cursor_x: i32, cursor_y: i32) -> Result<()
     let pet = app
         .get_webview_window("pet")
         .ok_or_else(|| "未找到宠物窗口".to_string())?;
-    let menu = app
-        .get_webview_window("pet-menu")
-        .ok_or_else(|| "未找到宠物菜单窗口".to_string())?;
+    let menu = crate::window_lifecycle::ensure(app, "pet-menu")?;
 
     let pet_pos = pet.outer_position().map_err(|err| err.to_string())?;
     let menu_size = menu.outer_size().map_err(|err| err.to_string())?;
@@ -185,9 +182,9 @@ pub fn show_pet_menu(app: &AppHandle, cursor_x: i32, cursor_y: i32) -> Result<()
 }
 
 pub fn hide_pet_menu(app: &AppHandle) -> Result<(), String> {
-    let menu = app
-        .get_webview_window("pet-menu")
-        .ok_or_else(|| "未找到宠物菜单窗口".to_string())?;
+    let Some(menu) = app.get_webview_window("pet-menu") else {
+        return Ok(());
+    };
 
     menu.hide().map_err(|err| err.to_string())?;
     prepare_window_open_animation(&menu);
@@ -195,9 +192,7 @@ pub fn hide_pet_menu(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn show_pet_chat(app: &AppHandle) -> Result<(), String> {
-    let chat = app
-        .get_webview_window("pet-chat")
-        .ok_or_else(|| "未找到宠物对话窗口".to_string())?;
+    let chat = crate::window_lifecycle::ensure(app, "pet-chat")?;
 
     position_pet_chat(app)?;
     show_window_with_open_animation(&chat, "panel", true)?;
@@ -206,9 +201,9 @@ pub fn show_pet_chat(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn hide_pet_chat(app: &AppHandle) -> Result<(), String> {
-    let chat = app
-        .get_webview_window("pet-chat")
-        .ok_or_else(|| "未找到宠物对话窗口".to_string())?;
+    let Some(chat) = app.get_webview_window("pet-chat") else {
+        return Ok(());
+    };
 
     chat.hide().map_err(|err| err.to_string())?;
     prepare_window_open_animation(&chat);
@@ -216,9 +211,7 @@ pub fn hide_pet_chat(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn show_story(app: &AppHandle) -> Result<(), String> {
-    let story = app
-        .get_webview_window("story")
-        .ok_or_else(|| "未找到故事模式窗口".to_string())?;
+    let story = crate::window_lifecycle::ensure(app, "story")?;
 
     position_story(app)?;
     show_window_with_open_animation(&story, "panel", true)?;
@@ -226,9 +219,9 @@ pub fn show_story(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn hide_story(app: &AppHandle) -> Result<(), String> {
-    let story = app
-        .get_webview_window("story")
-        .ok_or_else(|| "未找到故事模式窗口".to_string())?;
+    let Some(story) = app.get_webview_window("story") else {
+        return Ok(());
+    };
 
     story.hide().map_err(|err| err.to_string())?;
     prepare_window_open_animation(&story);
@@ -236,9 +229,7 @@ pub fn hide_story(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn show_translator(app: &AppHandle) -> Result<(), String> {
-    let translator = app
-        .get_webview_window("translator")
-        .ok_or_else(|| "未找到翻译窗口".to_string())?;
+    let translator = crate::window_lifecycle::ensure(app, "translator")?;
 
     position_translator(app)?;
     show_window_with_open_animation(&translator, "panel", true)?;
@@ -247,9 +238,9 @@ pub fn show_translator(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn hide_translator(app: &AppHandle) -> Result<(), String> {
-    let translator = app
-        .get_webview_window("translator")
-        .ok_or_else(|| "未找到翻译窗口".to_string())?;
+    let Some(translator) = app.get_webview_window("translator") else {
+        return Ok(());
+    };
 
     translator.hide().map_err(|err| err.to_string())?;
     prepare_window_open_animation(&translator);
@@ -257,18 +248,16 @@ pub fn hide_translator(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn show_music_player(app: &AppHandle) -> Result<(), String> {
-    let music = app
-        .get_webview_window("music")
-        .ok_or_else(|| "未找到音乐播放窗口".to_string())?;
+    let music = crate::window_lifecycle::ensure(app, "music")?;
 
     position_music_player(app)?;
     show_window_with_open_animation(&music, "panel", true)
 }
 
 pub fn hide_music_player(app: &AppHandle) -> Result<(), String> {
-    let music = app
-        .get_webview_window("music")
-        .ok_or_else(|| "未找到音乐播放窗口".to_string())?;
+    let Some(music) = app.get_webview_window("music") else {
+        return Ok(());
+    };
 
     music.hide().map_err(|err| err.to_string())?;
     prepare_window_open_animation(&music);
@@ -319,9 +308,9 @@ pub fn set_pet_size(app: &AppHandle, size: u32) -> Result<(), String> {
 }
 
 pub fn set_drawer_always_on_top(app: &AppHandle, always_on_top: bool) -> Result<(), String> {
-    let drawer = app
-        .get_webview_window("drawer")
-        .ok_or_else(|| "未找到抽屉窗口".to_string())?;
+    let Some(drawer) = app.get_webview_window("drawer") else {
+        return Ok(());
+    };
 
     drawer
         .set_always_on_top(always_on_top)
@@ -343,17 +332,12 @@ pub fn show_pet_bubble(app: &AppHandle, payload: PetBubblePayload) -> Result<(),
     let pet = app
         .get_webview_window("pet")
         .ok_or_else(|| "未找到宠物窗口".to_string())?;
-    let bubble = app
-        .get_webview_window("pet-bubble")
-        .ok_or_else(|| "未找到宠物气泡窗口".to_string())?;
-
     if !pet_window_allows_bubble(pet.is_visible().map_err(|err| err.to_string())?) {
-        if bubble.is_visible().unwrap_or(false) {
-            hide_pet_bubble(app)?;
-        }
+        hide_pet_bubble(app)?;
         return Ok(());
     }
 
+    let bubble = crate::window_lifecycle::ensure(app, "pet-bubble")?;
     let payload = normalize_pet_bubble_payload(payload);
     let scale_factor = window_scale_factor(&bubble);
     let (logical_width, logical_height) = pet_bubble_window_size(&payload);
@@ -396,9 +380,9 @@ fn pet_window_allows_bubble(pet_visible: bool) -> bool {
 }
 
 pub fn hide_pet_bubble(app: &AppHandle) -> Result<(), String> {
-    let bubble = app
-        .get_webview_window("pet-bubble")
-        .ok_or_else(|| "未找到宠物气泡窗口".to_string())?;
+    let Some(bubble) = app.get_webview_window("pet-bubble") else {
+        return Ok(());
+    };
 
     bubble.hide().map_err(|err| err.to_string())?;
     prepare_window_open_animation(&bubble);
@@ -406,9 +390,9 @@ pub fn hide_pet_bubble(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn reposition_pet_bubble(app: &AppHandle) -> Result<(), String> {
-    let bubble = app
-        .get_webview_window("pet-bubble")
-        .ok_or_else(|| "未找到宠物气泡窗口".to_string())?;
+    let Some(bubble) = app.get_webview_window("pet-bubble") else {
+        return Ok(());
+    };
 
     if !bubble.is_visible().map_err(|err| err.to_string())? {
         return Ok(());

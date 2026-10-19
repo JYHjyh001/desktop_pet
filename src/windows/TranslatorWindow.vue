@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { useScopedListeners } from '../composables/useScopedListeners'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
-import type { DrawerTheme, PetDrawerConfig } from '../types/app'
+import type { DrawerTheme, PetDrawerConfig, TranslationServiceSummary, TranslationSettingsView } from '../types/app'
+import TranslatorApiSettings from '../components/TranslatorApiSettings.vue'
 
+const lifecycle = useScopedListeners()
+const { listen } = lifecycle
 type TranslationMode = 'plain' | 'polish'
 
 interface TranslationLanguage {
@@ -18,6 +21,7 @@ interface TranslationReply {
   detectedLanguage?: string
   provider: string
   model: string
+  service: TranslationServiceSummary
 }
 
 interface TranslatorPrefillPayload {
@@ -29,10 +33,11 @@ interface TranslatorPrefillPayload {
   targetLanguage?: string
   mode?: string
   statusMessage?: string
+  service?: TranslationServiceSummary
 }
 
 const translatorWindow = getCurrentWindow()
-const { windowOpenAnimationClass } = useWindowOpenAnimation('panel')
+const { windowOpenAnimationClass, markWindowReady } = useWindowOpenAnimation('panel')
 
 const languages: TranslationLanguage[] = [
   { value: 'auto', label: '自动识别' },
@@ -50,6 +55,10 @@ const languages: TranslationLanguage[] = [
 const targetLanguages = languages.filter((language) => language.value !== 'auto')
 
 const config = ref<PetDrawerConfig | null>(null)
+const effectiveService = ref<TranslationServiceSummary | null>(null)
+const settingsOpen = ref(false)
+const settingsButton = ref<HTMLButtonElement | null>(null)
+let configLoadVersion = 0
 const sourceLanguage = ref('auto')
 const targetLanguage = ref('zh')
 const translationMode = ref<TranslationMode>('plain')
@@ -63,39 +72,19 @@ const copied = ref(false)
 let unlistenTranslatorOpened: (() => void) | null = null
 let unlistenTranslatorPrefill: (() => void) | null = null
 let unlistenThemeChanged: (() => void) | null = null
+let unlistenTranslationConfigChanged: (() => void) | null = null
 let copyResetTimer: number | null = null
 
 const drawerTheme = computed<DrawerTheme>(() =>
   config.value?.drawer.theme === 'animal-island' ? 'animal-island' : 'light',
 )
-const aiEnabled = computed(() => Boolean(config.value?.ai?.enabled))
+const aiEnabled = computed(() => Boolean(effectiveService.value?.enabled))
 const aiSummary = computed(() => {
-  const ai = config.value?.ai
-  if (!ai?.enabled) {
-    return 'AI 未启用'
-  }
-
-  return `${providerLabel(ai.provider)} / ${ai.model || '未设置模型'}`
+  const service = effectiveService.value
+  return service ? `${service.useGlobalApi ? '共用全局 API' : '独立翻译 API'} · ${providerLabel(service.provider)} / ${service.model || '未设置模型'}` : '正在读取翻译接口…'
 })
 const aiDataDestination = computed(() => {
-  const ai = config.value?.ai
-  if (!ai?.enabled) {
-    return '当前 AI 服务'
-  }
-
-  const baseUrl = ai.baseUrl?.trim()
-  if (baseUrl) {
-    try {
-      const parsed = new URL(baseUrl)
-      if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.host) {
-        return parsed.host
-      }
-    } catch {
-      // 自定义地址可能不是完整 URL；避免在提示中暴露路径、查询参数或密钥。
-    }
-  }
-
-  return providerLabel(ai.provider)
+  return effectiveService.value?.host || '当前翻译接口'
 })
 const sourceCount = computed(() => sourceText.value.trim().length)
 const canTranslate = computed(() => aiEnabled.value && sourceCount.value > 0 && !translating.value)
@@ -103,7 +92,7 @@ const currentSourceLabel = computed(() => languageLabel(sourceLanguage.value))
 const currentTargetLabel = computed(() => languageLabel(targetLanguage.value))
 
 onMounted(async () => {
-  await loadConfig()
+  unlistenTranslationConfigChanged = await listen('translation-config-changed', () => { void loadConfig() })
   unlistenTranslatorOpened = await listen('translator-opened', () => {
     void loadConfig()
   })
@@ -115,23 +104,50 @@ onMounted(async () => {
       config.value.drawer.theme = event.payload
     }
   })
+  await loadConfig()
+  if (!lifecycle.disposed) await markWindowReady().catch(() => {})
 })
 
 onBeforeUnmount(() => {
+  void invoke('cancel_ai_requests').catch(() => {})
   unlistenTranslatorOpened?.()
   unlistenTranslatorPrefill?.()
   unlistenThemeChanged?.()
+  unlistenTranslationConfigChanged?.()
+  configLoadVersion += 1
   if (copyResetTimer !== null) {
     window.clearTimeout(copyResetTimer)
   }
 })
 
 async function loadConfig() {
+  const version = ++configLoadVersion
   try {
-    config.value = await invoke<PetDrawerConfig>('get_public_config')
+    const [publicConfig, settings] = await Promise.all([
+      invoke<PetDrawerConfig>('get_public_config'),
+      invoke<TranslationSettingsView>('get_translation_settings'),
+    ])
+    if (version !== configLoadVersion) return
+    config.value = publicConfig
+    effectiveService.value = settings.effective
   } catch (err) {
+    if (version !== configLoadVersion) return
+    effectiveService.value = null
     errorMessage.value = String(err)
   }
+}
+
+async function closeSettings() {
+  settingsOpen.value = false
+  await nextTick()
+  settingsButton.value?.focus()
+}
+
+function savedSettings(settings: TranslationSettingsView) {
+  configLoadVersion += 1
+  effectiveService.value = settings.effective
+  errorMessage.value = ''
+  void closeSettings()
 }
 
 function applyTranslatorPrefill(payload: TranslatorPrefillPayload) {
@@ -141,6 +157,7 @@ function applyTranslatorPrefill(payload: TranslatorPrefillPayload) {
   targetLanguage.value = normalizeTranslatorLanguage(payload.targetLanguage, false)
   translationMode.value = payload.mode === 'polish' ? 'polish' : 'plain'
   statusMessage.value =
+    (payload.service ? `${payload.service.useGlobalApi ? '共用全局 API' : '独立翻译 API'} · ${providerLabel(payload.service.provider)} / ${payload.service.model} · ${payload.service.host}` : '') ||
     payload.statusMessage?.trim() ||
     (payload.provider ? `${providerLabel(payload.provider)} / ${payload.model || '当前模型'}` : '划选翻译结果')
   errorMessage.value = ''
@@ -202,13 +219,15 @@ async function translate() {
     errorMessage.value = '请输入需要翻译的文本。'
     return
   }
-  if (!aiEnabled.value) {
-    errorMessage.value = '请先在抽屉设置中启用 AI 接口。'
-    return
-  }
-
   translating.value = true
   try {
+    // Refresh from the backend before sending; never route using frontend AI data.
+    const settings = await invoke<TranslationSettingsView>('get_translation_settings')
+    effectiveService.value = settings.effective
+    if (!settings.effective.enabled) {
+      errorMessage.value = settings.effective.problem || '请检查翻译接口设置。'
+      return
+    }
     const reply = await invoke<TranslationReply>('translate_text', {
       request: {
         sourceLanguage: sourceLanguage.value,
@@ -218,7 +237,9 @@ async function translate() {
       },
     })
     translatedText.value = reply.translatedText
-    statusMessage.value = `${providerLabel(reply.provider)} / ${reply.model || '当前模型'}`
+    statusMessage.value = `${reply.service.useGlobalApi ? '共用全局 API' : '独立翻译 API'} · ${providerLabel(reply.provider)} / ${reply.model || '当前模型'} · ${reply.service.host}`
+    // Results retain the request snapshot, while the header describes the next request.
+    await loadConfig()
   } catch (err) {
     errorMessage.value = String(err)
   } finally {
@@ -287,20 +308,22 @@ function providerLabel(provider: string) {
 
 <template>
   <main class="translator-window" :class="[`theme-${drawerTheme}`, windowOpenAnimationClass]">
+    <div class="translator-content" :inert="settingsOpen || undefined">
     <header class="translator-header" @pointerdown="startDrag">
       <div>
         <h1>翻译</h1>
         <p>{{ aiSummary }}</p>
       </div>
       <div class="translator-header-actions" @pointerdown.stop>
+        <button ref="settingsButton" type="button" class="secondary-button" @click="settingsOpen = true">设置</button>
         <button type="button" class="secondary-button" @click="loadConfig">刷新</button>
         <button type="button" class="window-close" title="关闭" @click="hideTranslator">×</button>
       </div>
     </header>
 
     <section v-if="!aiEnabled" class="translator-notice" role="status" aria-live="polite">
-      <strong>AI 接口未启用</strong>
-      <span>请先在抽屉设置中启用 AI 接口。</span>
+      <strong>翻译接口不可用</strong>
+      <span>{{ effectiveService?.problem || '请读取或检查翻译设置。' }}</span>
     </section>
     <section v-else class="translator-notice" role="note" aria-label="AI 数据发送提示">
       <strong>在线处理提示</strong>
@@ -361,6 +384,7 @@ function providerLabel(provider: string) {
     <p v-if="errorMessage" class="translator-error" role="alert" aria-live="assertive">{{ errorMessage }}</p>
 
     <footer class="translator-actions">
+      <button v-if="translating" type="button" class="translator-ghost-button" @click="invoke('cancel_ai_requests')">取消请求</button>
       <button type="button" class="translator-ghost-button" :disabled="translating || (!sourceText && !translatedText)" @click="clearText">
         清空
       </button>
@@ -371,5 +395,15 @@ function providerLabel(provider: string) {
         {{ translating ? '翻译中' : '翻译' }}
       </button>
     </footer>
+    </div>
+    <TranslatorApiSettings v-if="settingsOpen" @close="closeSettings" @saved="savedSettings" />
   </main>
 </template>
+
+<style scoped>
+.translator-content { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto auto; height: 100%; min-height: 0; }
+.translator-header p { overflow-wrap: anywhere; }
+.translator-notice { flex-wrap: wrap; }
+.translator-window { display: block; }
+@media (max-width: 420px) { .translator-header { gap: 6px; padding: 10px; } .translator-header-actions { gap: 4px; } }
+</style>

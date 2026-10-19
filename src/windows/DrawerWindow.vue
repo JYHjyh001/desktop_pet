@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { emit as emitEvent, listen } from '@tauri-apps/api/event'
+import { emit as emitEvent } from '@tauri-apps/api/event'
+import { useScopedListeners } from '../composables/useScopedListeners'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import AppCard from '../components/AppCard.vue'
@@ -24,6 +25,7 @@ import type {
   PetMemory,
   PetMemoryDraft,
   PetActionBinding,
+  PetAtlasConversionDraft,
   PetAnimationKey,
   PetAnimationSet,
   PetApp,
@@ -46,6 +48,8 @@ import {
   websiteNameFromUrl,
 } from '../utils/format'
 
+const lifecycle = useScopedListeners()
+const { listen } = lifecycle
 const WECHAT_INTEGRATION_ENABLED: boolean = false
 
 type ImportantConfirmation = {
@@ -57,7 +61,7 @@ type ImportantConfirmation = {
 }
 
 const store = useAppStore()
-const { windowOpenAnimationClass } = useWindowOpenAnimation('drawer')
+const { windowOpenAnimationClass, markWindowReady } = useWindowOpenAnimation('drawer')
 const modalVisible = ref(false)
 const saving = ref(false)
 const iconLoading = ref(false)
@@ -77,6 +81,8 @@ const editingCompanionId = ref<string | null>(null)
 const petSkinLoading = ref(false)
 const petSkinError = ref('')
 const skinImporting = ref(false)
+const atlasConverting = ref(false)
+const atlasConversion = ref<PetAtlasConversionDraft | null>(null)
 const skinDeleting = ref(false)
 const editingPetSkinId = ref<string | null>(null)
 const clearedPetAnimationStates = ref<PetAnimationKey[]>([])
@@ -704,20 +710,22 @@ const storageIconsDirDisplay = computed({
   },
 })
 
-onMounted(() => {
-  void store.loadApps()
+onMounted(async () => {
+  await store.loadApps()
   void loadPetSkins()
   void loadCompanions()
-  void loadDrawerSettings()
+  await loadDrawerSettings()
   void loadCodexStatus()
-  void listen<CodexAppServerStatus>('codex-status-updated', (event) => {
+  await listen<CodexAppServerStatus>('codex-status-updated', (event) => {
     codexStatus.value = event.payload
   }).then((unlisten) => {
     unlistenCodexStatus = unlisten
   })
+  if (!lifecycle.disposed) await markWindowReady().catch(() => {})
 })
 
 onBeforeUnmount(() => {
+  void invoke('cancel_ai_requests').catch(() => {})
   unlistenCodexStatus?.()
 })
 
@@ -838,6 +846,7 @@ function handleEntryModalKeydown(event: KeyboardEvent) {
 }
 
 function closePetSkinManager() {
+  clearAtlasConversion()
   petSkinModalVisible.value = false
   const returnFocus = petSkinModalReturnFocus
   petSkinModalReturnFocus = null
@@ -2474,6 +2483,7 @@ async function pickPetSkinPackage() {
   }
 
   try {
+    clearAtlasConversion()
     const draft = await invoke<PetSkinPackageDraft>('read_pet_skin_package', { path: selected })
     skinDraft.name = draft.name || folderNameFromPath(selected)
     for (const field of petAnimationFields) {
@@ -2483,6 +2493,38 @@ async function pickPetSkinPackage() {
     petSkinError.value = ''
   } catch (err) {
     petSkinError.value = String(err)
+  }
+}
+
+async function convertPetAtlasDirectory() {
+  const selected = await openPetSkinPackageDirectory()
+  if (typeof selected !== 'string') {
+    return
+  }
+
+  atlasConverting.value = true
+  petSkinError.value = ''
+  clearAtlasConversion()
+  try {
+    const draft = await invoke<PetAtlasConversionDraft>('convert_pet_atlas', { path: selected })
+    atlasConversion.value = draft
+    skinDraft.name = draft.name || folderNameFromPath(selected)
+    for (const field of petAnimationFields) {
+      skinDraft[field.key] = draft.animations[field.key] || ''
+    }
+    clearedPetAnimationStates.value = []
+  } catch (err) {
+    petSkinError.value = String(err)
+  } finally {
+    atlasConverting.value = false
+  }
+}
+
+function clearAtlasConversion() {
+  const temporaryDirectory = atlasConversion.value?.temporaryDirectory
+  atlasConversion.value = null
+  if (temporaryDirectory) {
+    void invoke('cleanup_pet_atlas_conversion', { path: temporaryDirectory })
   }
 }
 
@@ -2598,6 +2640,7 @@ async function savePetSkin() {
       await emitEvent('pet-skin-updated', saved.id)
     }
     selectedPetSkin.value = saved
+    clearAtlasConversion()
     resetPetSkinDraft()
     await Promise.all([loadPetSkins(), loadCompanions()])
   } catch (err) {
@@ -3216,8 +3259,52 @@ async function openTranslator() {
         <section class="skin-import-panel">
           <div class="skin-import-title-row">
             <h3>{{ isEditingPetSkin ? '编辑宠物形象' : '导入宠物' }}</h3>
-            <button type="button" @click="pickPetSkinPackage">选择宠物包</button>
+            <div class="skin-import-source-actions">
+              <button
+                v-if="!isEditingPetSkin"
+                type="button"
+                :disabled="atlasConverting || skinImporting"
+                @click="convertPetAtlasDirectory"
+              >
+                {{ atlasConverting ? '转换中...' : '转换 AI 图集' }}
+              </button>
+              <button type="button" :disabled="atlasConverting" @click="pickPetSkinPackage">选择宠物包</button>
+            </div>
           </div>
+          <p v-if="!isEditingPetSkin" class="pet-atlas-privacy-note">
+            离线读取本机 hatch-pet 目录，不上传图集、QA 文件或路径；源素材不会被修改。
+          </p>
+          <section
+            v-if="atlasConversion"
+            class="pet-atlas-conversion-summary"
+            aria-live="polite"
+            aria-label="AI 宠物图集转换结果"
+          >
+            <img :src="atlasConversion.previewDataUrl" alt="转换后的待机动画预览" />
+            <div>
+              <strong>{{ atlasConversion.name }}</strong>
+              <p>
+                {{ atlasConversion.atlasWidth }} × {{ atlasConversion.atlasHeight }} ·
+                {{ atlasConversion.spriteVersionNumber === 2 ? 'v2 8×11' : '旧版 8×9' }} ·
+                {{ atlasConversion.sourceFormat.toUpperCase() }}
+              </p>
+              <span
+                class="pet-atlas-qa-badge"
+                :class="`status-${atlasConversion.visualQaStatus}`"
+              >
+                {{
+                  atlasConversion.visualQaStatus === 'verified'
+                    ? '结构与 QA 证据通过'
+                    : atlasConversion.visualQaStatus === 'legacy'
+                      ? '旧版兼容转换'
+                      : '结构通过，视觉质量未完整验证'
+                }}
+              </span>
+              <ul v-if="atlasConversion.warnings.length">
+                <li v-for="warning in atlasConversion.warnings" :key="warning">{{ warning }}</li>
+              </ul>
+            </div>
+          </section>
           <p v-if="isEditingPetSkin" class="settings-empty">
             仅选择需要替换的素材；未选择的动画会继续保留当前配置。
           </p>

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { useScopedListeners } from '../composables/useScopedListeners'
 import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import type { DrawerTheme, PetDrawerConfig } from '../types/app'
 
+const lifecycle = useScopedListeners()
+const { listen } = lifecycle
 const drawerTheme = ref<DrawerTheme>('light')
 const themeClass = computed(() => `theme-${drawerTheme.value}`)
-const { windowOpenAnimationClass } = useWindowOpenAnimation('menu')
+const { windowOpenAnimationClass, markWindowReady } = useWindowOpenAnimation('menu')
 let unlistenThemeChanged: (() => void) | null = null
 
 onMounted(async () => {
@@ -21,6 +23,7 @@ onMounted(async () => {
   unlistenThemeChanged = await listen<string>('ui-theme-changed', (event) => {
     drawerTheme.value = event.payload === 'animal-island' ? 'animal-island' : 'light'
   })
+  if (!lifecycle.disposed) await markWindowReady().catch(() => {})
 })
 
 onBeforeUnmount(() => {

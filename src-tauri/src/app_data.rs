@@ -2,6 +2,7 @@ use std::{
     fs,
     io::Write,
     path::{Component, Path, PathBuf},
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -11,6 +12,29 @@ use tauri::{AppHandle, Manager};
 
 const STORAGE_SETTINGS_FILE_NAME: &str = "storage.json";
 const CONFIG_FILE_NAME: &str = "config.json";
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TranslationSettings {
+    pub use_global_api: bool,
+    pub provider: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub model: String,
+}
+
+impl Default for TranslationSettings {
+    fn default() -> Self {
+        Self {
+            use_global_api: true,
+            provider: "openai".to_string(),
+            base_url: String::new(),
+            api_key: String::new(),
+            model: String::new(),
+        }
+    }
+}
 const APPS_FILE_NAME: &str = "apps.json";
 const MUSIC_LIBRARY_FILE_NAME: &str = "music-library.json";
 const MUSIC_PLATFORM_DIR_NAME: &str = "music-platforms";
@@ -474,6 +498,8 @@ pub struct PetDrawerConfig {
     #[serde(default)]
     pub ai: AiSettings,
     #[serde(default)]
+    pub translation: TranslationSettings,
+    #[serde(default)]
     pub wechat_clawbot: WechatClawbotSettings,
     #[serde(default)]
     pub codex_app_server: CodexAppServerSettings,
@@ -514,6 +540,7 @@ impl Default for PetDrawerConfig {
             },
             system: SystemSettings::default(),
             ai: AiSettings::default(),
+            translation: TranslationSettings::default(),
             wechat_clawbot: WechatClawbotSettings::default(),
             codex_app_server: CodexAppServerSettings::default(),
             companions: default_companions(),
@@ -1012,50 +1039,102 @@ pub fn read_config(app: &AppHandle) -> Result<PetDrawerConfig, String> {
         return recover_default_config(app, &config_path, "config.json 为空");
     }
 
-    match serde_json::from_str::<PetDrawerConfig>(&content) {
-        Ok(mut config) => {
-            config.pet.size = normalize_pet_size(config.pet.size);
-            Ok(config)
-        }
-        Err(err) => {
-            recover_default_config(app, &config_path, &format!("config.json 格式错误：{err}"))
-        }
-    }
+    // Invalid/protected configuration must never be backed up as plaintext or
+    // replaced with defaults. In particular a DPAPI failure is not corruption.
+    let mut config = decode_config(&content)?;
+    config.pet.size = normalize_pet_size(config.pet.size);
+    Ok(config)
 }
 
 pub fn write_config(app: &AppHandle, config: &PetDrawerConfig) -> Result<(), String> {
     let dir = data_dir(app).map_err(|err| err.to_string())?;
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    let content = serde_json::to_vec_pretty(config).map_err(|err| err.to_string())?;
-    atomic_write_file(&dir.join(CONFIG_FILE_NAME), &content)
-        .map_err(|err| format!("写入 config.json 失败：{err}"))
+    write_config_preserving_translation(&dir.join(CONFIG_FILE_NAME), config)
 }
 
-fn recover_default_config(
+pub fn write_config_from_settings(app: &AppHandle, config: &PetDrawerConfig) -> Result<(), String> {
+    let path = config_file(app)?;
+    let _guard = CONFIG_WRITE_LOCK.lock().map_err(|_| "配置写入锁不可用")?;
+    let mut config = config.clone();
+    if path.exists() {
+        config.translation =
+            decode_config(&fs::read_to_string(&path).map_err(|_| "读取配置失败")?)?.translation;
+    }
+    write_config_at_with_intent(&path, &config, true)
+}
+
+fn decode_config(content: &str) -> Result<PetDrawerConfig, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(content).map_err(|_| "配置格式无效，原文件未修改")?;
+    crate::config_secrets::decrypt(&mut value)?;
+    serde_json::from_value(value).map_err(|_| "配置字段无效，原文件未修改".into())
+}
+
+// Other windows may hold an older whole-config snapshot. Only the translation
+// transaction below may replace translation; serialize both kinds of writes.
+fn write_config_preserving_translation(
+    path: &Path,
+    config: &PetDrawerConfig,
+) -> Result<(), String> {
+    let _guard = CONFIG_WRITE_LOCK.lock().map_err(|_| "配置写入锁不可用")?;
+    let mut config = config.clone();
+    if path.exists() {
+        let content = fs::read_to_string(path).map_err(|_| "读取配置失败，原文件未修改")?;
+        config.translation = decode_config(&content)?.translation;
+    }
+    write_config_at(path, &config)
+}
+
+fn write_config_at(path: &Path, config: &PetDrawerConfig) -> Result<(), String> {
+    write_config_at_with_intent(path, config, false)
+}
+
+fn write_config_at_with_intent(
+    path: &Path,
+    config: &PetDrawerConfig,
+    explicit_save: bool,
+) -> Result<(), String> {
+    let previous = if path.exists() {
+        let content = fs::read_to_string(path).map_err(|_| "读取配置失败，原文件未修改")?;
+        // Fail closed, even if a caller supplied a fresh default config.
+        decode_config(&content)?;
+        Some(serde_json::from_str::<serde_json::Value>(&content).map_err(|_| "配置格式无效")?)
+    } else {
+        None
+    };
+    let mut value = serde_json::to_value(config).map_err(|_| "配置序列化失败")?;
+    crate::config_secrets::protect(&mut value, previous.as_ref(), explicit_save)?;
+    let content = serde_json::to_vec_pretty(&value).map_err(|_| "配置序列化失败")?;
+    atomic_write_file(path, &content).map_err(|_| "写入配置失败，原文件未修改".into())
+}
+
+pub fn update_translation_config(
     app: &AppHandle,
-    config_path: &Path,
-    reason: &str,
+    update: impl FnOnce(&PetDrawerConfig) -> Result<TranslationSettings, String>,
 ) -> Result<PetDrawerConfig, String> {
-    let backup_path = backup_corrupt_config_file(config_path)
-        .map_err(|err| format!("{reason}；备份损坏配置失败：{err}"))?;
-    let config = PetDrawerConfig::default();
-    write_config(app, &config).map_err(|err| {
-        format!(
-            "{reason}；已备份到 {}，但恢复默认配置失败：{err}",
-            backup_path.display()
-        )
-    })?;
+    ensure_data_files(app)?;
+    update_translation_config_at(&config_file(app)?, update)
+}
 
-    eprintln!(
-        "{reason}；已备份损坏配置到 {}，并恢复默认配置。",
-        backup_path.display()
-    );
-
+fn update_translation_config_at(
+    path: &Path,
+    update: impl FnOnce(&PetDrawerConfig) -> Result<TranslationSettings, String>,
+) -> Result<PetDrawerConfig, String> {
+    let _guard = CONFIG_WRITE_LOCK.lock().map_err(|_| "配置写入锁不可用")?;
+    let content = fs::read_to_string(path).map_err(|_| "无法读取翻译配置，原配置未修改")?;
+    let mut config = decode_config(&content)?;
+    config.translation = update(&config)?;
+    write_config_at_with_intent(path, &config, true)
+        .map_err(|_| "翻译设置保存失败，原配置未修改")?;
     Ok(config)
 }
 
-fn backup_corrupt_config_file(config_path: &Path) -> Result<PathBuf, String> {
-    backup_corrupt_file(config_path)
+fn recover_default_config(
+    _app: &AppHandle,
+    _config_path: &Path,
+    _reason: &str,
+) -> Result<PetDrawerConfig, String> {
+    Err("配置文件无法读取，原文件已保留；请检查配置格式或恢复有效配置。".into())
 }
 
 fn backup_corrupt_file(path: &Path) -> Result<PathBuf, String> {
@@ -2723,6 +2802,11 @@ fn migrate_storage_paths(old: &StoragePaths, new: &StoragePaths) -> Result<(), S
         "音乐平台凭据目录",
     )?;
     copy_memory_files_missing(&old.memory_dir, &new.memory_dir)?;
+    copy_dir_contents_missing(
+        &old.memory_dir.join("chat-attachments"),
+        &new.memory_dir.join("chat-attachments"),
+        "聊天附件",
+    )?;
     copy_pet_assets_missing(&old.pet_assets_dir, &new.pet_assets_dir)?;
     copy_icon_assets_missing(&old.icons_dir, &new.icons_dir)?;
     Ok(())
@@ -3117,22 +3201,117 @@ mod tests {
     }
 
     #[test]
-    fn backup_corrupt_config_file_preserves_original_content() {
-        let dir = temp_test_dir("backup_corrupt_config");
+    fn translation_transaction_survives_stale_other_window_save_and_restart() {
+        let dir = temp_test_dir("translation_transaction");
         let path = dir.join("config.json");
-        let corrupt_content = vec![0_u8; 32];
-        fs::write(&path, &corrupt_content).expect("write corrupt file");
-
-        let backup_path = backup_corrupt_config_file(&path).expect("backup corrupt config");
-
-        assert!(backup_path.exists());
+        let mut stale = PetDrawerConfig::default();
+        stale.ai.model = "initial-test-model".into();
+        write_config_preserving_translation(&path, &stale).unwrap();
+        let result = update_translation_config_at(&path, |config| {
+            let mut settings = config.translation.clone();
+            settings.use_global_api = false;
+            settings.provider = "custom".into();
+            settings.model = "translation-test-model".into();
+            settings.api_key = "translation-placeholder".into();
+            Ok(settings)
+        })
+        .unwrap();
         assert_eq!(
-            fs::read(backup_path).expect("read backup file"),
-            corrupt_content
+            serde_json::to_value(&result.ai).unwrap(),
+            serde_json::to_value(&stale.ai).unwrap()
         );
-        assert_eq!(fs::read(&path).expect("read original file"), vec![0_u8; 32]);
+        stale.ai.model = "updated-global-model".into();
+        write_config_preserving_translation(&path, &stale).unwrap();
+        let reloaded: PetDrawerConfig = decode_config(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.ai.model, "updated-global-model");
+        assert_eq!(reloaded.translation.model, "translation-test-model");
+        assert_eq!(reloaded.translation.api_key, "translation-placeholder");
+        update_translation_config_at(&path, |config| {
+            assert_eq!(config.ai.model, "updated-global-model");
+            let mut settings = config.translation.clone();
+            settings.use_global_api = true;
+            Ok(settings)
+        })
+        .unwrap();
+        let reloaded: PetDrawerConfig = decode_config(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.translation.api_key, "translation-placeholder");
+        fs::remove_dir_all(dir).unwrap();
+    }
 
-        fs::remove_dir_all(dir).expect("remove temp test dir");
+    #[test]
+    fn rejected_translation_save_preserves_original_config_bytes() {
+        let dir = temp_test_dir("translation_rejected");
+        let path = dir.join("config.json");
+        write_config_preserving_translation(&path, &PetDrawerConfig::default()).unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(update_translation_config_at(&path, |_| Err("invalid draft".into())).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_translation_atomic_replace_preserves_original_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = temp_test_dir("translation_disk_failure");
+        let path = dir.join("config.json");
+        write_config_preserving_translation(&path, &PetDrawerConfig::default()).unwrap();
+        let original = fs::read(&path).unwrap();
+        // Allow reads/writes but deny deletion/replacement while this handle is open.
+        let held_file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .open(&path)
+            .unwrap();
+        let result = update_translation_config_at(&path, |config| {
+            let mut settings = config.translation.clone();
+            settings.model = "should-not-persist".into();
+            Ok(settings)
+        });
+        assert!(result.is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        drop(held_file);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_other_config_writes_cannot_overwrite_translation() {
+        let dir = temp_test_dir("translation_concurrent");
+        let path = dir.join("config.json");
+        write_config_preserving_translation(&path, &PetDrawerConfig::default()).unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..10 {
+                    write_config_preserving_translation(&path, &PetDrawerConfig::default())
+                        .unwrap();
+                }
+            });
+            scope.spawn(|| {
+                for index in 0..10 {
+                    update_translation_config_at(&path, |config| {
+                        let mut settings = config.translation.clone();
+                        settings.model = format!("translation-test-{index}");
+                        Ok(settings)
+                    })
+                    .unwrap();
+                }
+            });
+        });
+        let reloaded: PetDrawerConfig = decode_config(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(reloaded.translation.model, "translation-test-9");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_config_is_preserved_without_creating_plaintext_backup() {
+        let dir = temp_test_dir("corrupt_config");
+        let path = dir.join("config.json");
+        fs::write(&path, b"invalid-placeholder").unwrap();
+        assert!(write_config_preserving_translation(&path, &PetDrawerConfig::default()).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"invalid-placeholder");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

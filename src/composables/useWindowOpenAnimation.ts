@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { listen } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
+import { useScopedListeners } from './useScopedListeners'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
 type WindowOpenAnimationVariant = 'drawer' | 'panel' | 'menu' | 'bubble' | 'pet'
@@ -12,6 +13,10 @@ interface WindowOpenAnimationPayload {
 const WINDOW_OPEN_ANIMATION_MS = 360
 
 export function useWindowOpenAnimation(variant: WindowOpenAnimationVariant = 'panel') {
+  const scope = useScopedListeners()
+  const { listen } = scope
+  let resolveListeners!: () => void
+  const listenersReady = new Promise<void>((resolve) => { resolveListeners = resolve })
   const prepared = ref(variant !== 'pet')
   const opening = ref(false)
   let currentWindowLabel = ''
@@ -86,6 +91,7 @@ export function useWindowOpenAnimation(variant: WindowOpenAnimationVariant = 'pa
         }
       },
     )
+    resolveListeners()
   })
 
   onBeforeUnmount(() => {
@@ -102,5 +108,11 @@ export function useWindowOpenAnimation(variant: WindowOpenAnimationVariant = 'pa
 
   return {
     windowOpenAnimationClass,
+    async markWindowReady() {
+      await listenersReady
+      if (scope.disposed) return
+      await invoke('window_frontend_ready')
+      triggerOpenAnimation()
+    },
   }
 }

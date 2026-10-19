@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { emit as emitEvent, listen } from '@tauri-apps/api/event'
+import { emit as emitEvent } from '@tauri-apps/api/event'
+import { useScopedListeners } from '../composables/useScopedListeners'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
+import ChatReplyImage from '../components/ChatReplyImage.vue'
+import { splitChatImages } from '../utils/chatImages'
 import type {
   Companion,
   CompanionStatus,
@@ -13,6 +16,7 @@ import type {
   PetChatReply,
   PetDrawerConfig,
   PetMemoryMessage,
+  CompanionMessagePage,
   PetSkinSummary,
 } from '../types/app'
 import { getPetSkinPreview } from '../utils/defaultPet'
@@ -23,6 +27,8 @@ import {
   type TwemojiTextToken,
 } from '../utils/twemoji'
 
+const lifecycle = useScopedListeners()
+const { listen } = lifecycle
 type ChatMessage = PetChatMessage & {
   id: string
   memoryId?: number
@@ -32,8 +38,9 @@ type ChatMessage = PetChatMessage & {
 }
 
 type ChatMessagePart = {
-  type: 'dialogue' | 'narration'
+  type: 'dialogue' | 'narration' | 'image'
   text: string
+  src?: string
 }
 
 type NarrationDelimiter = {
@@ -136,7 +143,7 @@ const MUSIC_INTENT_TAGS = [
   '不喜欢',
 ]
 const chatWindow = getCurrentWindow()
-const { windowOpenAnimationClass } = useWindowOpenAnimation('panel')
+const { windowOpenAnimationClass, markWindowReady } = useWindowOpenAnimation('panel')
 const messages = ref<ChatMessage[]>([
   {
     id: 'welcome',
@@ -176,6 +183,12 @@ const favorabilityLogs = ref<FavorabilityLog[]>([])
 const favorabilityLogsLoading = ref(false)
 const manualFavorabilityVisible = ref(false)
 const manualFavorabilityDraft = ref(0)
+const historyBefore = ref<number | null>(null)
+const historyHasMore = ref(false)
+const historyLoading = ref(false)
+const deferredMessages = ref<number[]>([])
+let conversationVersion = 0
+
 const messageListRef = ref<HTMLElement | null>(null)
 const messageContextMenu = ref<MessageContextMenu | null>(null)
 const selectionMode = ref(false)
@@ -260,6 +273,7 @@ const chatInputPlaceholder = computed(() => {
 
 onMounted(async () => {
   await Promise.all([loadConfig(), loadConversation(), loadCurrentPetSkin(), loadCompanionStatus()])
+  if (lifecycle.disposed) return
   unlistenChatOpened = await listen('pet-chat-opened', () => {
     void Promise.all([loadConfig(), loadConversation(), loadCurrentPetSkin(), loadCompanionStatus()])
   })
@@ -290,9 +304,12 @@ onMounted(async () => {
     finishTypewriter()
     void Promise.all([loadConfig(), loadConversation(), loadCurrentPetSkin(), loadCompanionStatus()])
   })
+  if (!lifecycle.disposed) await markWindowReady().catch(() => {})
 })
 
 onBeforeUnmount(() => {
+  conversationVersion += 1
+  void invoke('cancel_ai_requests').catch(() => {})
   unlistenChatOpened?.()
   unlistenThemeChanged?.()
   unlistenChatDisplayChanged?.()
@@ -352,26 +369,48 @@ function welcomeMessage(companion?: Companion | null): ChatMessage {
 }
 
 async function loadConversation() {
+  const version = ++conversationVersion
   try {
-    const [companion, history] = await Promise.all([
+    const [companion, page] = await Promise.all([
       invoke<Companion>('get_current_companion'),
-      invoke<PetMemoryMessage[]>('get_companion_messages'),
+      invoke<CompanionMessagePage>('get_companion_message_page', { limit: 20 }),
     ])
+    if (version !== conversationVersion || lifecycle.disposed) return
     currentCompanion.value = companion
-    messages.value =
-      history.length > 0
-        ? history.map((message) => ({
-            id: `history-${message.id}`,
-            memoryId: message.id,
-            role: message.role,
-            content: message.content,
-            createdAt: message.createdAt,
-          }))
-        : [welcomeMessage(companion)]
+    applyHistoryPage(page)
+    if (!messages.value.length) messages.value = [welcomeMessage(companion)]
     errorMessage.value = ''
-  } catch (err) {
-    errorMessage.value = String(err)
-  }
+  } catch (err) { if (version === conversationVersion && !lifecycle.disposed) errorMessage.value = String(err) }
+}
+
+function applyHistoryPage(page: CompanionMessagePage) {
+  // Replace the visible page instead of accumulating full image history in memory.
+  messages.value = page.messages.map((message) => ({ id: `history-${message.id}`, memoryId: message.id, role: message.role, content: message.content, createdAt: message.createdAt }))
+  historyBefore.value = page.nextBefore
+  historyHasMore.value = page.hasMore
+  deferredMessages.value = page.messages.filter((message) => message.contentDeferred).map((message) => message.id)
+}
+
+async function loadOlderHistory() {
+  if (historyLoading.value || !historyHasMore.value) return
+  historyLoading.value = true
+  const version = ++conversationVersion
+  try {
+    const page = await invoke<CompanionMessagePage>('get_companion_message_page', { before: historyBefore.value, limit: 20 })
+    if (version === conversationVersion && !lifecycle.disposed) applyHistoryPage(page)
+  } catch (err) { errorMessage.value = String(err) }
+  finally { historyLoading.value = false }
+}
+
+async function loadDeferredMessage(id: number) {
+  const version = conversationVersion
+  try {
+    const result = await invoke<PetMemoryMessage>('get_companion_message', { id })
+    if (version !== conversationVersion || lifecycle.disposed) return
+    // A large legacy record is shown alone, rather than retaining another full page.
+    messages.value = [{ id: `history-${result.id}`, memoryId: result.id, role: result.role, content: result.content, createdAt: result.createdAt }]
+    deferredMessages.value = []
+  } catch (err) { errorMessage.value = String(err) }
 }
 
 function providerLabel(provider?: string) {
@@ -796,17 +835,19 @@ function stripInternalTimeLabels(content: string) {
 }
 
 function requestMessageContent(message: ChatMessage) {
-  const content = stripInternalTimeLabels(message.content)
-  if (narrationEnabled.value) {
-    return content.trim()
-  }
-
-  return dialogueOnlyContent(content)
+  return splitChatImages(stripInternalTimeLabels(message.content))
+    .map((part) => part.type === 'image'
+      ? '[图片]'
+      : narrationEnabled.value ? part.text : dialogueOnlyContent(part.text))
+    .join('\n')
+    .trim()
 }
 
 function renderedMessageParts(message: ChatMessage) {
-  const parts = splitMessageContent(displayedContent(message))
-  return narrationEnabled.value ? parts : parts.filter((part) => part.type === 'dialogue')
+  const parts: ChatMessagePart[] = splitChatImages(displayedContent(message)).flatMap((part) =>
+    part.type === 'image' ? [part] : splitMessageContent(part.text),
+  )
+  return narrationEnabled.value ? parts : parts.filter((part) => part.type !== 'narration')
 }
 
 function splitMessageContent(content: string): ChatMessagePart[] {
@@ -1115,6 +1156,10 @@ function startTypewriter(messageId: string) {
     return
   }
 
+  if (splitChatImages(message.content).some((part) => part.type === 'image')) {
+    return
+  }
+
   const characters = Array.from(message.content)
   if (
     characters.length === 0 ||
@@ -1289,7 +1334,6 @@ function defaultMusicIntentReply(action: MusicActionType) {
 async function executeMusicChatIntent(intent: MusicChatIntent) {
   try {
     await invoke('show_music_player')
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 80))
     await emitEvent('music-action-requested', intent.action)
   } catch (err) {
     throw new Error(`音乐控制失败：${String(err)}`)
@@ -1450,6 +1494,10 @@ async function insertTwemoji(item: TwemojiItem) {
     </section>
 
     <section ref="messageListRef" class="pet-chat-messages" @scroll.passive="closeMessageContextMenu">
+      <div class="pet-chat-history-controls">
+        <button v-if="historyHasMore" type="button" :disabled="historyLoading" @click="loadOlderHistory">{{ historyLoading ? '读取中…' : '更早记录' }}</button>
+        <button type="button" @click="loadConversation">回到最近</button>
+      </div>
       <template v-for="message in messages" :key="message.id">
         <article
           v-if="renderedMessageParts(message).length > 0"
@@ -1473,6 +1521,7 @@ async function insertTwemoji(item: TwemojiItem) {
             @click.stop
             @change="toggleMessageSelection(message)"
           />
+          <button v-if="message.memoryId && deferredMessages.includes(message.memoryId)" type="button" @click.stop="loadDeferredMessage(message.memoryId)">读取完整消息</button>
           <div class="pet-chat-message-row">
             <button
               v-if="message.role === 'assistant'"
@@ -1492,8 +1541,13 @@ async function insertTwemoji(item: TwemojiItem) {
                 v-for="(part, partIndex) in renderedMessageParts(message)"
                 :key="`${message.id}-${partIndex}`"
               >
+                <ChatReplyImage
+                  v-if="part.type === 'image'"
+                  :src="part.src || ''"
+                  :alt="part.text"
+                />
                 <p
-                  v-if="part.type === 'dialogue'"
+                  v-else-if="part.type === 'dialogue'"
                   :class="{ 'pet-chat-message-bubble': isBubbleMessagePart(message, part) }"
                 >
                   <span
@@ -1589,6 +1643,7 @@ async function insertTwemoji(item: TwemojiItem) {
         @keydown="handleInputKeydown"
       />
       <div class="pet-chat-input-actions">
+        <button v-if="sending" type="button" @click="invoke('cancel_ai_requests')">取消请求</button>
         <button
           class="pet-chat-emoji-toggle"
           type="button"
@@ -1866,3 +1921,8 @@ async function insertTwemoji(item: TwemojiItem) {
     </div>
   </main>
 </template>
+
+<style scoped>
+.pet-chat-history-controls { display: flex; justify-content: center; gap: 8px; margin: 4px 0 10px; }
+.pet-chat-history-controls button { border: 1px solid currentColor; border-radius: 8px; padding: 5px 10px; background: transparent; color: inherit; font-size: 12px; }
+</style>

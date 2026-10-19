@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
+import { useScopedListeners } from '../composables/useScopedListeners'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import type {
@@ -14,8 +14,10 @@ import type {
   StoryTurnReply,
 } from '../types/app'
 
+const lifecycle = useScopedListeners()
+const { listen } = lifecycle
 const storyWindow = getCurrentWindow()
-const { windowOpenAnimationClass } = useWindowOpenAnimation('panel')
+const { windowOpenAnimationClass, markWindowReady } = useWindowOpenAnimation('panel')
 const config = ref<PetDrawerConfig | null>(null)
 const companions = ref<Companion[]>([])
 const storySaves = ref<StorySave[]>([])
@@ -79,7 +81,9 @@ const activeCharacterNames = computed(() =>
 
 onMounted(async () => {
   await refreshStoryWindow()
+  if (lifecycle.disposed) return
   await syncFullscreenState()
+  if (lifecycle.disposed) return
   unlistenStoryOpened = await listen('story-opened', () => {
     void refreshStoryWindow()
     void syncFullscreenState()
@@ -92,12 +96,14 @@ onMounted(async () => {
   unlistenCompanionChanged = await listen('companion-changed', () => {
     void loadCompanions()
   })
-  unlistenStoryResized = await storyWindow.onResized(() => {
+  unlistenStoryResized = await lifecycle.track(storyWindow.onResized(() => {
     void syncFullscreenState()
-  })
+  }))
+  if (!lifecycle.disposed) await markWindowReady().catch(() => {})
 })
 
 onBeforeUnmount(() => {
+  void invoke('cancel_ai_requests').catch(() => {})
   unlistenStoryOpened?.()
   unlistenThemeChanged?.()
   unlistenCompanionChanged?.()

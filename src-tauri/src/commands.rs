@@ -24,11 +24,40 @@ use crate::{
     },
     clawbot_bridge, codex_app_server,
     favorability::{self, CompanionStatus, FavorabilityLog},
-    kugou_music, launcher, netease_music, startup,
+    kugou_music, launcher, netease_music, pet_atlas_converter, startup,
     story_mode::{self, StoryCreateDraft, StorySave, StoryTurnReply},
+    translation_api::{self, TranslationSettingsDraft, TranslationSettingsView},
     updater, wechat_clawbot, windowing,
 };
 use tauri::State;
+
+#[tauri::command]
+pub fn window_frontend_ready(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    require_window(
+        &window,
+        &[
+            "pet",
+            "drawer",
+            "pet-menu",
+            "pet-bubble",
+            "pet-chat",
+            "story",
+            "translator",
+            "music",
+        ],
+    )?;
+    crate::window_lifecycle::mark_ready(&app, window.label())
+}
+
+#[tauri::command]
+pub fn cancel_ai_requests(window: WebviewWindow) -> Result<(), String> {
+    require_window(
+        &window,
+        &["drawer", "pet", "pet-chat", "story", "translator"],
+    )?;
+    crate::ai_transport::cancel_owner(window.label());
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -411,7 +440,10 @@ pub fn open_app_dir(app: AppHandle, window: WebviewWindow, app_id: String) -> Re
 #[tauri::command]
 pub fn get_config(app: AppHandle, window: WebviewWindow) -> Result<PetDrawerConfig, String> {
     require_command_window(&window, "get_config")?;
-    read_runtime_config(&app)
+    let mut config = read_runtime_config(&app)?;
+    config.translation.api_key.clear();
+    config.translation.base_url = public_ai_origin(&config.translation.base_url);
+    Ok(config)
 }
 
 #[tauri::command]
@@ -465,6 +497,8 @@ fn allowed_windows_for_command(command: &str) -> Option<&'static [&'static str]>
         | "list_pet_skins"
         | "set_pet_skin"
         | "read_pet_skin_package"
+        | "convert_pet_atlas"
+        | "cleanup_pet_atlas_conversion"
         | "import_pet_skin"
         | "update_pet_skin"
         | "delete_pet_skin"
@@ -508,7 +542,10 @@ fn allowed_windows_for_command(command: &str) -> Option<&'static [&'static str]>
         | "send_wechat_clawbot_message" => Some(&["pet-chat"]),
         "list_story_saves" | "get_story_save" | "create_story" | "advance_story"
         | "delete_story_save" | "rename_story_save" => Some(&["story"]),
-        "translate_text" => Some(&["translator"]),
+        "translate_text"
+        | "get_translation_settings"
+        | "save_translation_settings"
+        | "test_translation_connection" => Some(&["translator"]),
         "translate_selected_text"
         | "save_pet_position"
         | "is_primary_mouse_button_pressed"
@@ -577,6 +614,8 @@ fn redact_public_config(mut config: PetDrawerConfig) -> PetDrawerConfig {
     config.ai.system_prompt.clear();
     config.ai.active_profile_id.clear();
     config.ai.profiles.clear();
+    config.translation.api_key.clear();
+    config.translation.base_url = public_ai_origin(&config.translation.base_url);
 
     config.wechat_clawbot.openclaw_command.clear();
     config.wechat_clawbot.channel.clear();
@@ -734,7 +773,43 @@ pub fn get_companion_messages(
 ) -> Result<Vec<PetMemoryMessage>, String> {
     require_command_window(&window, "get_companion_messages")?;
     let companion_id = ai_memory::current_companion_id(&app)?;
-    ai_memory::recent_messages(&app, &companion_id, 200)
+    ai_memory::recent_messages(&app, &companion_id, 20)
+}
+
+#[tauri::command]
+pub fn get_companion_message_page(
+    app: AppHandle,
+    window: WebviewWindow,
+    before: Option<u64>,
+    limit: Option<usize>,
+) -> Result<crate::message_history::MessagePage, String> {
+    require_command_window(&window, "get_companion_messages")?;
+    ai_memory::message_page(&app, before, limit.unwrap_or(20))
+}
+
+#[tauri::command]
+pub fn get_companion_message(
+    app: AppHandle,
+    window: WebviewWindow,
+    id: u64,
+) -> Result<PetMemoryMessage, String> {
+    require_command_window(&window, "get_companion_messages")?;
+    ai_memory::message_by_id(&app, id)
+}
+
+#[tauri::command]
+pub async fn load_chat_image(
+    app: AppHandle,
+    window: WebviewWindow,
+    source: String,
+) -> Result<String, String> {
+    require_window(&window, &["pet-chat"])?;
+    let owner = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_transport::with_scope(&owner, || crate::chat_media::load_image(&app, &source))
+    })
+    .await
+    .map_err(|_| "图片加载任务失败")?
 }
 
 #[tauri::command]
@@ -848,13 +923,16 @@ pub fn save_drawer_preferences(
     config.ai = normalize_ai_settings(preferences.ai);
     config.wechat_clawbot = normalize_wechat_clawbot_settings(preferences.wechat_clawbot);
     config.codex_app_server = normalize_codex_app_server_settings(preferences.codex_app_server);
-    app_data::write_config(&app, &config)?;
+    app_data::write_config_from_settings(&app, &config)?;
+    let _ = app.emit("translation-config-changed", ());
     clawbot_bridge::restart_bridge_server(&app)?;
 
     windowing::set_pet_size(&app, pet_size)?;
     windowing::set_pet_always_on_top(&app, preferences.pet_always_on_top)?;
     windowing::set_drawer_always_on_top(&app, preferences.drawer_always_on_top)?;
 
+    config.translation.api_key.clear();
+    config.translation.base_url = public_ai_origin(&config.translation.base_url);
     Ok(config)
 }
 
@@ -1237,6 +1315,21 @@ pub fn read_pet_skin_package(
 }
 
 #[tauri::command]
+pub fn convert_pet_atlas(
+    window: WebviewWindow,
+    path: String,
+) -> Result<pet_atlas_converter::PetAtlasConversionDraft, String> {
+    require_command_window(&window, "convert_pet_atlas")?;
+    pet_atlas_converter::convert(&path)
+}
+
+#[tauri::command]
+pub fn cleanup_pet_atlas_conversion(window: WebviewWindow, path: String) -> Result<(), String> {
+    require_command_window(&window, "cleanup_pet_atlas_conversion")?;
+    pet_atlas_converter::cleanup(&path)
+}
+
+#[tauri::command]
 pub fn import_pet_skin(
     app: AppHandle,
     window: WebviewWindow,
@@ -1366,13 +1459,17 @@ fn primary_mouse_button_pressed() -> bool {
 }
 
 #[tauri::command]
-pub fn toggle_drawer(app: AppHandle) -> Result<(), String> {
-    windowing::toggle_drawer(&app)
+pub async fn toggle_drawer(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || windowing::toggle_drawer(&app))
+        .await
+        .map_err(|_| "窗口任务失败")?
 }
 
 #[tauri::command]
-pub fn show_drawer(app: AppHandle) -> Result<(), String> {
-    windowing::show_drawer(&app)
+pub async fn show_drawer(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || windowing::show_drawer(&app))
+        .await
+        .map_err(|_| "窗口任务失败")?
 }
 
 #[tauri::command]
@@ -1381,8 +1478,10 @@ pub fn hide_drawer(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn show_pet_menu(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
-    windowing::show_pet_menu(&app, x, y)
+pub async fn show_pet_menu(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || windowing::show_pet_menu(&app, x, y))
+        .await
+        .map_err(|_| "窗口任务失败")?
 }
 
 #[tauri::command]
@@ -1391,8 +1490,13 @@ pub fn hide_pet_menu(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn show_pet_bubble(app: AppHandle, payload: windowing::PetBubblePayload) -> Result<(), String> {
-    windowing::show_pet_bubble(&app, payload)
+pub async fn show_pet_bubble(
+    app: AppHandle,
+    payload: windowing::PetBubblePayload,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || windowing::show_pet_bubble(&app, payload))
+        .await
+        .map_err(|_| "窗口任务失败")?
 }
 
 #[tauri::command]
@@ -1406,8 +1510,10 @@ pub fn reposition_pet_bubble(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn show_pet_chat(app: AppHandle) -> Result<(), String> {
-    windowing::show_pet_chat(&app)
+pub async fn show_pet_chat(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || windowing::show_pet_chat(&app))
+        .await
+        .map_err(|_| "窗口任务失败")?
 }
 
 #[tauri::command]
@@ -1416,8 +1522,10 @@ pub fn hide_pet_chat(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn show_story(app: AppHandle) -> Result<(), String> {
-    windowing::show_story(&app)
+pub async fn show_story(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || windowing::show_story(&app))
+        .await
+        .map_err(|_| "窗口任务失败")?
 }
 
 #[tauri::command]
@@ -1426,8 +1534,10 @@ pub fn hide_story(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn show_translator(app: AppHandle) -> Result<(), String> {
-    windowing::show_translator(&app)
+pub async fn show_translator(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || windowing::show_translator(&app))
+        .await
+        .map_err(|_| "窗口任务失败")?
 }
 
 #[tauri::command]
@@ -1436,8 +1546,10 @@ pub fn hide_translator(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn show_music_player(app: AppHandle) -> Result<(), String> {
-    windowing::show_music_player(&app)
+pub async fn show_music_player(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || windowing::show_music_player(&app))
+        .await
+        .map_err(|_| "窗口任务失败")?
 }
 
 #[tauri::command]
@@ -2252,9 +2364,14 @@ pub async fn send_pet_chat_message(
     messages: Vec<PetChatMessageDraft>,
 ) -> Result<PetChatReply, String> {
     require_command_window(&window, "send_pet_chat_message")?;
-    tauri::async_runtime::spawn_blocking(move || ai_chat::send_pet_chat_message(&app, messages))
-        .await
-        .map_err(|err| format!("宠物对话任务失败：{err}"))?
+    let request_owner = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_transport::with_scope(&request_owner, || {
+            ai_chat::send_pet_chat_message(&app, messages)
+        })
+    })
+    .await
+    .map_err(|err| format!("宠物对话任务失败：{err}"))?
 }
 
 #[tauri::command]
@@ -2265,8 +2382,11 @@ pub async fn classify_music_intent(
     context: MusicIntentContext,
 ) -> Result<MusicIntentReply, String> {
     require_command_window(&window, "classify_music_intent")?;
+    let request_owner = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        ai_chat::classify_music_intent(&app, user_input, context)
+        crate::ai_transport::with_scope(&request_owner, || {
+            ai_chat::classify_music_intent(&app, user_input, context)
+        })
     })
     .await
     .map_err(|err| format!("音乐意图识别任务失败：{err}"))?
@@ -2280,8 +2400,11 @@ pub async fn send_pet_music_chat_message(
     action_context: MusicChatActionContext,
 ) -> Result<PetChatReply, String> {
     require_command_window(&window, "send_pet_music_chat_message")?;
+    let request_owner = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        ai_chat::send_pet_music_chat_message(&app, messages, action_context)
+        crate::ai_transport::with_scope(&request_owner, || {
+            ai_chat::send_pet_music_chat_message(&app, messages, action_context)
+        })
     })
     .await
     .map_err(|err| format!("音乐对话回复任务失败：{err}"))?
@@ -2310,9 +2433,12 @@ pub async fn create_story(
     draft: StoryCreateDraft,
 ) -> Result<StoryTurnReply, String> {
     require_command_window(&window, "create_story")?;
-    tauri::async_runtime::spawn_blocking(move || story_mode::create_story(&app, draft))
-        .await
-        .map_err(|err| format!("故事创建任务失败：{err}"))?
+    let request_owner = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_transport::with_scope(&request_owner, || story_mode::create_story(&app, draft))
+    })
+    .await
+    .map_err(|err| format!("故事创建任务失败：{err}"))?
 }
 
 #[tauri::command]
@@ -2323,8 +2449,11 @@ pub async fn advance_story(
     user_input: String,
 ) -> Result<StoryTurnReply, String> {
     require_command_window(&window, "advance_story")?;
+    let request_owner = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        story_mode::advance_story(&app, &story_id, &user_input)
+        crate::ai_transport::with_scope(&request_owner, || {
+            story_mode::advance_story(&app, &story_id, &user_input)
+        })
     })
     .await
     .map_err(|err| format!("故事推进任务失败：{err}"))?
@@ -2357,11 +2486,65 @@ pub async fn test_ai_connection(
     settings: AiSettingsDraft,
 ) -> Result<AiConnectionTestResult, String> {
     require_command_window(&window, "test_ai_connection")?;
+    let request_owner = window.label().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
-        ai_chat::test_ai_connection(normalize_ai_settings(settings))
+        crate::ai_transport::with_scope(&request_owner, || {
+            ai_chat::test_ai_connection(normalize_ai_settings(settings))
+        })
     })
     .await
     .map_err(|err| format!("AI 连接测试任务失败：{err}"))?
+}
+
+#[tauri::command]
+pub fn get_translation_settings(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<TranslationSettingsView, String> {
+    require_command_window(&window, "get_translation_settings")?;
+    app_data::read_config(&app).map(|config| translation_api::view(&config))
+}
+
+#[tauri::command]
+pub fn save_translation_settings(
+    app: AppHandle,
+    window: WebviewWindow,
+    settings: TranslationSettingsDraft,
+) -> Result<TranslationSettingsView, String> {
+    require_command_window(&window, "save_translation_settings")?;
+    let config = app_data::update_translation_config(&app, |config| {
+        translation_api::apply_draft(config, settings)
+    })?;
+    let _ = app.emit("translation-config-changed", ());
+    Ok(translation_api::view(&config))
+}
+
+#[tauri::command]
+pub async fn test_translation_connection(
+    app: AppHandle,
+    window: WebviewWindow,
+    settings: TranslationSettingsDraft,
+) -> Result<AiConnectionTestResult, String> {
+    require_command_window(&window, "test_translation_connection")?;
+    let config = translation_api::draft_config(&app_data::read_config(&app)?, settings)?;
+    let connection = translation_api::effective_settings(&config);
+    translation_api::validate(&connection)?;
+    let service = translation_api::summary(&config);
+    let request_owner = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_transport::with_scope(&request_owner, || {
+            ai_chat::test_ai_connection(connection)
+                .map(|_| AiConnectionTestResult {
+                    ok: true,
+                    provider: service.provider.clone(),
+                    model: service.model.clone(),
+                    message: "连接成功，当前草稿未保存。".into(),
+                })
+                .map_err(|_| translation_api::safe_request_error(&service))
+        })
+    })
+    .await
+    .map_err(|_| "翻译连接测试执行失败。".to_string())?
 }
 
 #[tauri::command]
@@ -2371,9 +2554,13 @@ pub async fn translate_text(
     request: TranslationRequest,
 ) -> Result<TranslationReply, String> {
     require_command_window(&window, "translate_text")?;
-    tauri::async_runtime::spawn_blocking(move || ai_chat::translate_text(&app, request))
-        .await
-        .map_err(|err| format!("翻译任务失败：{err}"))?
+    let config = app_data::read_config(&app)?;
+    let request_owner = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_transport::with_scope(&request_owner, || ai_chat::translate_text(config, request))
+    })
+    .await
+    .map_err(|err| format!("翻译任务失败：{err}"))?
 }
 
 #[tauri::command]
@@ -2382,9 +2569,13 @@ pub async fn translate_selected_text(
     window: WebviewWindow,
 ) -> Result<TranslationReply, String> {
     require_command_window(&window, "translate_selected_text")?;
-    tauri::async_runtime::spawn_blocking(move || ai_chat::translate_selected_text(&app))
-        .await
-        .map_err(|err| format!("划选翻译任务失败：{err}"))?
+    let config = app_data::read_config(&app)?;
+    let request_owner = window.label().to_owned();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::ai_transport::with_scope(&request_owner, || ai_chat::translate_selected_text(config))
+    })
+    .await
+    .map_err(|err| format!("划选翻译任务失败：{err}"))?
 }
 
 #[tauri::command]
@@ -2711,7 +2902,8 @@ pub async fn quit_app(app: AppHandle) {
     let listener_id = app.once("music-library-flush-completed", move |_| {
         let _ = sender.send(());
     });
-    let flush_requested = app.emit("music-library-flush-requested", ()).is_ok();
+    let flush_requested = app.get_webview_window("music").is_some()
+        && app.emit("music-library-flush-requested", ()).is_ok();
     if flush_requested {
         let _ = tauri::async_runtime::spawn_blocking(move || {
             receiver.recv_timeout(std::time::Duration::from_secs(5))
@@ -2725,6 +2917,33 @@ pub async fn quit_app(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translation_settings_are_only_authorized_for_translator() {
+        for command in [
+            "get_translation_settings",
+            "save_translation_settings",
+            "test_translation_connection",
+        ] {
+            assert!(is_command_allowed_for_window(command, "translator"));
+            for label in [
+                "drawer",
+                "pet",
+                "pet-chat",
+                "music",
+                "story",
+                "pet-bubble",
+                "unknown",
+            ] {
+                assert!(!is_command_allowed_for_window(command, label));
+            }
+        }
+        assert!(!is_command_allowed_for_window("get_config", "translator"));
+        assert!(!is_command_allowed_for_window(
+            "save_drawer_preferences",
+            "translator"
+        ));
+    }
 
     #[test]
     fn shortcut_consent_requires_non_empty_shortcut_and_explicit_approval() {
@@ -2883,6 +3102,9 @@ mod tests {
         config.pet.custom_image = Some("private-image-path".to_string());
         config.drawer.categories = vec!["private-category".to_string()];
         config.ai.enabled = true;
+        config.translation.api_key = "private-translation-key".into();
+        config.translation.base_url =
+            "https://translation.example.test/private/path?token=private".into();
         config.ai.api_key = "private-api-key".to_string();
         config.ai.base_url = "https://ai.example.test/private/path?token=private".to_string();
         config.ai.system_prompt = "private-system-prompt".to_string();
@@ -2903,6 +3125,11 @@ mod tests {
         let serialized = serde_json::to_string(&public).expect("serialize public config");
 
         assert!(public.ai.enabled);
+        assert!(public.translation.api_key.is_empty());
+        assert_eq!(
+            public.translation.base_url,
+            "https://translation.example.test"
+        );
         assert_eq!(public.ai.base_url, "https://ai.example.test");
         assert!(public.ai.api_key.is_empty());
         assert!(public.ai.profiles.is_empty());

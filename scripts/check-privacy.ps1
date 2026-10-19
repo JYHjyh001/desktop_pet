@@ -55,6 +55,7 @@ try {
         "custom-runtime/apps.json"                  = "nested launcher data"
         "custom-runtime/storage.json"               = "nested path and usage data"
         "custom-runtime/pet-memory.json"            = "pet memory"
+        "custom-runtime/chat-attachments/placeholder" = "local chat attachment"
         "custom-runtime/music-library.json"         = "local music library"
         "custom-runtime/music-platforms/session.json" = "music platform session"
         "custom-runtime/netease-cloud-session.json" = "Netease Cloud session"
@@ -82,6 +83,7 @@ try {
         [pscustomobject]@{ Name = "environment file"; Pattern = '(?i)(^|/)\.env(?:$|\.)' },
         [pscustomobject]@{ Name = "local configuration or usage data"; Pattern = '(?i)(^|/)(?:config|apps|storage|music-library)\.json$' },
         [pscustomobject]@{ Name = "pet memory database"; Pattern = '(?i)(^|/)pet-memory\.db(?:-[^/]*)?$' },
+        [pscustomobject]@{ Name = "local chat attachment"; Pattern = '(?i)(^|/)chat-attachments/' },
         [pscustomobject]@{ Name = "pet memory, story save or chat export"; Pattern = '(?i)(^|/)(?:pet-memory(?:[^/]*)|memory-export(?:[^/]*)|story-saves(?:[^/]*)|memory|memories|chat-history)\.json$' },
         [pscustomobject]@{ Name = "music platform session"; Pattern = '(?i)(^|/)music-platforms/' },
         [pscustomobject]@{ Name = "music platform session"; Pattern = '(?i)(^|/)(?:netease-cloud|kugou)[^/]*\.json$' },

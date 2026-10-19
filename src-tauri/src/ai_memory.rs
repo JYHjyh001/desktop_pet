@@ -20,7 +20,6 @@ const LEGACY_MEMORY_JSON_FILE_NAME: &str = "pet-memory.json";
 pub const DEFAULT_COMPANION_ID: &str = "default";
 pub const SHORT_TERM_SUMMARY_MEMORY_TYPE: &str = "short_term_summary";
 pub const MAX_SHORT_TERM_SUMMARY_LEN: usize = 2400;
-const MAX_MESSAGES: usize = 200;
 const MAX_MESSAGE_CONTENT_LEN: usize = 1200;
 const MAX_MEMORY_CONTENT_LEN: usize = 300;
 
@@ -410,7 +409,8 @@ pub fn save_message(
     if content.is_empty() {
         return Ok(());
     }
-    let content = truncate_text(content, MAX_MESSAGE_CONTENT_LEN);
+    let content = crate::chat_images::stored_content(content, MAX_MESSAGE_CONTENT_LEN);
+    let content = crate::chat_media::externalize_inline(app, &content)?;
 
     let conn = open_connection(app)?;
     let id = next_unique_id(&conn, "pet_memory_messages")?;
@@ -426,7 +426,21 @@ pub fn save_message(
         ],
     )
     .map_err(|err| format!("保存宠物聊天记忆失败：{err}"))?;
-    trim_messages(&conn, companion_id)
+    Ok(())
+}
+
+pub fn message_page(
+    app: &AppHandle,
+    before: Option<u64>,
+    limit: usize,
+) -> Result<crate::message_history::MessagePage, String> {
+    let companion = current_companion_id(app)?;
+    crate::message_history::read_page(&open_connection(app)?, &companion, before, limit)
+}
+
+pub fn message_by_id(app: &AppHandle, id: u64) -> Result<PetMemoryMessage, String> {
+    let companion = current_companion_id(app)?;
+    crate::message_history::read_one(&open_connection(app)?, &companion, id)
 }
 
 pub fn recent_messages(
@@ -458,7 +472,18 @@ pub fn recent_messages(
         .query_map(params![companion_id, limit as i64], row_to_message)
         .map_err(|err| format!("读取最近聊天记忆失败：{err}"))?;
 
-    collect_rows(rows, "读取最近聊天记忆失败")
+    let mut messages = Vec::new();
+    let mut bytes = 0usize;
+    for row in rows {
+        let mut message = row.map_err(|_| "读取最近聊天记忆失败")?;
+        message.content = crate::chat_images::text_context(&message.content);
+        bytes = bytes.saturating_add(message.content.len());
+        if bytes > 1024 * 1024 {
+            break;
+        }
+        messages.push(message);
+    }
+    Ok(messages)
 }
 
 pub fn unsummarized_messages_for_short_summary(
@@ -479,7 +504,7 @@ pub fn unsummarized_messages_for_short_summary(
                     SELECT id FROM pet_memory_messages
                     WHERE companion_id = ?1 ORDER BY id DESC LIMIT ?3
                )
-             ORDER BY id ASC",
+             ORDER BY id ASC LIMIT 40",
         )
         .map_err(|err| format!("读取待压缩短期记忆失败：{err}"))?;
     let rows = stmt
@@ -493,7 +518,24 @@ pub fn unsummarized_messages_for_short_summary(
         )
         .map_err(|err| format!("读取待压缩短期记忆失败：{err}"))?;
 
-    collect_rows(rows, "读取待压缩短期记忆失败")
+    let mut messages = Vec::new();
+    let mut budget = 1024 * 1024;
+    for row in rows {
+        let mut message = row.map_err(|_| "读取待压缩短期记忆失败")?;
+        message.content = crate::chat_images::text_context(&message.content);
+        // Limit model input only; the original database record is unchanged.
+        let mut end = message.content.len().min(budget);
+        while !message.content.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.content.truncate(end);
+        budget -= end;
+        messages.push(message);
+        if budget == 0 {
+            break;
+        }
+    }
+    Ok(messages)
 }
 
 pub fn list_memories(app: &AppHandle) -> Result<Vec<PetMemory>, String> {
@@ -801,6 +843,13 @@ pub fn import_memory_file(app: &AppHandle, source_path: &str) -> Result<Vec<PetM
         return Err("记忆导入文件不存在".to_string());
     }
 
+    if fs::metadata(source)
+        .map_err(|_| "无法读取导入文件信息")?
+        .len()
+        > 32 * 1024 * 1024
+    {
+        return Err("记忆导入文件超过 32 MiB 限制".into());
+    }
     let content =
         fs::read_to_string(source).map_err(|err| format!("读取记忆导入文件失败：{err}"))?;
     let mut store: PetMemoryStore =
@@ -836,9 +885,35 @@ pub fn export_memory_file(app: &AppHandle, target_path: &str) -> Result<(), Stri
         }
     }
 
-    let store = read_store(app)?;
-    let content = serde_json::to_string_pretty(&store).map_err(|err| err.to_string())?;
-    fs::write(target, content).map_err(|err| format!("导出宠物记忆失败：{err}"))
+    let conn = open_connection(app)?;
+    let companion = current_companion_id(app)?;
+    let total: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(size),0) FROM (
+            SELECT length(CAST(content AS BLOB))+length(CAST(companion_id AS BLOB))+length(CAST(role AS BLOB))+length(CAST(created_at AS BLOB))+256 AS size
+            FROM pet_memory_messages WHERE companion_id=?1
+            UNION ALL
+            SELECT length(CAST(content AS BLOB))+length(CAST(tags_json AS BLOB))+length(CAST(source_message AS BLOB))+length(CAST(companion_id AS BLOB))+length(CAST(memory_type AS BLOB))+length(CAST(created_at AS BLOB))+length(CAST(updated_at AS BLOB))+256 AS size
+            FROM pet_memories WHERE companion_id=?1
+        )", params![companion], |row|row.get(0)
+    ).map_err(|_| "无法检查导出大小")?;
+    if total > 32 * 1024 * 1024 {
+        return Err("图文历史超过 32 MiB 单次导出限制，原历史未修改。".into());
+    }
+    let mut store = read_store(app)?;
+    let mut budget = 32 * 1024 * 1024;
+    for message in &mut store.messages {
+        message.content = crate::chat_media::hydrate_attachments(app, &message.content)?;
+        let cost = serde_json::to_vec(message)
+            .map_err(|_| "历史序列化失败")?
+            .len();
+        if cost > budget {
+            return Err("图文历史超过单次导出限制，未写入目标文件。".into());
+        }
+        budget -= cost;
+    }
+    let content = crate::message_history::serialize_bounded(&store, 32 * 1024 * 1024)?;
+    app_data::atomic_write_file(target, &content)
+        .map_err(|_| "导出宠物记忆失败，原目标文件未修改。".into())
 }
 
 pub fn open_memory_dir(app: &AppHandle) -> Result<(), String> {
@@ -1351,20 +1426,6 @@ fn replace_store_in_conn(
         insert_memory(conn, memory)?;
     }
 
-    trim_messages(conn, companion_id)?;
-    Ok(())
-}
-
-fn trim_messages(conn: &Connection, companion_id: &str) -> Result<(), String> {
-    conn.execute(
-        "DELETE FROM pet_memory_messages
-         WHERE companion_id = ?1 AND id NOT IN (
-            SELECT id FROM pet_memory_messages
-            WHERE companion_id = ?1 ORDER BY id DESC LIMIT ?2
-         )",
-        params![companion_id, MAX_MESSAGES as i64],
-    )
-    .map_err(|err| format!("裁剪宠物聊天记忆失败：{err}"))?;
     Ok(())
 }
 
@@ -1675,18 +1736,13 @@ fn merge_tags(existing: &[String], incoming: &[String]) -> Vec<String> {
 }
 
 fn normalize_imported_store(store: &mut PetMemoryStore) {
-    if store.messages.len() > MAX_MESSAGES {
-        let remove_count = store.messages.len() - MAX_MESSAGES;
-        store.messages.drain(0..remove_count);
-    }
-
     for message in &mut store.messages {
         message.companion_id = safe_companion_id(&message.companion_id)
             .unwrap_or(DEFAULT_COMPANION_ID)
             .to_string();
         message.role = normalize_role(&message.role).unwrap_or_else(|| "user".to_string());
         let content = message.content.trim().to_string();
-        message.content = truncate_text(&content, MAX_MESSAGE_CONTENT_LEN);
+        message.content = crate::chat_images::stored_content(&content, MAX_MESSAGE_CONTENT_LEN);
         if message.created_at.trim().is_empty() {
             message.created_at = app_data::now_seconds();
         }

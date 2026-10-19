@@ -193,6 +193,8 @@ describe('DrawerWindow accessibility', () => {
         '[role="dialog"][aria-labelledby="pet-skin-modal-title"]',
       )
       expect(petSkinDialog.attributes('aria-describedby')).toBe('pet-skin-modal-description')
+      expect(petSkinDialog.text()).toContain('转换 AI 图集')
+      expect(petSkinDialog.text()).toContain('不上传图集、QA 文件或路径')
       expect(document.activeElement).toBe(
         petSkinDialog.get<HTMLButtonElement>('[aria-label="关闭宠物形象管理"]').element,
       )

@@ -1,19 +1,29 @@
 mod ai_chat;
 mod ai_memory;
+mod ai_transport;
 mod app_data;
+mod chat_images;
+mod chat_media;
 mod clawbot_bridge;
 mod codex_app_server;
 mod commands;
+mod config_secrets;
 mod favorability;
 mod feature_flags;
 mod kugou_music;
 mod launcher;
+mod message_history;
 mod netease_music;
+mod pet_atlas_converter;
+#[cfg(feature = "resource-validation")]
+mod resource_validation;
 mod startup;
 mod story_mode;
+mod translation_api;
 mod tray;
 mod updater;
 mod wechat_clawbot;
+mod window_lifecycle;
 mod windowing;
 
 use tauri::Manager;
@@ -22,8 +32,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(window_lifecycle::WindowLifecycle::default())
         .manage(codex_app_server::CodexAppServerState::default())
         .invoke_handler(tauri::generate_handler![
+            commands::window_frontend_ready,
+            commands::cancel_ai_requests,
             commands::get_apps,
             commands::reorder_apps,
             commands::upsert_app,
@@ -46,6 +59,9 @@ pub fn run() {
             commands::reset_current_companion_favorability,
             commands::list_current_companion_favorability_logs,
             commands::get_companion_messages,
+            commands::get_companion_message_page,
+            commands::get_companion_message,
+            commands::load_chat_image,
             commands::delete_companion_messages,
             commands::get_runtime_info,
             commands::get_storage_settings,
@@ -58,6 +74,8 @@ pub fn run() {
             commands::get_current_pet_skin,
             commands::set_pet_skin,
             commands::read_pet_skin_package,
+            commands::convert_pet_atlas,
+            commands::cleanup_pet_atlas_conversion,
             commands::import_pet_skin,
             commands::update_pet_skin,
             commands::delete_pet_skin,
@@ -125,6 +143,9 @@ pub fn run() {
             commands::delete_story_save,
             commands::rename_story_save,
             commands::translate_text,
+            commands::get_translation_settings,
+            commands::save_translation_settings,
+            commands::test_translation_connection,
             commands::translate_selected_text,
             commands::test_ai_connection,
             commands::test_wechat_clawbot,
@@ -163,6 +184,8 @@ pub fn run() {
             }
             start_codex_app_server_on_boot(app);
             tray::create_tray(app.handle())?;
+            #[cfg(feature = "resource-validation")]
+            resource_validation::start(app.handle()).map_err(std::io::Error::other)?;
             Ok(())
         })
         .run(tauri::generate_context!())

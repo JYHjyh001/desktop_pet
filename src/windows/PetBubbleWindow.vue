@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { emit, listen } from '@tauri-apps/api/event'
+import { emit } from '@tauri-apps/api/event'
+import { useScopedListeners } from '../composables/useScopedListeners'
 import { useWindowOpenAnimation } from '../composables/useWindowOpenAnimation'
 import type { DrawerTheme } from '../types/app'
 
+const lifecycle = useScopedListeners()
+const { listen } = lifecycle
 type PetBubbleKind = 'bubble' | 'badge' | 'completion'
 type PetBubblePlacement = 'top' | 'bottom' | 'side'
 type PetBubbleChannel = 'codex' | 'translation'
@@ -40,7 +43,7 @@ const theme = ref<DrawerTheme>('light')
 const placement = ref<PetBubblePlacement>('top')
 const tailX = ref(150)
 const hoveredItemId = ref('')
-const { windowOpenAnimationClass } = useWindowOpenAnimation('bubble')
+const { windowOpenAnimationClass, markWindowReady } = useWindowOpenAnimation('bubble')
 const bubbleHorizontalPadding = 8
 const bubbleTailEdgePadding = 18
 const hoverRepositionLeaveDistancePx = 4
@@ -84,6 +87,7 @@ onMounted(async () => {
       applyPlacementPayload(event.payload)
     },
   )
+  if (!lifecycle.disposed) await markWindowReady().catch(() => {})
 })
 
 onBeforeUnmount(() => {

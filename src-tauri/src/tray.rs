@@ -24,7 +24,10 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
                 let _ = windowing::hide_pet(app);
             }
             "open_drawer" => {
-                let _ = windowing::show_drawer(app);
+                let app = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _ = windowing::show_drawer(&app);
+                });
             }
             "quit" => {
                 let app = app.clone();
@@ -43,7 +46,10 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             {
                 let app = tray.app_handle();
                 let _ = windowing::show_pet(app);
-                let _ = windowing::toggle_drawer(app);
+                let app = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _ = windowing::toggle_drawer(&app);
+                });
             }
         });
 
